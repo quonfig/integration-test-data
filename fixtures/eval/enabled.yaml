@@ -1,0 +1,1046 @@
+---
+function: enabled
+tests:
+  - cases:
+
+      ################
+      ## ALWAYS_ON ##
+      ################
+
+      - name: returns the correct value for a simple flag
+        client: feature_flag_client
+        function: enabled
+        input:
+          flag: "feature-flag.simple"
+        expected:
+          value: true
+
+      - name: always returns false for a non-boolean flag
+        client: feature_flag_client
+        function: enabled
+        input:
+          flag: "feature-flag.integer"
+        expected:
+          value: false
+
+
+      #####################
+      ## PROP_IS_ONE_OF ##
+      #####################
+
+      - name: returns true for a PROP_IS_ONE_OF rule when any prop matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            "":
+              name: "michael"
+              domain: "something.com"
+        input:
+          flag: "feature-flag.properties.positive"
+        expected:
+          value: true
+
+      - name: returns false for a PROP_IS_ONE_OF rule when no prop matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            "":
+              name: "lauren"
+              domain: "something.com"
+        input:
+          flag: "feature-flag.properties.positive"
+        expected:
+          value: false
+
+      #########################
+      ## PROP_IS_NOT_ONE_OF ##
+      #########################
+
+      - name: returns true for a PROP_IS_NOT_ONE_OF rule when any prop doesn't match
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            "":
+              name: "lauren"
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.properties.negative"
+        expected:
+          value: true
+
+      - name: returns false for a PROP_IS_NOT_ONE_OF rule when all props match
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            "":
+              name: "michael"
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.properties.negative"
+        expected:
+          value: false
+
+      ############################
+      ## PROP_ENDS_WITH_ONE_OF ##
+      ############################
+
+      - name: returns true for PROP_ENDS_WITH_ONE_OF rule when the given prop has a matching suffix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            "":
+              email: "jeff@prefab.cloud"
+        input:
+          flag: "feature-flag.ends-with-one-of.positive"
+        expected:
+          value: true
+
+      - name: returns false for PROP_ENDS_WITH_ONE_OF rule when the given prop doesn't have a matching suffix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            "":
+              email: "jeff@test.com"
+        input:
+          flag: "feature-flag.ends-with-one-of.positive"
+        expected:
+          value: false
+
+      #####################################
+      ## PROP_DOES_NOT_END_WITH_ONE_OF ##
+      #####################################
+
+      - name: returns true for PROP_DOES_NOT_END_WITH_ONE_OF rule when the given prop doesn't have a matching suffix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            "":
+              email: "michael@test.com"
+        input:
+          flag: "feature-flag.ends-with-one-of.negative"
+        expected:
+          value: true
+
+      - name: returns false for PROP_DOES_NOT_END_WITH_ONE_OF rule when the given prop has a matching suffix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            "":
+              email: "michael@prefab.cloud"
+        input:
+          flag: "feature-flag.ends-with-one-of.negative"
+        expected:
+          value: false
+
+        ############################
+        ## PROP_STARTS_WITH_ONE_OF ##
+        ############################
+
+      - name: returns true for PROP_STARTS_WITH_ONE_OF rule when the given prop has a matching prefix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "foo@prefab.cloud"
+        input:
+          flag: "feature-flag.starts-with-one-of.positive"
+        expected:
+          value: true
+
+      - name: returns false for PROP_STARTS_WITH_ONE_OF rule when the given prop doesn't have a matching prefix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "notfoo@prefab.cloud"
+        input:
+          flag: "feature-flag.starts-with-one-of.positive"
+        expected:
+          value: false
+
+        #####################################
+        ## PROP_DOES_NOT_START_WITH_ONE_OF ##
+        #####################################
+
+      - name: returns true for PROP_DOES_NOT_START_WITH_ONE_OF rule when the given prop doesn't have a matching prefix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "notfoo@prefab.cloud"
+        input:
+          flag: "feature-flag.starts-with-one-of.negative"
+        expected:
+          value: true
+
+      - name: returns false for PROP_DOES_NOT_START_WITH_ONE_OF rule when the given prop has a matching prefix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "foo@prefab.cloud"
+        input:
+          flag: "feature-flag.starts-with-one-of.negative"
+        expected:
+          value: false
+
+
+        ############################
+        ## PROP_CONTAINS_ONE_OF   ##
+        ############################
+
+      - name: returns true for PROP_CONTAINS_ONE_OF rule when the given prop has a matching substring
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "somefoo@prefab.cloud"
+        input:
+          flag: "feature-flag.contains-one-of.positive"
+        expected:
+          value: true
+
+      - name: returns false for PROP_CONTAINS_ONE_OF rule when the given prop doesn't have a matching substring
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "info@prefab.cloud"
+        input:
+          flag: "feature-flag.contains-one-of.positive"
+        expected:
+          value: false
+
+        #####################################
+        ## PROP_DOES_NOT_CONTAIN_ONE_OF    ##
+        #####################################
+
+      - name: returns true for PROP_DOES_NOT_CONTAIN_ONE_OF rule when the given prop doesn't have a matching substring
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "info@prefab.cloud"
+        input:
+          flag: "feature-flag.contains-one-of.negative"
+        expected:
+          value: true
+
+      - name: returns false for PROP_DOES_NOT_CONTAIN_ONE_OF rule when the given prop has a matching substring
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              email: "notfoo@prefab.cloud"
+        input:
+          flag: "feature-flag.contains-one-of.negative"
+        expected:
+          value: false
+
+
+
+      #############
+      ## IN_SEG ##
+      #############
+
+      - name: returns true for IN_SEG when the segment rule matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "lauren"
+        input:
+          flag: "feature-flag.in-segment.positive"
+        expected:
+          value: true
+
+      - name: returns false for IN_SEG when the segment rule doesn't match
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "josh"
+        input:
+          flag: "feature-flag.in-segment.positive"
+        expected:
+          value: false
+
+      - name: returns false for IN_SEG if any segment rule fails to match
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "josh"
+            "":
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.in-seg.segment-and"
+        expected:
+          value: false
+
+      - name: returns true for IN_SEG (segment-and) if all rules matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "michael"
+            "":
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.in-seg.segment-and"
+        expected:
+          value: true
+
+      - name: returns true for IN_SEG (segment-or) if any segment rule matches (lookup)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "michael"
+            "":
+              domain: "example.com"
+        input:
+          flag: "feature-flag.in-seg.segment-or"
+        expected:
+          value: true
+
+      - name: returns true for IN_SEG (segment-or) if any segment rule matches (prop)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "nobody"
+            "":
+              domain: "gmail.com"
+        input:
+          flag: "feature-flag.in-seg.segment-or"
+        expected:
+          value: true
+
+      #################
+      ## NOT_IN_SEG ##
+      #################
+
+      - name: returns true for NOT_IN_SEG when the segment rule doesn't match
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "josh"
+        input:
+          flag: "feature-flag.in-segment.negative"
+        expected:
+          value: true
+
+      - name: returns false for NOT_IN_SEG when the segment rule matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "michael"
+        input:
+          flag: "feature-flag.in-segment.negative"
+        expected:
+          value: false
+
+      - name: returns false for NOT_IN_SEG if any segment rule matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "josh"
+            "":
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.in-segment.multiple-criteria.negative"
+        expected:
+          value: true
+
+      - name: returns true for NOT_IN_SEG if no segment rule matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "josh"
+            "":
+              domain: "something.com"
+        input:
+          flag: "feature-flag.in-segment.multiple-criteria.negative"
+        expected:
+          value: true
+
+      - name: returns true for NOT_IN_SEG (segment-and) if not segment rule fails to match
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "josh"
+            "":
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.not-in-seg.segment-and"
+        expected:
+          value: true
+
+      - name: returns true for IN_SEG (segment-and) if not segment rule fails to match
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "josh"
+            "":
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.in-seg.segment-and"
+        expected:
+          value: false
+
+      - name: returns false for NOT_IN_SEG (segment-and) if segment rules matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "michael"
+            "":
+              domain: "prefab.cloud"
+        input:
+          flag: "feature-flag.not-in-seg.segment-and"
+        expected:
+          value: false
+
+      - name: returns true for NOT_IN_SEG (segment-or) if no segment rule matches
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "nobody"
+            "":
+              domain: "example.com"
+        input:
+          flag: "feature-flag.not-in-seg.segment-or"
+        expected:
+          value: true
+
+      - name: returns false for NOT_IN_SEG (segment-or) if one segment rule matches (prop)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              key: "nobody"
+            "":
+              domain: "gmail.com"
+        input:
+          flag: "feature-flag.not-in-seg.segment-or"
+        expected:
+          value: false
+
+      - name: returns false for NOT_IN_SEG (segment-or) if one segment rule matches (lookup)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "michael"
+            "":
+              domain: "example.com"
+        input:
+          flag: "feature-flag.not-in-seg.segment-or"
+        expected:
+          value: false
+
+        #####################################
+        ## PROP_BEFORE  ##
+        #####################################
+
+      - name: returns true for PROP_BEFORE rule when the given prop represents a date (string) before the rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2024-11-01T00:00:00Z"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: true
+
+      - name: returns true for PROP_BEFORE rule when the given prop represents a date (number) before the rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: 1730419200000
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: true
+
+      - name: returns false for PROP_BEFORE rule when the given prop represents a date (number) exactly matching rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: 1733011200000
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: false
+
+      - name: returns false for PROP_BEFORE rule when the given prop represents a date (number) AFTER the rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2025-01-01T00:00:00Z"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: false
+
+      - name: returns false for PROP_BEFORE rule when the given prop won't parse as a date
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "not a date"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: false
+
+      - name: returns false for PROP_BEFORE rule using current-time relative to 2050-01-01
+        client: feature_flag_client
+        function: enabled
+        input:
+          flag: "feature-flag.before.current-time"
+        expected:
+          value: true
+
+
+        #####################################
+        ## PROP_AFTER  ##
+        #####################################
+
+      - name: returns true for PROP_AFTER rule when the given prop represents a date (string) after the rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2025-01-01T00:00:00Z"
+        input:
+          flag: "feature-flag.after"
+        expected:
+          value: true
+
+      - name: returns true for PROP_AFTER rule when the given prop represents a date (number) after the rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: 1735689600000
+        input:
+          flag: "feature-flag.after"
+        expected:
+          value: true
+
+      - name: returns false for PROP_AFTER rule when the given prop represents a date (number) exactly matching rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: 1733011200000
+        input:
+          flag: "feature-flag.after"
+        expected:
+          value: false
+
+      - name: returns false for PROP_BEFORE rule when the given prop represents a date (number) BEFORE the rule's time
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2024-01-01T00:00:00Z"
+        input:
+          flag: "feature-flag.after"
+        expected:
+          value: false
+
+      - name: returns false for PROP_AFTER rule when the given prop won't parse as a date
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "not a date"
+        input:
+          flag: "feature-flag.after"
+        expected:
+          value: false
+
+      - name: returns false for PROP_AFTER rule using current-time relative to 2025-01-01
+        client: feature_flag_client
+        function: enabled
+        input:
+          flag: "feature-flag.after.current-time"
+        expected:
+          value: true
+
+
+        #####################################
+        ## PROP_LESS_THAN  ##
+        #####################################
+
+      - name: returns true for PROP_LESS_THAN rule when the given prop is less than the rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 20
+        input:
+          flag: "feature-flag.less-than"
+        expected:
+          value: true
+
+      - name: returns true for PROP_LESS_THAN rule when the given prop is less than the rule's value (float)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 20.5
+        input:
+          flag: "feature-flag.less-than"
+        expected:
+          value: true
+
+
+      - name: returns false for PROP_LESS_THAN rule when the given prop is equal to rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 30
+        input:
+          flag: "feature-flag.less-than"
+        expected:
+          value: false
+
+      - name: returns false for PROP_LESS_THAN rule when the given prop a string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: "20"
+        input:
+          flag: "feature-flag.less-than"
+        expected:
+          value: false
+
+
+
+      #####################################
+      ## PROP_LESS_THAN_OR_EQUAL  ##
+      #####################################
+
+      - name: returns true for PROP_LESS_THAN_OR_EQUAL rule when the given prop is less than the rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 20
+        input:
+          flag: "feature-flag.less-than-or-equal"
+        expected:
+          value: true
+
+      - name: returns true for PROP_LESS_THAN_OR_EQUAL rule when the given prop is less than the rule's value (float)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 20.5
+        input:
+          flag: "feature-flag.less-than-or-equal"
+        expected:
+          value: true
+
+
+      - name: returns false for PROP_LESS_THAN_OR_EQUAL rule when the given prop is equal to rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 30
+        input:
+          flag: "feature-flag.less-than-or-equal"
+        expected:
+          value: true
+
+      - name: returns false for PROP_LESS_THAN_OR_EQUAL rule when the given prop a string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: "20"
+        input:
+          flag: "feature-flag.less-than-or-equal"
+        expected:
+          value: false
+
+      #####################################
+      ## PROP_GREATER_THAN  ##
+      #####################################
+
+      - name: returns true for PROP_GREATER_THAN rule when the given prop is greater than the rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 100
+        input:
+          flag: "feature-flag.greater-than"
+        expected:
+          value: true
+
+      - name: returns true for PROP_GREATER_THAN rule when the given prop is greater than the rule's value (float)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 30.5
+        input:
+          flag: "feature-flag.greater-than"
+        expected:
+          value: true
+
+      - name: returns true for PROP_GREATER_THAN rule when the given prop is greater than the rule's float value (float)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 32.7
+        input:
+          flag: "feature-flag.greater-than.double"
+        expected:
+          value: true
+
+
+      - name: returns true for PROP_GREATER_THAN rule when the given prop is greater than the rule's float value (integer)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 32
+        input:
+          flag: "feature-flag.greater-than.double"
+        expected:
+          value: true
+
+
+
+      - name: returns false for PROP_GREATER_THAN rule when the given prop is equal to rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 30
+        input:
+          flag: "feature-flag.greater-than"
+        expected:
+          value: false
+
+      - name: returns false for PROP_GREATER_THAN rule when the given prop a string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: "100"
+        input:
+          flag: "feature-flag.greater-than"
+        expected:
+          value: false
+
+
+        #####################################
+        ## PROP_GREATER_THAN_OR_EQUAL  ##
+        #####################################
+
+      - name: returns true for PROP_GREATER_THAN_OR_EQUAL rule when the given prop is greater than the rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 30
+        input:
+          flag: "feature-flag.greater-than-or-equal"
+        expected:
+          value: true
+
+      - name: returns true for PROP_GREATER_THAN_OR_EQUAL rule when the given prop is greater than the rule's value (float)
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 30.5
+        input:
+          flag: "feature-flag.greater-than-or-equal"
+        expected:
+          value: true
+
+
+      - name: returns true for PROP_GREATER_THAN_OR_EQUAL rule when the given prop is equal to rule's value
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: 30
+        input:
+          flag: "feature-flag.greater-than-or-equal"
+        expected:
+          value: true
+
+      - name: returns false for PROP_GREATER_THAN_OR_EQUAL rule when the given prop a string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: "100"
+        input:
+          flag: "feature-flag.greater-than-or-equal"
+        expected:
+          value: false
+
+
+      #####################################
+      ## PROP_MATCHES -- the regex is a+b+  ##
+      #####################################
+
+      - name: returns true for PROP_MATCHES rule when the given prop matches the regex
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              code: aaaaaab
+        input:
+          flag: "feature-flag.matches"
+        expected:
+          value: true
+
+      - name: returns false for PROP_MATCHES rule when the given prop does not match the regex
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              code: aa
+        input:
+          flag: "feature-flag.matches"
+        expected:
+          value: false
+
+      #####################################
+      ## PROP_DOES_NOT_MATCH -- the regex is a+b+  ##
+      #####################################
+
+      - name: returns true for PROP_DOES_NOT_MATCH rule when the given prop does not match the regex
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              code: b
+        input:
+          flag: "feature-flag.does-not-match"
+        expected:
+          value: true
+
+      - name: returns false for PROP_DOES_NOT_MATCH rule when the given prop matches the regex
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              code: aabb
+        input:
+          flag: "feature-flag.does-not-match"
+        expected:
+          value: false
+
+
+      #####################################
+      ## PROP_SEMVER_EQUAL -- the version is 2.0.0  ##
+      #####################################
+
+      - name: returns true for PROP_SEMVER_EQUAL rule when the given prop equals the version
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0"
+        input:
+          flag: "feature-flag.semver-equal"
+        expected:
+          value: true
+
+      - name: returns false for PROP_SEMVER_EQUAL rule when the given prop does not equal the version
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.1"
+        input:
+          flag: "feature-flag.semver-equal"
+        expected:
+          value: false
+
+      - name: returns false for PROP_SEMVER_EQUAL rule when the given prop is not a valid semver
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0"
+        input:
+          flag: "feature-flag.semver-equal"
+        expected:
+          value: false
+
+
+      #####################################
+      ## PROP_SEMVER_LESS_THAN -- the version is 2.0.0  ##
+      #####################################
+
+      - name: returns true for PROP_SEMVER_LESS_THAN rule when the given prop is less than 2.0.0
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "1.5.1"
+        input:
+          flag: "feature-flag.semver-less-than"
+        expected:
+          value: true
+
+      - name: returns false for PROP_SEMVER_LESS_THAN rule when the given prop equals the version
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0"
+        input:
+          flag: "feature-flag.semver-less-than"
+        expected:
+          value: false
+
+      - name: returns false for PROP_SEMVER_LESS_THAN rule when the given prop is greater than the version
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.2.1"
+        input:
+          flag: "feature-flag.semver-less-than"
+        expected:
+          value: false
+
+      #####################################
+      ## PROP_SEMVER_GREATER_THAN -- the version is 2.0.0  ##
+      #####################################
+
+      - name: returns true for PROP_SEMVER_GREATER_THAN rule when the given prop is greater than 2.0.0
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.5.1"
+        input:
+          flag: "feature-flag.semver-greater-than"
+        expected:
+          value: true
+
+      - name: returns false for PROP_SEMVER_GREATER_THAN rule when the given prop equals the version
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0"
+        input:
+          flag: "feature-flag.semver-greater-than"
+        expected:
+          value: false
+
+      - name: returns false for PROP_SEMVER_EQUAL rule when the given prop is less than the version
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "0.0.5"
+        input:
+          flag: "feature-flag.semver-greater-than"
+        expected:
+          value: false

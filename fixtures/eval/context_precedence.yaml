@@ -1,0 +1,260 @@
+---
+tests:
+  # enabled tests
+  - cases:
+    - name: returns the correct `flag` value using the global context (1)
+      client: feature_flag_client
+      function: enabled
+      contexts:
+        global:
+          user:
+            isHuman: "verified"
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: true
+      type: BOOLEAN
+    - name: returns the correct `flag` value using the global context (2)
+      client: feature_flag_client
+      function: enabled
+      contexts:
+        global:
+          user:
+            isHuman: "?"
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: false
+      type: BOOLEAN
+    - name: returns the correct `flag` value when local context clobbers global context (1)
+      client: feature_flag_client
+      function: enabled
+      contexts:
+        global:
+          user:
+            isHuman: "?"
+        local:
+          user:
+            isHuman: "verified"
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: true
+      type: BOOLEAN
+    - name: returns the correct `flag` value when local context clobbers global context (2)
+      client: feature_flag_client
+      function: enabled
+      contexts:
+        global:
+          user:
+            isHuman: "verified"
+        local:
+          user:
+            isHuman: "?"
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: false
+    - name: returns the correct `flag` value when block context clobbers global context (1)
+      contexts:
+        global:
+          user:
+            isHuman: "verified"
+        block:
+          user:
+            isHuman: "?"
+      client: feature_flag_client
+      function: enabled
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: false
+      type: BOOLEAN
+    - name: returns the correct `flag` value when block context clobbers global context (2)
+      contexts:
+        global:
+          user:
+            isHuman: "?"
+        block:
+          user:
+            isHuman: "verified"
+      client: feature_flag_client
+      function: enabled
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: true
+      type: BOOLEAN
+    - name: returns the correct `flag` value when local context clobbers block context (1)
+      contexts:
+        block:
+          user:
+            isHuman: "verified"
+        local:
+          user:
+            isHuman: "?"
+      client: feature_flag_client
+      function: enabled
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: false
+      type: BOOLEAN
+    - name: returns the correct `flag` value when local context clobbers block context (2)
+      contexts:
+        block:
+          user:
+            isHuman: "?"
+        local:
+          user:
+            isHuman: "verified"
+      client: feature_flag_client
+      function: enabled
+      input:
+        flag: "mixed.case.property.name"
+      expected:
+        value: true
+      type: BOOLEAN
+
+  # get tests
+  - cases:
+    - name: returns the correct `get` value using the global context (1)
+      client: config_client
+      function: get
+      contexts:
+        global:
+          user:
+            email: "test@prefab.cloud"
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "override"
+      type: STRING
+    - name: returns the correct `get` value using the global context (2)
+      client: config_client
+      function: get
+      contexts:
+        global:
+          user:
+            email: "test@example.com"
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "default"
+      type: STRING
+    - name: returns the correct `get` value using the global context and api context (1)
+      client: config_client
+      function: get
+      contexts:
+        # API context is omitted since it is provided by the API
+        global:
+          user:
+            email: "test@prefab.cloud"
+      input:
+        key: "basic.rule.config.with.api.conditional"
+      expected:
+        value: "override"
+      type: STRING
+    - name: returns the correct `get` value using the global context and api context (2)
+      client: config_client
+      function: get
+      contexts:
+        # API context is omitted since it is provided by the API
+        global:
+          user:
+            email: "test@example.com"
+      input:
+        key: "basic.rule.config.with.api.conditional"
+      expected:
+        value: "api-override"
+      type: STRING
+    - name: returns the correct `get` value when local context clobbers global context (1)
+      client: config_client
+      function: get
+      contexts:
+        global:
+          user:
+            email: "test@example.com"
+        local:
+          user:
+            email: "test@prefab.cloud"
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "override"
+      type: STRING
+    - name: returns the correct `get` value when local context clobbers global context (2)
+      client: config_client
+      function: get
+      contexts:
+        global:
+          user:
+            email: "test@prefab.cloud"
+        local:
+          user:
+            email: "test@example.com"
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "default"
+      type: STRING
+    - name: returns the correct `get` value when block context clobbers global context (1)
+      contexts:
+        global:
+          user:
+            email: "test@prefab.cloud"
+        block:
+          user:
+            email: "test@example.com"
+      client: config_client
+      function: get
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "default"
+      type: STRING
+    - name: returns the correct `get` value when block context clobbers global context (2)
+      contexts:
+        global:
+          user:
+            email: "test@example.com"
+        block:
+          user:
+            email: "test@prefab.cloud"
+      client: config_client
+      function: get
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "override"
+      type: STRING
+    - name: returns the correct `get` value when local context clobbers block context (1)
+      contexts:
+        block:
+          user:
+            email: "test@prefab.cloud"
+        local:
+          user:
+            email: "test@example.com"
+      client: config_client
+      function: get
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "default"
+      type: STRING
+    - name: returns the correct `get` value when local context clobbers block context (2)
+      contexts:
+        block:
+          user:
+            email: "test@example.com"
+        local:
+          user:
+            email: "test@prefab.cloud"
+      client: config_client
+      function: get
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "override"
+      type: STRING

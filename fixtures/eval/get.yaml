@@ -1,0 +1,223 @@
+---
+function: get
+tests:
+  - cases:
+      - name: get returns a found value for key
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "my-test-key"
+        expected:
+          value: "my-test-value"
+
+      - name: get returns nil if value not found
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "my-missing-key"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: get returns a default for a missing value if a default is given
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "my-missing-key"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: get ignores a provided default if the key is found
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "my-test-key"
+          default: "DEFAULT"
+        expected:
+          value: "my-test-value"
+
+      - name: get can return a double
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "my-double-key"
+        expected:
+          value: 9.95
+
+      - name: get can return a string list
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "my-string-list-key"
+        expected:
+          value:
+            - a
+            - b
+            - c
+
+      - name: can return an override based on the default context
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "my-overridden-key"
+        expected:
+          value: "overridden"
+
+      - name: can return a value provided by an environment variable
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "prefab.secrets.encryption.key"
+        expected:
+          value: "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221"
+
+
+      - name: can return a value provided by an environment variable after type coercion
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "provided.a.number"
+        expected:
+          value: 1234
+
+      - name: can decrypt and return a secret value (with decryption key in in env var)
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "a.secret.config"
+        expected:
+          value: "hello.world"
+
+      - name: duration 200 ms
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT0.2S"
+        expected:
+          millis: 200
+
+      - name: duration 90S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT90S"
+        expected:
+          millis: 90000
+
+      - name: duration 1.5M
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT1.5M"
+        expected:
+          millis: 90000
+
+      - name: duration 0.5H
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT0.5H"
+        expected:
+          millis: 1800000
+
+      - name: duration test.duration.P1DT6H2M1.5S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.P1DT6H2M1.5S"
+        expected:
+          millis: 108121500
+
+      - name: json test
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "test.json"
+        expected:
+          value:
+            a: 1
+            b: c
+
+      - name: list on left side test (1)
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "left.hand.list.test"
+        contexts:
+          local:
+            user:
+              name: james
+              aka:
+                - happy
+                - sleepy
+        expected:
+          value: "correct"
+
+      - name: list on left side test (2)
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "left.hand.list.test"
+        contexts:
+          local:
+            user:
+              name: james
+              aka:
+                - a
+                - b
+        expected:
+          value: "default"
+
+      - name: list on left side test opposite (1)
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "left.hand.test.opposite"
+        contexts:
+          local:
+            user:
+              name: james
+              aka:
+                - happy
+                - sleepy
+        expected:
+          value: "default"
+
+      - name: list on left side test (3)
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "left.hand.test.opposite"
+        contexts:
+          local:
+            user:
+              name: james
+              aka:
+                - a
+                - b
+        expected:
+          value: "correct"
+
+

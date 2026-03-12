@@ -1,0 +1,40 @@
+---
+function: get
+tests:
+  - cases:
+    - name: weighted value is consistent 1
+      client: config_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            tracking_id: "a72c15f5"
+      input:
+        flag: "feature-flag.weighted"
+      expected:
+        value: 1
+    - name: weighted value is consistent 2
+      client: config_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        flag: "feature-flag.weighted"
+      expected:
+        value: 2
+    - name: weighted value is consistent 3
+      client: config_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            tracking_id: "8f414100"
+      input:
+        flag: "feature-flag.weighted"
+      expected:
+        value: 3

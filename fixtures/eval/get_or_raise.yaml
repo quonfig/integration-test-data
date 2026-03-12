@@ -1,0 +1,85 @@
+---
+function: get_or_raise
+# note in java get_or_raise is implemented as liveString which doesn't take a context argument
+tests:
+  - cases:
+    - name: get_or_raise can raise an error if value not found
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "my-missing-key"
+      expected:
+        status: raise
+        error: missing_default
+        message: "No value found for key 'my-missing-key'"
+
+    - name: get_or_raise returns a default value instead of raising
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "my-missing-key"
+        default: "DEFAULT"
+      expected:
+        value: "DEFAULT"
+
+    - name: get_or_raise raises the correct error if it doesn't raise on init timeout
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "any-key"
+      expected:
+        status: raise
+        error: missing_default
+        message: "No value found for key 'any-key'"
+      client_overrides:
+        initialization_timeout_sec: 0.01
+        prefab_api_url: "https://app.staging-prefab.cloud"
+        on_init_failure: :return
+
+    - name: get_or_raise can raise an error if the client does not initialize in time
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "any-key"
+      expected:
+        status: raise
+        error: initialization_timeout
+        message: "Prefab couldn't initialize in 0.01 second timeout. Trying to fetch key `any-key`."
+      client_overrides:
+        initialization_timeout_sec: 0.01
+        prefab_api_url: "https://app.staging-prefab.cloud"
+        on_init_failure: :raise
+
+    - name: raises an error if a config is provided by a missing environment variable
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "provided.by.missing.env.var"
+      expected:
+        status: raise
+        error: missing_env_var
+
+    - name: raises an error if an env-var-provided config cannot be coerced to configured type
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "provided.not.a.number"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error for decryption failure
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "a.broken.secret.config"
+      expected:
+        status: raise
+        error: unable_to_decrypt

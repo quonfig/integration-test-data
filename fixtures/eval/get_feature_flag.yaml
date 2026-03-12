@@ -1,0 +1,25 @@
+---
+function: get_feature_flag
+tests:
+  - cases:
+    - name: get returns the underlying value for a feature flag
+      client: feature_flag_client
+      function: get
+      type: INT
+      input:
+        flag: "feature-flag.integer"
+      expected:
+        value: 3
+
+    - name: get returns the underlying value for a feature flag that matches the highest precedent rule
+      client: feature_flag_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            key: "michael"
+      input:
+        flag: "feature-flag.integer"
+      expected:
+        value: 5
