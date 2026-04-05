@@ -1,0 +1,66 @@
+function: init
+tests:
+  - cases:
+      - name: "datadir with environment option gets environment-specific value"
+        function: get
+        type: STRING
+        input:
+          key: "james.test.key"
+        client_overrides:
+          datadir: "integration-tests"
+          environment: "Production"
+        expected:
+          value: "test4"
+
+      - name: "datadir with QUONFIG_ENVIRONMENT env var gets environment-specific value"
+        function: get
+        type: STRING
+        input:
+          key: "james.test.key"
+        client_overrides:
+          datadir: "integration-tests"
+        env_vars:
+          QUONFIG_ENVIRONMENT: "Production"
+        expected:
+          value: "test4"
+
+      - name: "environment option supersedes QUONFIG_ENVIRONMENT env var"
+        function: get
+        type: STRING
+        input:
+          key: "james.test.key"
+        client_overrides:
+          datadir: "integration-tests"
+          environment: "Production"
+        env_vars:
+          QUONFIG_ENVIRONMENT: "nonexistent"
+        expected:
+          value: "test4"
+
+      - name: "config without environment override returns default value"
+        function: get
+        type: STRING
+        input:
+          key: "config.with.only.default.env.row"
+        client_overrides:
+          datadir: "integration-tests"
+          environment: "Production"
+        expected:
+          value: "hello from no env row"
+
+      - name: "datadir without environment fails to init"
+        function: init
+        client_overrides:
+          datadir: "integration-tests"
+        expected:
+          status: raise
+          error: missing_environment
+
+      - name: "datadir with invalid environment fails to init"
+        function: init
+        client_overrides:
+          datadir: "integration-tests"
+          environment: "nonexistent"
+        expected:
+          status: raise
+          error: invalid_environment
