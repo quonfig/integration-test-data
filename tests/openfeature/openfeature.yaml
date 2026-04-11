@@ -1,0 +1,163 @@
+---
+# OpenFeature provider test cases.
+#
+# These cases are tagged `sdk: openfeature` so the existing native SDK test
+# generators (sdk-node, sdk-go, etc.) ignore them. They are consumed only by
+# OpenFeature provider integration test suites.
+#
+# Format extensions vs. tests/eval/:
+#
+#   sdk: openfeature           -- marks cases as OF-only (native generators skip)
+#   function: <of_method>      -- the OF provider method under test:
+#                                   resolveObjectValue, resolveStringValue,
+#                                   resolveBooleanValue, resolveNumberValue
+#   of_context:                -- flat dot-notation context as the OF SDK sees it
+#                                 (before the provider maps it to Quonfig's nested form)
+#   provider_options:          -- provider constructor options (e.g. targetingKeyMapping)
+#   expected.reason:           -- expected OF reason string (STATIC, TARGETING_MATCH,
+#                                   SPLIT, DEFAULT, ERROR)
+#
+# Fixture data used:
+#   my-string-list-key (existing)   -- string_list ["a","b","c"]
+#   test.duration.PT1.5M (existing) -- duration PT1.5M (90000 ms)
+#   of.targeting (new)              -- bool config with user.plan == "pro" rule
+#   of.weighted (new)               -- string config, weighted 50/50 on user.id
+
+sdk: openfeature
+tests:
+
+  ##############################################################################
+  ## Case 1: string_list via resolveObjectValue returns JSON array
+  ##
+  ## Quonfig's string_list type has no OpenFeature equivalent. Providers must
+  ## surface it through resolveObjectValue as a JSON array. Calling
+  ## resolveStringValue on a string_list would be a type mismatch (returns
+  ## default with ERROR reason), but resolveObjectValue must succeed.
+  ##############################################################################
+  - cases:
+      - name: "string_list via resolveObjectValue returns JSON array"
+        sdk: openfeature
+        client: config_client
+        function: resolveObjectValue
+        type: STRING_LIST
+        input:
+          key: "my-string-list-key"
+          default: []
+        expected:
+          value:
+            - a
+            - b
+            - c
+          reason: STATIC
+
+  ##############################################################################
+  ## Case 2: duration via resolveStringValue returns ISO 8601 string
+  ##
+  ## Quonfig's duration type has no OpenFeature equivalent. Providers must
+  ## surface it through resolveStringValue as an ISO 8601 duration string.
+  ## The native SDK returns milliseconds; the OF provider layer must convert.
+  ## test.duration.PT1.5M stores value "PT1.5M" = 90000 ms.
+  ##############################################################################
+  - cases:
+      - name: "duration via resolveStringValue returns ISO 8601 string"
+        sdk: openfeature
+        client: config_client
+        function: resolveStringValue
+        type: DURATION
+        input:
+          key: "test.duration.PT1.5M"
+          default: "PT0S"
+        expected:
+          value: "PT1.5M"
+          reason: STATIC
+
+  ##############################################################################
+  ## Case 3: Missing key with OF default returns default, not error
+  ##
+  ## OpenFeature requires providers to return the caller-supplied default when
+  ## a flag is not found (reason: DEFAULT), rather than throwing. This is the
+  ## primary behavioral difference from the native SDK's onNoDefault: error mode.
+  ##############################################################################
+  - cases:
+      - name: "missing key returns OF default with reason DEFAULT, not an error"
+        sdk: openfeature
+        client: config_client
+        function: resolveBooleanValue
+        type: BOOLEAN
+        input:
+          key: "of.key.that.does.not.exist"
+          default: false
+        expected:
+          value: false
+          reason: DEFAULT
+
+  ##############################################################################
+  ## Case 4: Dot-notation context routes to targeting rule
+  ##
+  ## OF context is a flat key-value bag. The provider splits on the first dot
+  ## to reconstruct Quonfig's nested namespace model:
+  ##   "user.plan" -> namespace "user", key "plan"
+  ##
+  ## of.targeting has rule: user.plan IS_ONE_OF ["pro"] -> true, else false.
+  ## Passing { "user.plan": "pro" } in OF flat context must reach the rule.
+  ##############################################################################
+  - cases:
+      - name: "dot-notation OF context routes to targeting rule (match)"
+        sdk: openfeature
+        client: config_client
+        function: resolveBooleanValue
+        type: BOOLEAN
+        of_context:
+          "user.plan": "pro"
+        input:
+          key: "of.targeting"
+          default: false
+        expected:
+          value: true
+          reason: TARGETING_MATCH
+
+      - name: "dot-notation OF context routes to targeting rule (no match)"
+        sdk: openfeature
+        client: config_client
+        function: resolveBooleanValue
+        type: BOOLEAN
+        of_context:
+          "user.plan": "free"
+        input:
+          key: "of.targeting"
+          default: false
+        expected:
+          value: false
+          reason: STATIC
+
+  ##############################################################################
+  ## Case 5: targetingKey maps to configured property for weighted value bucketing
+  ##
+  ## OF context's `targetingKey` has no direct Quonfig equivalent. The provider
+  ## option `targetingKeyMapping` (default: "user.id") controls which Quonfig
+  ## context property receives the targeting key value.
+  ##
+  ## of.weighted has weighted_values bucketed on user.id (50% variant-a, 50% variant-b).
+  ## With targetingKeyMapping: "user.id" and targetingKey: "user-123":
+  ##   hash("of.weighted" + "user-123") = 0.0773 -> threshold 7728 < 50000 -> variant-a
+  ##
+  ## The test confirms that targetingKey flows through the mapping and reaches
+  ## the hash function -- not that the hash function itself is correct (that is
+  ## covered by get_weighted_values.yaml).
+  ##############################################################################
+  - cases:
+      - name: "targetingKey maps to user.id via targetingKeyMapping for bucketing"
+        sdk: openfeature
+        client: config_client
+        function: resolveStringValue
+        type: STRING
+        of_context:
+          targetingKey: "user-123"
+        provider_options:
+          targetingKeyMapping: "user.id"
+        input:
+          key: "of.weighted"
+          default: "variant-b"
+        expected:
+          value: "variant-a"
+          reason: SPLIT
