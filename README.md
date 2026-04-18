@@ -24,7 +24,7 @@ integration-test-data/
 │       ├── log-levels/      # Log level JSON files
 │       ├── segments/        # Segment JSON files
 │       └── schemas/         # Schema JSON files
-├── environments.json        # Maps environment IDs to names
+├── quonfig.json             # Lists valid environments (e.g. {"environments": ["Production"]})
 └── .claude/
     └── skills/
         └── verify-sdks.md   # Skill to check all SDKs have generated tests
