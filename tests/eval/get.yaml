@@ -156,6 +156,17 @@ tests:
             a: 1
             b: c
 
+      - name: get returns a native json object (not a stringified payload)
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "test.json"
+        expected:
+          value:
+            a: 1
+            b: "c"
+
       - name: list on left side test (1)
         client: config_client
         function: get
