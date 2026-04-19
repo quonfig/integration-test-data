@@ -1,0 +1,54 @@
+{
+  "id": "17542594261496083",
+  "projectId": "124",
+  "key": "segment-with-and-conditions",
+  "type": "segment",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "propertyName": "user.key",
+            "operator": "PROP_IS_ONE_OF",
+            "valueToMatch": {
+              "type": "string_list",
+              "value": [
+                "michael",
+                "lauren"
+              ]
+            }
+          },
+          {
+            "propertyName": "domain",
+            "operator": "PROP_IS_ONE_OF",
+            "valueToMatch": {
+              "type": "string_list",
+              "value": [
+                "gmail.com",
+                "prefab.cloud",
+                "reforge.com"
+              ]
+            }
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": true
+        }
+      },
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

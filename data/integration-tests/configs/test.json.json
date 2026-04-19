@@ -1,0 +1,46 @@
+{
+  "id": "17676470570618395",
+  "projectId": "124",
+  "key": "test.json",
+  "type": "config",
+  "valueType": "json",
+  "sendToClientSdk": true,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "json",
+          "value": {
+            "a": 1,
+            "b": "c"
+          }
+        }
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "env-6",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "json",
+            "value": {
+              "hello": "world"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

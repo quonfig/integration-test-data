@@ -1,0 +1,76 @@
+{
+  "id": "16826282806608245",
+  "projectId": "124",
+  "key": "feature-flag.string-list",
+  "type": "feature_flag",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "draftId": "448",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "team_name",
+              "operator": "PROP_IS_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "1",
+                  "true",
+                  "hello"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": true
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": false
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "bool",
+        "value": true
+      }
+    },
+    {
+      "value": {
+        "type": "bool",
+        "value": false
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "id": "17083651319844891",
+  "projectId": "124",
+  "key": "log-level.struct-logger-example",
+  "type": "log_level",
+  "valueType": "log_level",
+  "sendToClientSdk": false,
+  "draftId": "561",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "log_level",
+            "value": "DEBUG"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "log_level",
+          "value": "WARN"
+        }
+      }
+    ]
+  }
+}

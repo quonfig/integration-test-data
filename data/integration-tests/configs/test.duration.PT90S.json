@@ -1,0 +1,24 @@
+{
+  "id": "17119857273729596",
+  "projectId": "124",
+  "key": "test.duration.PT90S",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "draftId": "568",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "duration",
+          "value": "PT90S"
+        }
+      }
+    ]
+  }
+}

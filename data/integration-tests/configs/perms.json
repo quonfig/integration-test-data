@@ -1,0 +1,39 @@
+{
+  "id": "17543376007306350",
+  "projectId": "124",
+  "key": "perms",
+  "type": "config",
+  "valueType": "json",
+  "sendToClientSdk": false,
+  "schemaKey": "permissions",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "json",
+          "value": {
+            "permissions": {
+              "billing-admin": {
+                "title": "Billing Admin",
+                "description": "description"
+              },
+              "user-manager": {
+                "title": "User Manager",
+                "description": "Can manage users"
+              }
+            },
+            "roles": {
+              "saas.admin": ["billing-admin"],
+              "saas.superadmin": ["billing-admin", "user-manager"]
+            }
+          }
+        }
+      }
+    ]
+  }
+}

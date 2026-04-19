@@ -1,0 +1,27 @@
+{
+  "id": "17019044043882539",
+  "projectId": "124",
+  "key": "provided.not.a.number",
+  "type": "config",
+  "valueType": "int",
+  "sendToClientSdk": false,
+  "draftId": "551",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "provided",
+          "value": {
+            "source": "ENV_VAR",
+            "lookup": "NOT_A_NUMBER"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "17577345667025320",
+  "projectId": "124",
+  "key": "my-overridden-key",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "propertyName": "prefab-api-key.user-id",
+            "operator": "PROP_IS_ONE_OF",
+            "valueToMatch": {
+              "type": "string_list",
+              "value": [
+                "4",
+                "3",
+                "1",
+                "5"
+              ]
+            }
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "overridden"
+        }
+      },
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "default"
+        }
+      }
+    ]
+  }
+}

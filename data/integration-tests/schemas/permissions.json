@@ -1,0 +1,27 @@
+{
+  "id": "17543375591048639",
+  "projectId": "124",
+  "key": "permissions",
+  "type": "schema",
+  "valueType": "not_set_value_type",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "schema",
+          "value": {
+            "schemaType": "ZOD",
+            "schema": "z.object({\n  permissions: z.record(\n    z.object({\n      title: z.string(),\n      description: z.string(),\n    })\n  ),\n  roles: z.record(z.array(z.string())),\n});"
+          }
+        }
+      }
+    ]
+  },
+  "schemaUsageMode": "MULTIPLE"
+}

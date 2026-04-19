@@ -1,0 +1,42 @@
+{
+  "id": "16801236076475269",
+  "projectId": "124",
+  "key": "for.sure.unique",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "draftId": "281",
+  "environments": [
+    {
+      "id": "env-228",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "string",
+            "value": "also.def.unique"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": ""
+        }
+      }
+    ]
+  }
+}

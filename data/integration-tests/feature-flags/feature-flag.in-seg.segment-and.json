@@ -1,0 +1,72 @@
+{
+  "id": "16826282797302313",
+  "projectId": "124",
+  "key": "feature-flag.in-seg.segment-and",
+  "type": "feature_flag",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "draftId": "445",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "",
+              "operator": "IN_SEG",
+              "valueToMatch": {
+                "type": "string",
+                "value": "segment-with-and-conditions"
+              }
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": true
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": false
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "bool",
+        "value": true
+      }
+    },
+    {
+      "value": {
+        "type": "bool",
+        "value": false
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

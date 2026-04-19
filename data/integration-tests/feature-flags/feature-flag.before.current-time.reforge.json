@@ -1,0 +1,72 @@
+{
+  "id": "17582972890026397",
+  "projectId": "124",
+  "key": "feature-flag.before.current-time.reforge",
+  "type": "feature_flag",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "reforge.current-time",
+              "operator": "PROP_BEFORE",
+              "valueToMatch": {
+                "type": "int",
+                "value": "2524629600000"
+              }
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": true
+          }
+        },
+        {
+          "criteria": [
+            {
+              "propertyName": "",
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": false
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "bool",
+        "value": false
+      }
+    },
+    {
+      "value": {
+        "type": "bool",
+        "value": true
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

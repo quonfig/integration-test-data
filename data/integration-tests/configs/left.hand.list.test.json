@@ -1,0 +1,60 @@
+{
+  "id": "17192634855475676",
+  "projectId": "124",
+  "key": "left.hand.list.test",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "user.aka",
+              "operator": "PROP_IS_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "lefty",
+                  "sleepy"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "string",
+            "value": "correct"
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "string",
+            "value": "default"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": ""
+        }
+      }
+    ]
+  }
+}

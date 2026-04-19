@@ -1,0 +1,90 @@
+{
+  "id": "17187365156647090",
+  "projectId": "124",
+  "key": "mixed.case.property.name",
+  "type": "feature_flag",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "draftId": "579",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "user.isHuman",
+              "operator": "PROP_IS_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "verified"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": true
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "env-588",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": false
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "bool",
+        "value": false
+      }
+    },
+    {
+      "value": {
+        "type": "bool",
+        "value": true
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

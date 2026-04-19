@@ -1,0 +1,23 @@
+{
+  "id": "17598535701799241",
+  "projectId": "124",
+  "key": "brand.new.double",
+  "type": "config",
+  "valueType": "double",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "double",
+          "value": "123.99"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "17597661836202915",
+  "projectId": "124",
+  "key": "my-string-list-key",
+  "type": "config",
+  "valueType": "string_list",
+  "sendToClientSdk": true,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string_list",
+          "value": [
+            "a",
+            "b",
+            "c"
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "id": "16826282809628991",
+  "projectId": "124",
+  "key": "feature-flag.integer",
+  "type": "feature_flag",
+  "valueType": "int",
+  "sendToClientSdk": false,
+  "draftId": "449",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "user.key",
+              "operator": "PROP_IS_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "michael",
+                  "lauren"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "int",
+            "value": "5"
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "int",
+            "value": "3"
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "int",
+        "value": "0"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "3"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "5"
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "0"
+        }
+      }
+    ]
+  }
+}

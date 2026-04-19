@@ -1,0 +1,24 @@
+{
+  "id": "17598536855461997",
+  "projectId": "124",
+  "key": "confidential.new.string",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "hello.world",
+          "confidential": true
+        }
+      }
+    ]
+  }
+}

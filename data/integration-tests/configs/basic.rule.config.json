@@ -1,0 +1,42 @@
+{
+  "id": "17542677388276591",
+  "projectId": "124",
+  "key": "basic.rule.config",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "propertyName": "user.email",
+            "operator": "PROP_ENDS_WITH_ONE_OF",
+            "valueToMatch": {
+              "type": "string_list",
+              "value": [
+                "@prefab.cloud",
+                "@reforge.com"
+              ]
+            }
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "override"
+        }
+      },
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "default"
+        }
+      }
+    ]
+  }
+}

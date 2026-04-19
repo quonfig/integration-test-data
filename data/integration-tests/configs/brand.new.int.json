@@ -1,0 +1,23 @@
+{
+  "id": "17598536868550736",
+  "projectId": "124",
+  "key": "brand.new.int",
+  "type": "config",
+  "valueType": "int",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "123"
+        }
+      }
+    ]
+  }
+}

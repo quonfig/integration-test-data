@@ -1,0 +1,23 @@
+{
+  "id": "17598536851308540",
+  "projectId": "124",
+  "key": "brand.new.string",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "hello.world"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "17598535800386057",
+  "projectId": "124",
+  "key": "new.schema",
+  "type": "schema",
+  "valueType": "not_set_value_type",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "schema",
+          "value": {
+            "schemaType": "ZOD",
+            "schema": "z.string()"
+          }
+        }
+      }
+    ]
+  },
+  "schemaUsageMode": "MULTIPLE"
+}

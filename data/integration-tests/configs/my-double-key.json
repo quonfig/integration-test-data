@@ -1,0 +1,23 @@
+{
+  "id": "17597137520212434",
+  "projectId": "124",
+  "key": "my-double-key",
+  "type": "config",
+  "valueType": "double",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "double",
+          "value": "9.95"
+        }
+      }
+    ]
+  }
+}

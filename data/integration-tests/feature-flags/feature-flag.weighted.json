@@ -1,0 +1,87 @@
+{
+  "id": "16838163869852699",
+  "projectId": "124",
+  "key": "feature-flag.weighted",
+  "type": "feature_flag",
+  "valueType": "int",
+  "sendToClientSdk": false,
+  "draftId": "450",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "weighted_values",
+            "value": {
+              "weightedValues": [
+                {
+                  "weight": 1000,
+                  "value": {
+                    "type": "int",
+                    "value": "1"
+                  }
+                },
+                {
+                  "weight": 2000,
+                  "value": {
+                    "type": "int",
+                    "value": "3"
+                  }
+                },
+                {
+                  "weight": 97000,
+                  "value": {
+                    "type": "int",
+                    "value": "2"
+                  }
+                }
+              ],
+              "hashByPropertyName": "user.tracking_id"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "int",
+        "value": "1"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "2"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "3"
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "0"
+        }
+      }
+    ]
+  }
+}

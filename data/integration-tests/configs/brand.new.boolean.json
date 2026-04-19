@@ -1,0 +1,23 @@
+{
+  "id": "17598535706635275",
+  "projectId": "124",
+  "key": "brand.new.boolean",
+  "type": "config",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

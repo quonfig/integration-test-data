@@ -1,0 +1,41 @@
+{
+  "id": "18000000000000001",
+  "projectId": "124",
+  "key": "of.targeting",
+  "type": "config",
+  "valueType": "bool",
+  "sendToClientSdk": true,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "propertyName": "user.plan",
+            "operator": "PROP_IS_ONE_OF",
+            "valueToMatch": {
+              "type": "string_list",
+              "value": [
+                "pro"
+              ]
+            }
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": true
+        }
+      },
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

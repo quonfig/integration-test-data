@@ -1,0 +1,95 @@
+{
+  "id": "17542593262219541",
+  "projectId": "124",
+  "key": "feature-flag.properties.negative",
+  "type": "feature_flag",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "domain",
+              "operator": "PROP_IS_NOT_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "gmail.com",
+                  "prefab.cloud",
+                  "reforge.com"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": true
+          }
+        },
+        {
+          "criteria": [
+            {
+              "propertyName": "name",
+              "operator": "PROP_IS_NOT_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "michael",
+                  "jeff",
+                  "jeffrey"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": true
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": false
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "bool",
+        "value": true
+      }
+    },
+    {
+      "value": {
+        "type": "bool",
+        "value": false
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

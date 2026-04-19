@@ -1,0 +1,60 @@
+{
+  "id": "17192648515209388",
+  "projectId": "124",
+  "key": "left.hand.test.opposite",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "user.aka",
+              "operator": "PROP_IS_NOT_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "lefty",
+                  "sleepy"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "string",
+            "value": "correct"
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "string",
+            "value": "default"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": ""
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "17598535718431887",
+  "projectId": "124",
+  "key": "brand.new.json",
+  "type": "config",
+  "valueType": "json",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "json",
+          "value": {
+            "key": "value"
+          }
+        }
+      }
+    ]
+  }
+}

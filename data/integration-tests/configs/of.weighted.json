@@ -1,0 +1,41 @@
+{
+  "id": "18000000000000002",
+  "projectId": "124",
+  "key": "of.weighted",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": true,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "weighted_values",
+          "value": {
+            "weightedValues": [
+              {
+                "weight": 50000,
+                "value": {
+                  "type": "string",
+                  "value": "variant-a"
+                }
+              },
+              {
+                "weight": 50000,
+                "value": {
+                  "type": "string",
+                  "value": "variant-b"
+                }
+              }
+            ],
+            "hashByPropertyName": "user.id"
+          }
+        }
+      }
+    ]
+  }
+}

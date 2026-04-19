@@ -1,0 +1,25 @@
+{
+  "id": "17017945481107357",
+  "projectId": "124",
+  "key": "a.confidential.config",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "draftId": "542",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "some value",
+          "confidential": true
+        }
+      }
+    ]
+  }
+}

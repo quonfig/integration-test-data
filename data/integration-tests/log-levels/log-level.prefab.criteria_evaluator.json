@@ -1,0 +1,61 @@
+{
+  "id": "16838231927121873",
+  "projectId": "124",
+  "key": "log-level.prefab.criteria_evaluator",
+  "type": "log_level",
+  "valueType": "log_level",
+  "sendToClientSdk": false,
+  "draftId": "455",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "user.tracking_id",
+              "operator": "PROP_IS_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "abcd",
+                  "efgh"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "log_level",
+            "value": "INFO"
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "log_level",
+            "value": "WARN"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "log_level",
+          "value": "WARN"
+        }
+      }
+    ]
+  }
+}

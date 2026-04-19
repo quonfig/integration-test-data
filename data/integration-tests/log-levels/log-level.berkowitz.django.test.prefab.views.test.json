@@ -1,0 +1,42 @@
+{
+  "id": "16875407974191449",
+  "projectId": "124",
+  "key": "log-level.berkowitz.django.test.prefab.views.test",
+  "type": "log_level",
+  "valueType": "log_level",
+  "sendToClientSdk": false,
+  "draftId": "461",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "log_level",
+            "value": "DEBUG"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "log_level",
+          "value": "WARN"
+        }
+      }
+    ]
+  }
+}

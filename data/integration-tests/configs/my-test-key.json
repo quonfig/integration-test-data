@@ -1,0 +1,60 @@
+{
+  "id": "17086113399761134",
+  "projectId": "124",
+  "key": "my-test-key",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "draftId": "563",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "my-default-test-value"
+        }
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "namespace.key",
+              "operator": "PROP_IS_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "present"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "string",
+            "value": "namespace-value"
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "string",
+            "value": "my-test-value"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "id": "17338452704081062",
+  "projectId": "124",
+  "key": "jeffreys.test.int",
+  "type": "config",
+  "valueType": "int",
+  "sendToClientSdk": true,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "propertyName": "user.email",
+            "operator": "PROP_IS_ONE_OF",
+            "valueToMatch": {
+              "type": "string_list",
+              "value": [
+                "this.does.not.exist@example.com"
+              ]
+            }
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "98"
+        }
+      },
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "99"
+        }
+      }
+    ]
+  }
+}

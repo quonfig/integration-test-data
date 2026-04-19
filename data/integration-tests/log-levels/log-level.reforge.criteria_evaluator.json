@@ -1,0 +1,60 @@
+{
+  "id": "17542598897222938",
+  "projectId": "124",
+  "key": "log-level.reforge.criteria_evaluator",
+  "type": "log_level",
+  "valueType": "log_level",
+  "sendToClientSdk": false,
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "user.tracking_id",
+              "operator": "PROP_IS_ONE_OF",
+              "valueToMatch": {
+                "type": "string_list",
+                "value": [
+                  "abcd",
+                  "efgh"
+                ]
+              }
+            }
+          ],
+          "value": {
+            "type": "log_level",
+            "value": "INFO"
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "log_level",
+            "value": "WARN"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "log_level",
+          "value": "WARN"
+        }
+      }
+    ]
+  }
+}

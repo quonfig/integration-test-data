@@ -1,0 +1,23 @@
+{
+  "id": "17200424714007390",
+  "projectId": "124",
+  "key": "an.empty.stringlist",
+  "type": "config",
+  "valueType": "string_list",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string_list",
+          "value": []
+        }
+      }
+    ]
+  }
+}

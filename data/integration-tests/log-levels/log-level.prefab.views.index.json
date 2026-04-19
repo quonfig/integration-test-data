@@ -1,0 +1,42 @@
+{
+  "id": "16850587399901479",
+  "projectId": "124",
+  "key": "log-level.prefab.views.index",
+  "type": "log_level",
+  "valueType": "log_level",
+  "sendToClientSdk": false,
+  "draftId": "457",
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "log_level",
+            "value": "TRACE"
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "log_level",
+          "value": "WARN"
+        }
+      }
+    ]
+  }
+}
