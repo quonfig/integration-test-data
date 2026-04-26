@@ -16,11 +16,26 @@ const RUBY_ERRORS: ErrorMap = {
   invalid_environment: 'Quonfig::Errors::InvalidEnvironmentError',
 };
 
+// Node SDK currently raises plain `Error` instances for nearly every
+// failure path (env-var lookups, type coercion, decryption, datadir
+// init, etc). Mapping every YAML error key to "Error" is the truthful
+// reflection of today's surface area; a follow-up will refine these
+// once the SDK adds dedicated error classes.
+const NODE_ERRORS: ErrorMap = {
+  missing_default: 'Error',
+  initialization_timeout: 'Error',
+  missing_env_var: 'Error',
+  unable_to_coerce_env_var: 'Error',
+  unable_to_decrypt: 'Error',
+  missing_environment: 'Error',
+  invalid_environment: 'Error',
+};
+
 const ERROR_MAPS: Record<TargetName, ErrorMap> = {
   ruby: RUBY_ERRORS,
+  node: NODE_ERRORS,
   // Other targets will be filled in by follow-up agents.
   go: {},
-  node: {},
   python: {},
 };
 

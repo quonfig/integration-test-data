@@ -5,6 +5,7 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runRubyTarget } from './targets/ruby.js';
+import { runNodeTarget } from './targets/node.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -48,7 +49,7 @@ function printHelp(): void {
       'Targets:',
       '  ruby     sdk-ruby/test/integration/test_*.rb (Minitest)',
       '  go       not yet implemented',
-      '  node     not yet implemented',
+      '  node     sdk-node/test/integration/*.generated.test.ts (Vitest)',
       '  python   not yet implemented',
       '',
       'Pass --target multiple times to run a subset; default is all.',
@@ -80,8 +81,17 @@ async function main(): Promise<void> {
           }
           break;
         }
+        case 'node': {
+          const outDir = resolve(repoRoot(), '..', 'sdk-node', 'test', 'integration');
+          console.log(`[node] reading ${dataRoot}`);
+          console.log(`[node] writing to ${outDir}`);
+          const result = runNodeTarget(dataRoot, outDir);
+          for (const w of result.written) {
+            console.log(`[node] wrote ${w.path}: ${w.cases} cases`);
+          }
+          break;
+        }
         case 'go':
-        case 'node':
         case 'python':
           console.log(`[${target}] not yet implemented — coming in a follow-up agent.`);
           break;
