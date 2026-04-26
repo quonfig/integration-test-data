@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "generate": "tsx src/index.ts",
+    "verify": "tsx src/verify.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

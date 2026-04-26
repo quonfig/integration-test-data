@@ -6,63 +6,54 @@ paths: ["integration-test-data/**"]
 
 # q-sdks-verify
 
-Verify that every SDK has generated integration tests covering every YAML
-test definition in `integration-test-data/tests/eval/`.
+Real cross-SDK parity gate, plus a GitHub Actions status check.
 
-## Layout (post-unification)
+## When to use
 
-- Skills live in `integration-test-data/.claude/skills/`
-- The single TS generator lives in `integration-test-data/generators/`
-  (one entry point, one target file per SDK under `src/targets/`)
-- Generated test files land in each SDK's repo via the generator's per-target output dir
+- After regenerating per-SDK tests (`npm run generate`)
+- Before merging YAML changes in `integration-test-data/tests/eval/`
+- Periodic audits — confirms every YAML case has a runnable test in every SDK
+  with zero skips and that each SDK's CI on `main` is green
 
-## What this skill does
+## How to run
 
-1. **Discover SDKs**: Find sibling `sdk-*` repos relative to
-   `integration-test-data/`. SDKs without an integration suite
-   (`sdk-javascript`, `sdk-react`) are intentionally out of scope.
+```bash
+cd integration-test-data/generators
+npm run verify
+```
 
-2. **Discover test definitions**: List every YAML in
-   `integration-test-data/tests/eval/`. Those are the source of truth.
+Exits non-zero on any failure. Prints a per-SDK breakdown plus a GitHub
+Actions table. Backed by `src/verify.ts`.
 
-3. **For each in-scope SDK**, look up its expected output directory and
-   filename pattern (see table below) and check:
-   - Is a generated file present for each YAML?
-   - Is the generated file older than its YAML (stale)?
-   - Are there orphan generated files with no matching YAML?
+## What it checks
 
-4. **Report** as a clear table — present, missing, stale, orphan.
+1. **Case-name parity** — every YAML case in `tests/eval/*.yaml` exists
+   verbatim in every SDK's generated file (Ruby, Go, Node, Python). Case
+   names are extracted from the leading `# <name>` / `// <name>` comment
+   the generators emit (Node uses the `it("...", ...)` string).
+2. **Zero-skip rule** — greps each generated file for skip patterns
+   (`skip(`, `pending`, `t.Skip*`, `it.skip`, `describe.skip`, `it.todo`,
+   `pytest.skip(`, `@pytest.mark.skip`, `@unittest.skip`). Any match fails.
+3. **Zero-omission rule** — generated files must contain at least one test;
+   an empty test class fails this check.
+4. **GitHub Actions status** — for each SDK and `integration-test-data`,
+   uses `gh` to fetch the latest run on `main` for every active workflow.
+   Pass requires `status=completed`, `conclusion=success`. Failures,
+   in-progress runs, or missing runs all count as fail.
 
-## File naming conventions
+## What to do when it fails
 
-Wired up in `integration-test-data/generators/src/targets/<lang>.ts`. Match
-the table here against the source of truth in those files.
+| Failure | Fix |
+|---|---|
+| MISSING `<name>` in `<sdk>` | Regenerate that SDK: `npm run generate -- --target=<sdk>` |
+| EXTRA `<name>` in `<sdk>` | Stale generated file — regenerate or delete the orphan |
+| Skip / pending / todo hit | Remove the skip and ship a real assertion |
+| Empty test file | Generator bug — fix the target template, regenerate |
+| GH Action failure | Click the URL, fix the SDK build, push |
+| `gh` not authenticated | `gh auth login`, then re-run |
 
-| SDK       | Output dir                          | Pattern                          |
-|-----------|-------------------------------------|----------------------------------|
-| sdk-ruby  | `test/integration/`                 | `test_<suite>.rb`                |
-| sdk-go    | `internal/fixtures/`                | `<suite>_generated_test.go`     |
-| sdk-node  | `test/integration/`                 | `<suite>.generated.test.ts`     |
-| sdk-python| `tests/integration/`                | `test_<suite>.py`               |
+## Layout
 
-For YAML files with underscores (e.g. `get_or_raise.yaml`), keep them in
-the suite slug as-is: e.g. `test_get_or_raise.rb`,
-`get_or_raise_generated_test.go`, `get_or_raise.generated.test.ts`.
-
-## What to flag
-
-- **MISSING**: YAML exists, no generated file
-- **STALE**: generated file mtime older than the YAML's
-- **ORPHAN**: generated file with no matching YAML
-- **NO TARGET**: SDK is in scope but `src/targets/<lang>.ts` doesn't exist yet
-
-## Suggested next steps
-
-If you find gaps:
-
-1. From `integration-test-data/generators/`, run `npm run generate -- --target=<sdk>`
-2. Run the SDK's test suite to confirm the new tests load and report honestly
-3. Re-run this skill to confirm coverage
-
-(Parity / shape checking against the YAML's `expected.value` is a
-follow-up — this skill currently checks file presence + freshness only.)
+- Skill lives at `integration-test-data/.claude/skills/q-sdks-verify/SKILL.md`
+- Verifier lives at `integration-test-data/generators/src/verify.ts`
+- Output dir conventions live in `integration-test-data/generators/src/targets/<lang>.ts`
