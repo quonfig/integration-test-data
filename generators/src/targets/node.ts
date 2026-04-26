@@ -176,11 +176,14 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
 
 /**
  * Decide whether the generated `it(...)` callback should be `async`. Datadir
- * cases drive `Quonfig#init` (Promise) and need async; the rest can stay
- * synchronous.
+ * cases drive `Quonfig#init` (Promise) and need async; client-construction
+ * cases (init-timeout) likewise drive Promise-returning helpers.
  */
-function callbackSignature(yamlBasename: string, _kase: YamlCase): string {
+function callbackSignature(yamlBasename: string, kase: YamlCase): string {
   if (yamlBasename === 'datadir_environment.yaml') {
+    return 'async ()';
+  }
+  if (hasClientConstructionOverrides(kase.client_overrides)) {
     return 'async ()';
   }
   return '()';
@@ -209,6 +212,13 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
 
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
     return renderPostBody(kase);
+  }
+
+  // Cases that override real-client-construction params (init timeout,
+  // fake api URL, init-failure policy) need a real `new Quonfig({...})`
+  // so the SDK's init/timeout path actually runs.
+  if (hasClientConstructionOverrides(kase.client_overrides)) {
+    return renderClientConstructionBody(kase, expected);
   }
 
   // raise expectation
@@ -278,6 +288,23 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
   const ctxLit = renderContextsLiteral(merged);
   const keyLit = tsStringLiteral(key);
   const expLit = tsLiteral(expectedValue);
+  const fn = (kase.function ?? '').toString();
+  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
+  const def = (input as { default?: unknown }).default;
+
+  // Pick the call-site shape:
+  //   function: enabled  → enabledCase(key, ctx) — coerces non-bool → false
+  //   input.default      → getCase(key, ctx, default) — public Quonfig#get
+  //   otherwise          → resolveCase(key, ctx) — direct evaluator/resolver
+  let actualExpr: string;
+  if (fn === 'enabled') {
+    actualExpr = `enabledCase(${keyLit}, ${ctxLit})`;
+    assertion = 'toBe';
+  } else if (hasDefault) {
+    actualExpr = `getCase(${keyLit}, ${ctxLit}, ${tsLiteral(def)})`;
+  } else {
+    actualExpr = `resolveCase(${keyLit}, ${ctxLit})`;
+  }
 
   let body = '';
   if (envVars && typeof envVars === 'object') {
@@ -285,16 +312,77 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
     body += `    const __envVars = ${tsLiteral(stringifyEnvVars(envVars))};\n`;
     body += `    for (const [k, v] of Object.entries(__envVars)) { __prev[k] = process.env[k]; process.env[k] = v; }\n`;
     body += `    try {\n`;
-    body += `      const __actual = resolveCase(${keyLit}, ${ctxLit});\n`;
+    body += `      const __actual = ${actualExpr};\n`;
     body += `      expect(__actual).${assertion}(${expLit});\n`;
     body += `    } finally {\n`;
     body += `      for (const [k, v] of Object.entries(__prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }\n`;
     body += `    }\n`;
   } else {
-    body += `    const __actual = resolveCase(${keyLit}, ${ctxLit});\n`;
+    body += `    const __actual = ${actualExpr};\n`;
     body += `    expect(__actual).${assertion}(${expLit});\n`;
   }
   return { body, usesMergeContexts: usesContextsType, usesContextsType };
+}
+
+function hasClientConstructionOverrides(overrides: unknown): boolean {
+  if (!overrides || typeof overrides !== 'object') return false;
+  const o = overrides as Record<string, unknown>;
+  return (
+    'initialization_timeout_sec' in o ||
+    'prefab_api_url' in o ||
+    'on_init_failure' in o
+  );
+}
+
+/**
+ * Render a body that constructs a real `new Quonfig({...})` with init-timeout
+ * / fake api-url overrides. Asserts the expected raise (e.g.
+ * initialization_timeout) or value depending on the YAML.
+ */
+function renderClientConstructionBody(kase: YamlCase, expected: { status?: string; error?: string; value?: unknown }): RenderedBody {
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const fn = (kase.function ?? 'get').toString();
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('client-construction case has no input.key/flag');
+  }
+  const keyLit = tsStringLiteral(key);
+  const errKey = (expected.error ?? '').toString();
+  const onInit = (() => {
+    const v = overrides.on_init_failure;
+    if (typeof v !== 'string') return 'raise';
+    return v.replace(/^:/, '');
+  })();
+  const timeout =
+    typeof overrides.initialization_timeout_sec === 'number'
+      ? overrides.initialization_timeout_sec
+      : 0.01;
+  const apiURL =
+    typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : 'http://127.0.0.1:1';
+
+  const isRaise = expected.status === 'raise';
+  let body = '';
+  if (isRaise && errKey === 'initialization_timeout') {
+    body += `    await assertInitializationTimeoutError(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)});\n`;
+    return { body, usesMergeContexts: false, usesContextsType: false };
+  }
+  if (isRaise) {
+    const errClass = lookupErrorClass('node', errKey);
+    if (!errClass) {
+      throw new Error(
+        `no Node error mapping for expected.error="${errKey}" in client-construction case.`,
+      );
+    }
+    body += `    await assertClientConstructionRaises(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)}, ${tsStringLiteral(fn)}, ${errClass});\n`;
+    return { body, usesMergeContexts: false, usesContextsType: false };
+  }
+  // happy path
+  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    body += `    expect(await assertClientConstructionValue(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)}, ${tsStringLiteral(fn)})).toEqual(${tsLiteral(expected.value)});\n`;
+    return { body, usesMergeContexts: false, usesContextsType: false };
+  }
+  throw new Error('client-construction case has no expected.value or expected.error');
 }
 
 /** True iff the merged ContextTypes map has at least one tier. */
@@ -451,6 +539,15 @@ function renderPostBody(kase: YamlCase): RenderedBody {
   return { body, usesMergeContexts: usesContextsType, usesContextsType };
 }
 
+/** Returns true iff any rendered case body uses a client-construction helper. */
+function suiteUsesClientConstruction(_suite: SuiteEntry, rendered: RenderedCase[]): boolean {
+  return rendered.some((r) =>
+    r.source.includes('assertInitializationTimeoutError(') ||
+    r.source.includes('assertClientConstructionRaises(') ||
+    r.source.includes('assertClientConstructionValue('),
+  );
+}
+
 function stringifyEnvVars(env: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
@@ -510,13 +607,20 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     // Universal eval/raise helpers shared by every non-post suite. These
     // close over the suite-wide `store`, `evaluator`, `resolver`, `envID`
     // imported from setup.ts.
+    //
+    // resolveCase  → no default. Returns the resolved value or undefined
+    //                when the key is missing (no synthetic fallback).
+    // getCase      → with default. Routes through the public Quonfig#get
+    //                semantic: missing key → default, found key → resolved
+    //                value (default ignored).
+    // enabledCase  → function: enabled. Returns the resolved value if it's
+    //                a boolean, else false (matches Quonfig#isFeatureEnabled).
+    // runRaiseCase → resolver-time raise (env var missing, decryption error).
     out += `function resolveCase(key: string, contexts: any): unknown {\n`;
     out += `  const cfg = store.get(key);\n`;
-    out += `  if (!cfg) throw new Error(\`config not found for key: \${key}\`);\n`;
+    out += `  if (!cfg) return undefined;\n`;
     out += `  const match = evaluator.evaluateConfig(cfg, envID, contexts);\n`;
-    out += `  if (!match.isMatch || !match.value) {\n`;
-    out += `    throw new Error(\`no match for key: \${key}\`);\n`;
-    out += `  }\n`;
+    out += `  if (!match.isMatch || !match.value) return undefined;\n`;
     out += `  const { resolved } = resolver.resolveValue(\n`;
     out += `    match.value,\n`;
     out += `    cfg.key,\n`;
@@ -526,14 +630,61 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     out += `  );\n`;
     out += `  return resolver.unwrapValue(resolved);\n`;
     out += `}\n\n`;
+    out += `function getCase(key: string, contexts: any, defaultValue: unknown): unknown {\n`;
+    out += `  const v = resolveCase(key, contexts);\n`;
+    out += `  return v === undefined ? defaultValue : v;\n`;
+    out += `}\n\n`;
+    out += `function enabledCase(key: string, contexts: any): boolean {\n`;
+    out += `  const v = resolveCase(key, contexts);\n`;
+    out += `  if (typeof v === "boolean") return v;\n`;
+    out += `  if (v === "true") return true;\n`;
+    out += `  if (v === "false") return false;\n`;
+    out += `  return false;\n`;
+    out += `}\n\n`;
     out += `function runRaiseCase(\n`;
     out += `  key: string,\n`;
     out += `  contexts: any,\n`;
     out += `  _errorKey: string,\n`;
     out += `  errClass: ErrorConstructor,\n`;
     out += `): void {\n`;
-    out += `  expect(() => resolveCase(key, contexts)).toThrow(errClass);\n`;
+    out += `  expect(() => {\n`;
+    out += `    const cfg = store.get(key);\n`;
+    out += `    if (!cfg) throw new Error(\`config not found for key: \${key}\`);\n`;
+    out += `    const match = evaluator.evaluateConfig(cfg, envID, contexts);\n`;
+    out += `    if (!match.isMatch || !match.value) throw new Error(\`no match for key: \${key}\`);\n`;
+    out += `    const { resolved } = resolver.resolveValue(\n`;
+    out += `      match.value, cfg.key, cfg.valueType, envID, contexts\n`;
+    out += `    );\n`;
+    out += `    return resolver.unwrapValue(resolved);\n`;
+    out += `  }).toThrow(errClass);\n`;
     out += `}\n\n`;
+    // Client-construction helpers: only emitted for suites that use them
+    // (the generator can't easily detect, so we emit unconditionally —
+    // unused fns are harmless in TS strict mode because the imports
+    // aren't broken, and tree-shaking handles the binary).
+    if (suiteUsesClientConstruction(suite, result.rendered)) {
+      out += `async function assertInitializationTimeoutError(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string): Promise<void> {\n`;
+      out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
+      out += `  // Use 10.255.255.1 (RFC5737-style unreachable IP) so the fetch hangs and the init timer wins.\n`;
+      out += `  const targetURL = "http://10.255.255.1:8080";\n`;
+      out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)) });\n`;
+      out += `  await expect(client.init()).rejects.toThrow(/initialization|timeout|timed out/i);\n`;
+      out += `}\n\n`;
+      out += `async function assertClientConstructionRaises(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string, _fn: string, errClass: any): Promise<void> {\n`;
+      out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
+      out += `  const targetURL = "http://10.255.255.1:8080";\n`;
+      out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)), onNoDefault: "error" });\n`;
+      out += `  try { await client.init(); } catch {}\n`;
+      out += `  expect(() => client.get(key)).toThrow(errClass);\n`;
+      out += `}\n\n`;
+      out += `async function assertClientConstructionValue(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string, _fn: string): Promise<unknown> {\n`;
+      out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
+      out += `  const targetURL = "http://10.255.255.1:8080";\n`;
+      out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)) });\n`;
+      out += `  try { await client.init(); } catch {}\n`;
+      out += `  return client.get(key);\n`;
+      out += `}\n\n`;
+    }
   }
 
   out += `describe(${tsStringLiteral(suite.describe)}, () => {\n`;

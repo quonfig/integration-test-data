@@ -162,6 +162,15 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
     return renderDatadirBody(kase);
   }
 
+  // Cases that override real-client-construction params (init timeout, fake
+  // api URL, init-failure policy) need a real Quonfig::Client.new(...) so the
+  // SDK's init/timeout/error path actually runs. The resolver-only path
+  // can't observe init-timeout because the resolver is built off a fully
+  // loaded store. Mirror the datadir suite shape.
+  if (hasClientConstructionOverrides(kase.client_overrides)) {
+    return renderClientConstructionBody(kase);
+  }
+
   // post.yaml / telemetry.yaml — aggregator / data / expected_data shape.
   // Every case becomes a real test method calling consistent helpers
   // (build_aggregator / feed_aggregator / assert_aggregator_post). Some
@@ -224,17 +233,106 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   const ctxLit = rubyLiteral(merged);
   const expLit = rubyLiteral(expectedValue);
   const keyLit = rubyLiteral(key);
+  const fn = (kase.function ?? '').toString();
+  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
+  const def = (input as { default?: unknown }).default;
 
   let inner = '';
   inner += `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
-  if (envVars && typeof envVars === 'object') {
+  const envWrap = envVars && typeof envVars === 'object';
+  if (envWrap) {
     inner += `    IntegrationTestHelpers.with_env(${rubyLiteral(stringifyEnvVars(envVars))}) do\n`;
-    inner += `      IntegrationTestHelpers.assert_resolved(resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
-    inner += `    end\n`;
+  }
+  const indent = envWrap ? '      ' : '    ';
+
+  if (fn === 'enabled') {
+    // function: enabled — coerce non-bool to false. Use a dedicated helper
+    // so the bool-coercion semantics live in the helper, not inferred from
+    // the expected literal.
+    inner += `${indent}IntegrationTestHelpers.assert_enabled(resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
+  } else if (hasDefault) {
+    // input.default: thread through the SDK's get-with-default API. Build
+    // a real client over the loaded store so we observe what the SDK
+    // actually returns, not what a stubbed test helper returns.
+    inner += `${indent}IntegrationTestHelpers.assert_get_with_default(@store, ${keyLit}, ${ctxLit}, ${rubyLiteral(def)}, ${expLit})\n`;
   } else {
-    inner += `    IntegrationTestHelpers.assert_resolved(resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
+    inner += `${indent}IntegrationTestHelpers.assert_resolved(resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
+  }
+  if (envWrap) {
+    inner += `    end\n`;
   }
   return inner;
+}
+
+/** True iff client_overrides contains keys that drive Client construction. */
+function hasClientConstructionOverrides(overrides: unknown): boolean {
+  if (!overrides || typeof overrides !== 'object') return false;
+  const o = overrides as Record<string, unknown>;
+  return (
+    'initialization_timeout_sec' in o ||
+    'prefab_api_url' in o ||
+    'on_init_failure' in o
+  );
+}
+
+/**
+ * Render a body for a case that constructs a real Quonfig::Client (init
+ * timeout, fake api url, init-failure policy). Supports both the raise path
+ * (init timeout fires) and the recover path (on_init_failure: :return).
+ */
+function renderClientConstructionBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const fn = (kase.function ?? 'get').toString();
+  const indent = '    ';
+
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('client-construction case has no input.key/flag');
+  }
+  const keyLit = rubyLiteral(key);
+
+  const errKey = (expected.error ?? '').toString();
+  const onInitFailure = (() => {
+    const v = overrides.on_init_failure;
+    if (typeof v !== 'string') return 'raise';
+    return v.replace(/^:/, '');
+  })();
+  const timeout =
+    typeof overrides.initialization_timeout_sec === 'number'
+      ? overrides.initialization_timeout_sec
+      : 0.01;
+  const apiURL =
+    typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
+
+  const isRaise = expected.status === 'raise';
+  if (isRaise && errKey === 'initialization_timeout') {
+    return (
+      `${indent}IntegrationTestHelpers.assert_initialization_timeout_error(${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)})\n`
+    );
+  }
+  if (isRaise) {
+    // Other raise types via real-client path (e.g. missing_default with
+    // init returning zero value, then get_or_raise still raising).
+    const errClass = lookupErrorClass('ruby', errKey);
+    if (!errClass) {
+      throw new Error(
+        `no Quonfig::Errors mapping for expected.error="${errKey}" in client-construction case.`,
+      );
+    }
+    return (
+      `${indent}IntegrationTestHelpers.assert_client_construction_raises(${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${errClass})\n`
+    );
+  }
+  // Happy path through real-client construction is rare; fall back to
+  // resolver-style assert if expected.value is set.
+  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    return (
+      `${indent}IntegrationTestHelpers.assert_client_construction_value(${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${rubyLiteral(expected.value)})\n`
+    );
+  }
+  throw new Error('client-construction case has no expected.value or expected.error');
 }
 
 /**

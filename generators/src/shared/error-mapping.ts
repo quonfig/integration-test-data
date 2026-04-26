@@ -49,12 +49,21 @@ const PYTHON_ERRORS: ErrorMap = {
   invalid_environment: 'RuntimeError',
 };
 
+// Go SDK errors live in package `quonfig`. The map covers the error keys
+// used by the YAML cases that drive real-Client construction; resolver-time
+// raise paths still go through assertResolveError in test_helpers_test.go.
+// missing_default has no dedicated Go error type (the SDK returns
+// (zero, false, nil)); the helper bridges that by checking ok=false.
+const GO_ERRORS: ErrorMap = {
+  initialization_timeout: 'quonfig.ErrInitializationTimeout',
+  missing_env_var: 'quonfig.ErrMissingEnvVar',
+};
+
 const ERROR_MAPS: Record<TargetName, ErrorMap> = {
   ruby: RUBY_ERRORS,
   node: NODE_ERRORS,
   python: PYTHON_ERRORS,
-  // Other targets will be filled in by follow-up agents.
-  go: {},
+  go: GO_ERRORS,
 };
 
 export function lookupErrorClass(target: TargetName, errorKey: string): string | undefined {

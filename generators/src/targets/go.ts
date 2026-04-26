@@ -231,6 +231,19 @@ function renderBody(
     return renderDatadirBody(kase);
   }
 
+  // Cases that drive real-Client construction (init timeout, fake api URL,
+  // init-failure policy) need a real quonfig.NewClient(...) so the SDK's
+  // init/timeout path actually runs. The resolver-only path can't observe
+  // init-timeout because the resolver is built off a fully loaded store.
+  // The helpers (assertInitializationTimeoutError /
+  // assertClientConstructionRaises / assertClientConstructionMissingDefault
+  // / assertClientConstructionValue) live in test_helpers_test.go and pull
+  // in their own quonfig/errors imports — the generated file body only
+  // calls the helper, so we don't add quonfig/errors to features here.
+  if (hasClientConstructionOverridesGo(kase.client_overrides)) {
+    return renderClientConstructionBodyGo(kase);
+  }
+
   if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
     // The aggregator helpers (BuildAggregator/FeedAggregator/...) are
     // expected to live alongside the existing fixtures helpers in
@@ -280,6 +293,18 @@ function renderBody(
       const sval = v === null || v === undefined ? '' : String(v);
       body += `${indent}t.Setenv(${goStringLiteral(k)}, ${goStringLiteral(sval)});\n`;
     }
+  }
+
+  // input.default present: route through assertGetWithDefault, which
+  // mirrors the SDK's get-with-default semantic (missing-key → default,
+  // found-key → resolved value, default ignored). The Go SDK lacks a
+  // public default-arg getter; the helper bridges that gap.
+  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
+  if (hasDefault && !isMillis && expectedValue !== null && expectedValue !== undefined) {
+    const def = (input as { default?: unknown }).default;
+    body += `${indent}ctx := ${buildContextCall(kase)}\n`;
+    body += `${indent}assertGetWithDefault(t, ${goStringLiteral(key)}, ctx, ${goLiteralValue(def)}, ${goLiteralValue(expectedValue)})\n`;
+    return body;
   }
 
   body += `${indent}cfg := mustLookupConfig(t, ${goStringLiteral(key)})\n`;
@@ -596,6 +621,68 @@ function renderPostBody(kase: YamlCase): string {
   body += `${indent}FeedAggregator(t, agg, ${aggLit}, ${dataLit}, ${ctxLit})\n`;
   body += `${indent}AssertAggregatorPost(t, agg, ${aggLit}, ${expectedLit}, ${endpointLit})\n`;
   return body;
+}
+
+function hasClientConstructionOverridesGo(overrides: unknown): boolean {
+  if (!overrides || typeof overrides !== 'object') return false;
+  const o = overrides as Record<string, unknown>;
+  return (
+    'initialization_timeout_sec' in o ||
+    'prefab_api_url' in o ||
+    'on_init_failure' in o
+  );
+}
+
+/**
+ * Render a body for a case that constructs a real quonfig.NewClient(...)
+ * with init-timeout / fake api-url overrides. Asserts the expected raise
+ * (initialization_timeout / missing_default) or value depending on the YAML.
+ */
+function renderClientConstructionBodyGo(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const fn = (kase.function ?? 'get').toString();
+  const indent = '\t';
+
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('client-construction case has no input.key/flag');
+  }
+  const errKey = (expected.error ?? '').toString();
+  const onInitFailure = (() => {
+    const v = overrides.on_init_failure;
+    if (typeof v !== 'string') return 'raise';
+    return v.replace(/^:/, '');
+  })();
+  const timeoutSec =
+    typeof overrides.initialization_timeout_sec === 'number'
+      ? overrides.initialization_timeout_sec
+      : 0.01;
+  const apiURL =
+    typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
+  const isRaise = expected.status === 'raise';
+  if (isRaise && errKey === 'initialization_timeout') {
+    return `${indent}assertInitializationTimeoutError(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)})\n`;
+  }
+  if (isRaise && errKey === 'missing_default') {
+    // The Go SDK has no missing_default error class — GetXxxValue returns
+    // (zero, false, nil). The helper checks ok=false and reports it.
+    return `${indent}assertClientConstructionMissingDefault(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)}, ${goStringLiteral(fn)})\n`;
+  }
+  if (isRaise) {
+    const errClass = lookupErrorClass('go', errKey);
+    if (!errClass) {
+      throw new Error(
+        `no Go error mapping for expected.error="${errKey}" in client-construction case.`,
+      );
+    }
+    return `${indent}assertClientConstructionRaises(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)}, ${goStringLiteral(fn)}, ${errClass})\n`;
+  }
+  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    return `${indent}assertClientConstructionValue(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)}, ${goStringLiteral(fn)}, ${goLiteralValue(expected.value)})\n`;
+  }
+  throw new Error('client-construction case has no expected.value or expected.error');
 }
 
 function formatDouble(n: number): string {
