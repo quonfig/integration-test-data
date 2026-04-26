@@ -1,0 +1,20 @@
+{
+  "name": "@quonfig/integration-test-generators",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified TypeScript code generator for cross-SDK integration tests, fed by ../tests/eval/*.yaml.",
+  "type": "module",
+  "scripts": {
+    "generate": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
