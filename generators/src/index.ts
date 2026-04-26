@@ -5,6 +5,7 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runRubyTarget } from './targets/ruby.js';
+import { runGoTarget } from './targets/go.js';
 import { runNodeTarget } from './targets/node.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,7 +49,7 @@ function printHelp(): void {
       '',
       'Targets:',
       '  ruby     sdk-ruby/test/integration/test_*.rb (Minitest)',
-      '  go       not yet implemented',
+      '  go       sdk-go/internal/fixtures/*_generated_test.go (go test)',
       '  node     sdk-node/test/integration/*.generated.test.ts (Vitest)',
       '  python   not yet implemented',
       '',
@@ -91,7 +92,16 @@ async function main(): Promise<void> {
           }
           break;
         }
-        case 'go':
+        case 'go': {
+          const outDir = resolve(repoRoot(), '..', 'sdk-go', 'internal', 'fixtures');
+          console.log(`[go] reading ${dataRoot}`);
+          console.log(`[go] writing to ${outDir}`);
+          const result = runGoTarget(dataRoot, outDir);
+          for (const w of result.written) {
+            console.log(`[go] wrote ${w.path}: ${w.cases} cases`);
+          }
+          break;
+        }
         case 'python':
           console.log(`[${target}] not yet implemented — coming in a follow-up agent.`);
           break;
