@@ -57,6 +57,11 @@ const SUITES: SuiteEntry[] = [
   },
   { yaml: 'post.yaml', out: 'post.generated.test.ts', describe: 'post' },
   { yaml: 'telemetry.yaml', out: 'telemetry.generated.test.ts', describe: 'telemetry' },
+  {
+    yaml: 'dev_overrides.yaml',
+    out: 'dev_overrides.generated.test.ts',
+    describe: 'dev_overrides',
+  },
 ];
 
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/node.ts';

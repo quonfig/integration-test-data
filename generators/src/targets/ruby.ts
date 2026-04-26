@@ -39,6 +39,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'datadir_environment.yaml', out: 'test_datadir_environment.rb', className: 'TestDatadirEnvironment' },
   { yaml: 'post.yaml', out: 'test_post.rb', className: 'TestPost' },
   { yaml: 'telemetry.yaml', out: 'test_telemetry.rb', className: 'TestTelemetry' },
+  { yaml: 'dev_overrides.yaml', out: 'test_dev_overrides.rb', className: 'TestDevOverrides' },
 ];
 
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/ruby.ts';

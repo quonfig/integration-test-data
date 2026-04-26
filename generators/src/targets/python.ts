@@ -46,6 +46,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'datadir_environment.yaml', out: 'test_datadir_environment.py' },
   { yaml: 'post.yaml', out: 'test_post.py' },
   { yaml: 'telemetry.yaml', out: 'test_telemetry.py' },
+  { yaml: 'dev_overrides.yaml', out: 'test_dev_overrides.py' },
 ];
 
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/python.ts';
