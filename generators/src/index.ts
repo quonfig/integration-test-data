@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { runRubyTarget } from './targets/ruby.js';
 import { runGoTarget } from './targets/go.js';
 import { runNodeTarget } from './targets/node.js';
+import { runPythonTarget } from './targets/python.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -51,7 +52,7 @@ function printHelp(): void {
       '  ruby     sdk-ruby/test/integration/test_*.rb (Minitest)',
       '  go       sdk-go/internal/fixtures/*_generated_test.go (go test)',
       '  node     sdk-node/test/integration/*.generated.test.ts (Vitest)',
-      '  python   not yet implemented',
+      '  python   sdk-python/tests/integration/test_*.py (pytest)',
       '',
       'Pass --target multiple times to run a subset; default is all.',
     ].join('\n'),
@@ -102,9 +103,16 @@ async function main(): Promise<void> {
           }
           break;
         }
-        case 'python':
-          console.log(`[${target}] not yet implemented — coming in a follow-up agent.`);
+        case 'python': {
+          const outDir = resolve(repoRoot(), '..', 'sdk-python', 'tests', 'integration');
+          console.log(`[python] reading ${dataRoot}`);
+          console.log(`[python] writing to ${outDir}`);
+          const result = runPythonTarget(dataRoot, outDir);
+          for (const w of result.written) {
+            console.log(`[python] wrote ${w.path}: ${w.cases} cases`);
+          }
           break;
+        }
       }
     } catch (e) {
       hadError = true;

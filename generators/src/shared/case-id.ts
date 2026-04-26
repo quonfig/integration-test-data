@@ -19,6 +19,17 @@ export function rubyMethodSuffix(name: string): string {
 }
 
 /**
+ * Python pytest function-name suffix — `def test_<suffix>(...)`. Same
+ * sanitization shape as Ruby (snake_case ASCII), but exposed under its
+ * own name so future Python-only tweaks (reserved-word avoidance, longer
+ * casing rules) can land without touching Ruby.
+ */
+export function pythonTestFunctionName(name: string): string {
+  const s = sanitize(name);
+  return s.length > 0 ? s : 'unnamed';
+}
+
+/**
  * Disambiguate duplicates within a suite. `seen` is mutated to track counts.
  * Returns a unique suffix; first occurrence is unsuffixed.
  */

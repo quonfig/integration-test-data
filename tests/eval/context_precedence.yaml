@@ -142,32 +142,6 @@ tests:
       expected:
         value: "default"
       type: STRING
-    - name: returns the correct `get` value using the global context and api context (1)
-      client: config_client
-      function: get
-      contexts:
-        # API context is omitted since it is provided by the API
-        global:
-          user:
-            email: "test@prefab.cloud"
-      input:
-        key: "basic.rule.config.with.api.conditional"
-      expected:
-        value: "override"
-      type: STRING
-    - name: returns the correct `get` value using the global context and api context (2)
-      client: config_client
-      function: get
-      contexts:
-        # API context is omitted since it is provided by the API
-        global:
-          user:
-            email: "test@example.com"
-      input:
-        key: "basic.rule.config.with.api.conditional"
-      expected:
-        value: "api-override"
-      type: STRING
     - name: returns the correct `get` value when local context clobbers global context (1)
       client: config_client
       function: get

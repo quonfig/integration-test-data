@@ -27,17 +27,18 @@ npm run generate                  # all targets (TBD ones print a notice)
 npm run generate -- --target=ruby # one target at a time
 ```
 
-Targets currently supported: `ruby`. `go`, `node`, `python` print
-"not yet implemented" until follow-up agents land them.
+All four targets are implemented: `ruby`, `go`, `node`, `python`.
+Running `npm run generate` with no `--target` flag generates all of them
+in one pass.
 
 ## Output locations
 
 | Target | Output dir | File pattern |
 |--------|------------|--------------|
 | ruby   | `../sdk-ruby/test/integration/`        | `test_<suite>.rb`              |
-| go     | `../sdk-go/internal/fixtures/`         | `<suite>_generated_test.go`   (TBD) |
-| node   | `../sdk-node/test/integration/`        | `<suite>.generated.test.ts`   (TBD) |
-| python | `../sdk-python/tests/integration/`     | `test_<suite>.py`             (TBD) |
+| go     | `../sdk-go/internal/fixtures/`         | `<suite>_generated_test.go`    |
+| node   | `../sdk-node/test/integration/`        | `<suite>.generated.test.ts`    |
+| python | `../sdk-python/tests/integration/`     | `test_<suite>.py`              |
 
 (The generator writes to sibling git repos. Each affected repo needs its
 own commit afterward.)

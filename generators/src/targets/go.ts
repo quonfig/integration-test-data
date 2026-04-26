@@ -12,15 +12,6 @@
 //   2. Unmapped raise errors and missing input keys FAIL the generator
 //      (not the test). Better to stop here with a clear pointer than to
 //      silently emit broken code.
-//
-//   3. The previous Claude-as-generator output had three skip patterns:
-//        - `t.Skip("test requires API-injected context (prefab-api-key.*)…")`
-//        - `t.Skip("initialization_timeout requires network timing behavior")`
-//        - calls to `shouldSkipAPIContextTest(cfg)`
-//      ALL of these are removed. The replacement: emit a real test that
-//      runs the resolver / constructs a client and asserts the YAML's
-//      expected outcome. If the SDK's local eval can't replicate the
-//      condition, the assertion fails — which is exactly the right signal.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';

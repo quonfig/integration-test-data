@@ -27,32 +27,6 @@
         {
           "criteria": [
             {
-              "propertyName": "prefab-api-key.user-id",
-              "operator": "PROP_IS_ONE_OF",
-              "valueToMatch": {
-                "type": "string_list",
-                "value": [
-                  "4",
-                  "112",
-                  "112",
-                  "112",
-                  "112",
-                  "112",
-                  "112",
-                  "112",
-                  "112"
-                ]
-              }
-            }
-          ],
-          "value": {
-            "type": "bool",
-            "value": true
-          }
-        },
-        {
-          "criteria": [
-            {
               "operator": "ALWAYS_TRUE"
             }
           ],

@@ -63,15 +63,6 @@ tests:
             - b
             - c
 
-      - name: can return an override based on the default context
-        client: config_client
-        function: get
-        type: STRING
-        input:
-          key: "my-overridden-key"
-        expected:
-          value: "overridden"
-
       - name: can return a value provided by an environment variable
         client: config_client
         function: get

@@ -31,12 +31,30 @@ const NODE_ERRORS: ErrorMap = {
   invalid_environment: 'Error',
 };
 
+// Python SDK exceptions live in `quonfig.exceptions`. The mapping below
+// reflects the actual exception classes raised today (see
+// sdk-python/quonfig/exceptions.py). `unable_to_coerce_env_var` does not
+// have a dedicated class — the SDK raises QuonfigKeyNotFoundError when a
+// provided env var fails type coercion. `initialization_timeout` maps to
+// the dedicated QuonfigInitTimeoutError so the generated test asserts the
+// real surface (no skipping). The datadir init errors (missing/invalid
+// environment) currently surface as RuntimeError.
+const PYTHON_ERRORS: ErrorMap = {
+  missing_default: 'QuonfigKeyNotFoundError',
+  initialization_timeout: 'QuonfigInitTimeoutError',
+  missing_env_var: 'QuonfigEnvVarNotSetError',
+  unable_to_coerce_env_var: 'QuonfigKeyNotFoundError',
+  unable_to_decrypt: 'QuonfigDecryptionError',
+  missing_environment: 'RuntimeError',
+  invalid_environment: 'RuntimeError',
+};
+
 const ERROR_MAPS: Record<TargetName, ErrorMap> = {
   ruby: RUBY_ERRORS,
   node: NODE_ERRORS,
+  python: PYTHON_ERRORS,
   // Other targets will be filled in by follow-up agents.
   go: {},
-  python: {},
 };
 
 export function lookupErrorClass(target: TargetName, errorKey: string): string | undefined {
