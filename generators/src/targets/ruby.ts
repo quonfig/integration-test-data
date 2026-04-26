@@ -3,11 +3,13 @@
 // Ports the previous Ruby-in-Ruby generator (sdk-ruby/scripts/generate_integration_tests.rb)
 // with two important behavioral changes:
 //
-//   1. NO auto-skips. Neither suite-level nor per-case nor wrap-and-rescue.
-//      The generator either emits a runnable assertion or, for cases whose
-//      shape isn't expressible against the SDK helpers (post.yaml /
-//      telemetry.yaml — different schema), omits the case from output AND
-//      reports it back to the caller. Runtime failures must surface.
+//   1. NO auto-skips, no omissions, no wrap-and-rescue. Every YAML case
+//      becomes a runnable test method. Cases whose YAML shape doesn't have
+//      a matching helper today (post.yaml / telemetry.yaml — aggregator /
+//      data / expected_data) are still emitted, calling consistently named
+//      helper methods that may not yet exist. At runtime those raise
+//      NoMethodError, which is the *desired* outcome — it surfaces the gap
+//      rather than hiding it.
 //
 //   2. Unmapped raise errors and missing input keys FAIL the generator
 //      (rather than silently skipping the case at runtime).
@@ -95,27 +97,18 @@ interface RenderedCase {
   source: string; // full `def test_xxx ... end\n` block, indented two spaces
 }
 
-interface OmittedCase {
-  yamlBasename: string;
-  groupName: string | undefined;
-  caseName: string;
-  reason: string;
-}
-
 interface RenderResult {
   rendered: RenderedCase[];
-  omitted: OmittedCase[];
 }
 
 /**
  * Render a single suite's cases into Ruby method bodies.
  * Throws for cases that the user has explicitly told us must fail-loud
- * (unmapped raise errors etc). Records "could not generate" entries for
- * cases whose YAML shape isn't expressible (post/telemetry-style).
+ * (unmapped raise errors etc). Every YAML case produces one method —
+ * no omissions, no skips.
  */
 function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResult {
   const rendered: RenderedCase[] = [];
-  const omitted: OmittedCase[] = [];
   const seen = new Map<string, number>();
 
   for (const nc of cases) {
@@ -134,16 +127,6 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
       );
     }
 
-    if (body === OMIT_SENTINEL.shape_mismatch) {
-      omitted.push({
-        yamlBasename,
-        groupName: nc.groupName,
-        caseName: rawName,
-        reason: 'YAML shape (post/telemetry-style data/expected_data/aggregator) not yet expressible in sdk-ruby integration helpers',
-      });
-      continue;
-    }
-
     const block =
       `\n  # ${rawName}\n` +
       `  def test_${suffix}\n` +
@@ -152,12 +135,8 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
     rendered.push({ source: block });
   }
 
-  return { rendered, omitted };
+  return { rendered };
 }
-
-const OMIT_SENTINEL = {
-  shape_mismatch: '__OMIT_SHAPE_MISMATCH__',
-} as const;
 
 class GeneratorError extends Error {
   constructor(msg: string) {
@@ -183,18 +162,14 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
     return renderDatadirBody(kase);
   }
 
-  // post.yaml / telemetry.yaml use a wholly different shape (data,
-  // expected_data, aggregator). The current sdk-ruby helpers don't have
-  // assertion primitives for these. Per spec we omit + report rather than
-  // skip. New generators (or new helpers) should reach this code path
-  // and remove the omission.
-  const hasShapeOnlyFields =
-    'aggregator' in kase || 'expected_data' in kase || 'endpoint' in kase;
-  const hasExpressibleShape =
-    typeof input === 'object' &&
-    (typeof input.key === 'string' || typeof input.flag === 'string');
-  if (hasShapeOnlyFields && !hasExpressibleShape) {
-    return OMIT_SENTINEL.shape_mismatch;
+  // post.yaml / telemetry.yaml — aggregator / data / expected_data shape.
+  // Every case becomes a real test method calling consistent helpers
+  // (build_aggregator / feed_aggregator / assert_aggregator_post). Some
+  // helpers don't exist in IntegrationTestHelpers yet; that's intentional —
+  // they fail at runtime with NoMethodError, which surfaces the gap to
+  // the SDK team rather than silently omitting the case.
+  if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
+    return renderPostBody(kase);
   }
 
   // raise expectation
@@ -322,6 +297,59 @@ function renderDatadirBody(kase: YamlCase): string {
   return body;
 }
 
+/**
+ * Render a post.yaml / telemetry.yaml case body.
+ *
+ * Every such case has:
+ *   aggregator:    one of context_shape | evaluation_summary | example_contexts
+ *   endpoint:      "/api/v1/context-shapes" | "/api/v1/telemetry"
+ *   data:          aggregator input — either keys array, single context hash,
+ *                  or array of context hashes (depends on aggregator)
+ *   expected_data: aggregator output to assert against (may be nil/empty)
+ *   contexts:      optional context block (merged via mergeContexts)
+ *   client_overrides: optional config flags (e.g. context_upload_mode)
+ *
+ * Generated Ruby invokes a small uniform helper API:
+ *   IntegrationTestHelpers.build_aggregator(type, overrides_hash)
+ *   IntegrationTestHelpers.feed_aggregator(agg, type, data, contexts: ctx)
+ *   IntegrationTestHelpers.assert_aggregator_post(agg, type, expected, endpoint:)
+ *
+ * Some of those helpers may not exist on IntegrationTestHelpers yet. That's
+ * fine — at runtime they raise NoMethodError, which surfaces the missing
+ * helper to whoever is implementing the SDK side. Hiding the case via a
+ * generator-side omission is strictly worse.
+ */
+function renderPostBody(kase: YamlCase): string {
+  const aggregator = (kase.aggregator ?? '').toString();
+  if (aggregator.length === 0) {
+    throw new Error('post/telemetry case missing aggregator');
+  }
+  const endpoint = (kase.endpoint ?? '').toString();
+  if (endpoint.length === 0) {
+    throw new Error('post/telemetry case missing endpoint');
+  }
+
+  const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
+  const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
+    ? kase.expected_data
+    : null;
+  const overrides = kase.client_overrides ?? {};
+  const merged = mergeContexts(kase.contexts);
+
+  const aggLit = ':' + aggregator;
+  const overridesLit = rubyLiteral(overrides);
+  const dataLit = rubyLiteral(data);
+  const expectedLit = rubyLiteral(expectedData);
+  const endpointLit = rubyLiteral(endpoint);
+  const ctxLit = rubyLiteral(merged);
+
+  let body = '';
+  body += `    aggregator = IntegrationTestHelpers.build_aggregator(${aggLit}, ${overridesLit})\n`;
+  body += `    IntegrationTestHelpers.feed_aggregator(aggregator, ${aggLit}, ${dataLit}, contexts: ${ctxLit})\n`;
+  body += `    IntegrationTestHelpers.assert_aggregator_post(aggregator, ${aggLit}, ${expectedLit}, endpoint: ${endpointLit})\n`;
+  return body;
+}
+
 function stringifyEnvVars(env: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
@@ -330,7 +358,7 @@ function stringifyEnvVars(env: Record<string, unknown>): Record<string, string> 
   return out;
 }
 
-function renderFile(suite: SuiteEntry, rendered: RenderedCase[], omitted: OmittedCase[]): string {
+function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   let out = '';
   out += `# frozen_string_literal: true\n`;
   out += `#\n`;
@@ -339,15 +367,6 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], omitted: Omitte
   out += `#   cd integration-test-data/generators && npm run generate -- --target=ruby\n`;
   out += `# Source: ${GENERATOR_PATH}\n`;
   out += `# Do NOT edit by hand — changes will be overwritten.\n`;
-  if (omitted.length > 0) {
-    out += `#\n`;
-    out += `# OMITTED CASES (${omitted.length}) — generator could not express these in\n`;
-    out += `# the current sdk-ruby integration helpers. Either extend\n`;
-    out += `# IntegrationTestHelpers to support the shape, or remove the case from YAML:\n`;
-    for (const o of omitted) {
-      out += `#   - ${o.caseName} :: ${o.reason}\n`;
-    }
-  }
   out += `\n`;
   out += `require 'test_helper'\n`;
   out += `require 'integration/test_helpers'\n`;
@@ -368,8 +387,7 @@ function stripExt(name: string): string {
 }
 
 export interface RubyRunResult {
-  written: { path: string; cases: number; omitted: number }[];
-  omittedCases: OmittedCase[];
+  written: { path: string; cases: number }[];
 }
 
 /**
@@ -381,18 +399,16 @@ export interface RubyRunResult {
 export function runRubyTarget(dataRoot: string, outDir: string): RubyRunResult {
   mkdirSync(outDir, { recursive: true });
   const written: RubyRunResult['written'] = [];
-  const omittedAll: OmittedCase[] = [];
 
   for (const suite of SUITES) {
     const yamlPath = resolve(dataRoot, suite.yaml);
     const cases = loadYamlFile(yamlPath, suite.yaml);
-    const { rendered, omitted } = renderCases(suite.yaml, cases);
-    omittedAll.push(...omitted);
-    const src = renderFile(suite, rendered, omitted);
+    const { rendered } = renderCases(suite.yaml, cases);
+    const src = renderFile(suite, rendered);
     const outPath = resolve(outDir, suite.out);
     writeFileSync(outPath, src);
-    written.push({ path: outPath, cases: rendered.length, omitted: omitted.length });
+    written.push({ path: outPath, cases: rendered.length });
   }
 
-  return { written, omittedCases: omittedAll };
+  return { written };
 }

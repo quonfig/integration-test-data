@@ -76,15 +76,7 @@ async function main(): Promise<void> {
           console.log(`[ruby] writing to ${outDir}`);
           const result = runRubyTarget(dataRoot, outDir);
           for (const w of result.written) {
-            const omitted = w.omitted > 0 ? ` (+${w.omitted} omitted)` : '';
-            console.log(`[ruby] wrote ${w.path}: ${w.cases} cases${omitted}`);
-          }
-          if (result.omittedCases.length > 0) {
-            console.log(`[ruby] OMITTED ${result.omittedCases.length} cases (no auto-skip emitted):`);
-            for (const o of result.omittedCases) {
-              console.log(`  - ${o.yamlBasename} :: ${o.caseName}`);
-              console.log(`      ${o.reason}`);
-            }
+            console.log(`[ruby] wrote ${w.path}: ${w.cases} cases`);
           }
           break;
         }
