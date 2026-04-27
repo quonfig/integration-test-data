@@ -45,9 +45,36 @@ own commit afterward.)
 
 ## After regenerating
 
-Run the target SDK's test suite to see what's now red. **Some failures are
-expected** when YAML changes outpace SDK behavior. That is the point — the
-generator deliberately does not hide gaps with skips.
+### Step 1: format + lint the regenerated files
+
+The generator emits source-faithful but not always lint-clean output —
+import ordering, unused imports, `== None` vs `is None`, trailing
+whitespace, etc. Run each target's formatter/linter on the regenerated
+directory before committing, otherwise CI fails and you'll spend a follow-up
+commit reverting lint regressions that the generator just re-introduced.
+
+| Target | Run from | Command |
+|--------|----------|---------|
+| ruby   | `sdk-ruby`   | `bundle exec rubocop --autocorrect-all test/integration/` (if rubocop is in the gemfile) |
+| go     | `sdk-go`     | `gofmt -w internal/fixtures/ && go vet ./internal/fixtures/...` |
+| node   | `sdk-node`   | `pnpm prettier --write test/integration/ && pnpm eslint --fix test/integration/` |
+| python | `sdk-python` | `poetry run ruff check --fix tests/integration/ && poetry run ruff format tests/integration/` |
+
+Expected real lint findings (fixable with the autocorrect flag above):
+- python: unused `import os` / `import pytest`, alphabetical import order,
+  `== None` → `is None`
+- node: unused imports, formatting drift
+- ruby: alignment, trailing whitespace
+
+If the generator keeps reintroducing the same lint issue every regen,
+fix it in the generator template (`integration-test-data/generators/src/targets/<lang>.ts`)
+rather than autocorrecting in the SDK every time.
+
+### Step 2: run the target SDK's test suite
+
+See what's now red. **Some failures are expected** when YAML changes outpace
+SDK behavior. That is the point — the generator deliberately does not hide
+gaps with skips.
 
 ```bash
 # ruby

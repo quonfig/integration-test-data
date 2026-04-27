@@ -1,0 +1,70 @@
+---
+# Cross-SDK eval cases for the dev-override mechanism (qfg-pj0 epic).
+#
+# These verify pure EVAL behavior — given a flag with a rule keyed on
+# `quonfig-user.email IS_ONE_OF [...]`, the SDK fires the rule when the
+# context carries that attribute and falls through (to default) when it
+# doesn't. The YAML is independent of HOW the rule got into the JSON
+# (whether via `qfg override`, hand edit, or fixture). Fixtures live in
+# data/integration-tests/feature-flags/feature-flag.dev-override*.json.
+#
+# Why `quonfig-user.email` (not `user.email`):
+# The `quonfig-user.*` namespace is the dev-only attribute injected by
+# `qfg login` → SDK init. In production it is never set, so rules keyed
+# on it are dead code in prod by construction. See project/plans/dev-overrides.md.
+function: enabled
+tests:
+  - cases:
+      - name: "override fires when quonfig-user.email matches"
+        client: feature_flag_client
+        function: enabled
+        type: BOOLEAN
+        contexts:
+          block:
+            quonfig-user:
+              email: bob@foo.com
+        input:
+          flag: "feature-flag.dev-override"
+        expected:
+          value: true
+
+      - name: "override does not fire when attribute absent (prod simulation)"
+        client: feature_flag_client
+        function: enabled
+        type: BOOLEAN
+        contexts:
+          block:
+            user:
+              email: bob@foo.com
+        input:
+          flag: "feature-flag.dev-override"
+        expected:
+          value: false
+
+      - name: "override matches any email in IS_ONE_OF list"
+        client: feature_flag_client
+        function: enabled
+        type: BOOLEAN
+        contexts:
+          block:
+            quonfig-user:
+              email: alice@foo.com
+        input:
+          flag: "feature-flag.dev-override.multi-email"
+        expected:
+          value: true
+
+      - name: "override beats customer rule by priority"
+        client: feature_flag_client
+        function: enabled
+        type: BOOLEAN
+        contexts:
+          block:
+            quonfig-user:
+              email: bob@foo.com
+            user:
+              country: DE
+        input:
+          flag: "feature-flag.dev-override.priority"
+        expected:
+          value: true

@@ -44,6 +44,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'datadir_environment.yaml', out: 'datadir_environment_generated_test.go', suite: 'DatadirEnvironment' },
   { yaml: 'post.yaml', out: 'post_generated_test.go', suite: 'Post' },
   { yaml: 'telemetry.yaml', out: 'telemetry_generated_test.go', suite: 'Telemetry' },
+  { yaml: 'dev_overrides.yaml', out: 'dev_overrides_generated_test.go', suite: 'DevOverrides' },
 ];
 
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/go.ts';
