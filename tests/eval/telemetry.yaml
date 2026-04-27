@@ -455,3 +455,76 @@ tests:
         endpoint: "/api/v1/context-shapes"
         data: {}
         expected_data:
+
+  # ──────────────────────────────────────────────────
+  # Category 7: Confidential Value Redaction
+  #
+  # When a config value has `confidential: true` OR `decryptWith` set,
+  # the SDK MUST redact the value in telemetry's selectedValue field.
+  # Wire format: `*****<5-hex-chars>` where the 5 hex chars are the
+  # FIRST 5 chars of md5(raw_value).hexdigest(). Total length = 10 chars.
+  #
+  # The hash is computed over the raw value as it appears in the config
+  # JSON: ciphertext for encrypted values, plaintext for plain
+  # confidential strings. The redaction applies regardless of the
+  # original value_type — selectedValue always becomes {string: "*****xxxxx"}
+  # while value_type stays as the original type (e.g. "string").
+  # ──────────────────────────────────────────────────
+  - cases:
+      # Plaintext source: "hello.world" (from confidential.new.string.json,
+      # confidential: true, no decryptWith). md5("hello.world") = 18aa7764566d19e9a9afb6ea0bf1fa81
+      # First 5 hex = 18aa7 → redacted = "*****18aa7"
+      - name: confidential plain string is redacted in selectedValue
+        client: client
+        function: post
+        aggregator: evaluation_summary
+        endpoint: "/api/v1/telemetry"
+        data:
+          keys:
+            - "confidential.new.string"
+        expected_data:
+          - key: "confidential.new.string"
+            type: CONFIG
+            value: "hello.world"
+            value_type: string
+            count: 1
+            reason: 1
+            selected_value:
+              string: "*****18aa7"
+            summary:
+              config_row_index: 0
+              conditional_value_index: 0
+
+      # Ciphertext source: "875247386844c18c58a97c--b307b97a8288ac9da3ce0cf2--7ab0c32e044869e355586ed653a435de"
+      # (from a.secret.config.json, confidential: true, decryptWith: prefab.secrets.encryption.key).
+      # The hash MUST be computed over the ciphertext (raw value as stored in JSON),
+      # NOT the decrypted plaintext "hello.world".
+      # md5(ciphertext) = 936c978ba8595fb92f20290d6d36add0
+      # First 5 hex = 936c9 → redacted = "*****936c9"
+      - name: confidential encrypted string is redacted using ciphertext hash
+        client: client
+        function: post
+        aggregator: evaluation_summary
+        endpoint: "/api/v1/telemetry"
+        data:
+          keys:
+            - "a.secret.config"
+        expected_data:
+          - key: "a.secret.config"
+            type: CONFIG
+            value: "hello.world"
+            value_type: string
+            count: 1
+            reason: 1
+            selected_value:
+              string: "*****936c9"
+            summary:
+              config_row_index: 0
+              conditional_value_index: 0
+
+# NOTE: brand.new.secret was considered as a third case but was dropped — its
+# decryptWith points at `reforge.secrets.encryption.key`, whose backing env var
+# (`REFORGE_INTEGRATION_TEST_ENCRYPTION_KEY`) is not set in any SDK's
+# integration-test harness. Decryption failure would prevent any counter from
+# being emitted at all, masking the redaction-shape assertion. Add it back once
+# the SDK helpers set that env var (parallel to PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY).
