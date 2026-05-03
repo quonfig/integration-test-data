@@ -250,14 +250,14 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
     // function: enabled — coerce non-bool to false. Use a dedicated helper
     // so the bool-coercion semantics live in the helper, not inferred from
     // the expected literal.
-    inner += `${indent}IntegrationTestHelpers.assert_enabled(resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
+    inner += `${indent}IntegrationTestHelpers.assert_enabled(self, resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
   } else if (hasDefault) {
     // input.default: thread through the SDK's get-with-default API. Build
     // a real client over the loaded store so we observe what the SDK
     // actually returns, not what a stubbed test helper returns.
-    inner += `${indent}IntegrationTestHelpers.assert_get_with_default(@store, ${keyLit}, ${ctxLit}, ${rubyLiteral(def)}, ${expLit})\n`;
+    inner += `${indent}IntegrationTestHelpers.assert_get_with_default(self, @store, ${keyLit}, ${ctxLit}, ${rubyLiteral(def)}, ${expLit})\n`;
   } else {
-    inner += `${indent}IntegrationTestHelpers.assert_resolved(resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
+    inner += `${indent}IntegrationTestHelpers.assert_resolved(self, resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
   }
   if (envWrap) {
     inner += `    end\n`;
@@ -310,7 +310,7 @@ function renderClientConstructionBody(kase: YamlCase): string {
   const isRaise = expected.status === 'raise';
   if (isRaise && errKey === 'initialization_timeout') {
     return (
-      `${indent}IntegrationTestHelpers.assert_initialization_timeout_error(${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)})\n`
+      `${indent}IntegrationTestHelpers.assert_initialization_timeout_error(self, ${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)})\n`
     );
   }
   if (isRaise) {
@@ -323,14 +323,14 @@ function renderClientConstructionBody(kase: YamlCase): string {
       );
     }
     return (
-      `${indent}IntegrationTestHelpers.assert_client_construction_raises(${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${errClass})\n`
+      `${indent}IntegrationTestHelpers.assert_client_construction_raises(self, ${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${errClass})\n`
     );
   }
   // Happy path through real-client construction is rare; fall back to
   // resolver-style assert if expected.value is set.
   if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
     return (
-      `${indent}IntegrationTestHelpers.assert_client_construction_value(${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${rubyLiteral(expected.value)})\n`
+      `${indent}IntegrationTestHelpers.assert_client_construction_value(self, ${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${rubyLiteral(expected.value)})\n`
     );
   }
   throw new Error('client-construction case has no expected.value or expected.error');
@@ -411,7 +411,7 @@ function renderDatadirBody(kase: YamlCase): string {
  * Generated Ruby invokes a small uniform helper API:
  *   IntegrationTestHelpers.build_aggregator(type, overrides_hash)
  *   IntegrationTestHelpers.feed_aggregator(agg, type, data, contexts: ctx)
- *   IntegrationTestHelpers.assert_aggregator_post(agg, type, expected, endpoint:)
+ *   IntegrationTestHelpers.assert_aggregator_post(self, agg, type, expected, endpoint:)
  *
  * Some of those helpers may not exist on IntegrationTestHelpers yet. That's
  * fine — at runtime they raise NoMethodError, which surfaces the missing
@@ -445,7 +445,7 @@ function renderPostBody(kase: YamlCase): string {
   let body = '';
   body += `    aggregator = IntegrationTestHelpers.build_aggregator(${aggLit}, ${overridesLit})\n`;
   body += `    IntegrationTestHelpers.feed_aggregator(aggregator, ${aggLit}, ${dataLit}, contexts: ${ctxLit})\n`;
-  body += `    IntegrationTestHelpers.assert_aggregator_post(aggregator, ${aggLit}, ${expectedLit}, endpoint: ${endpointLit})\n`;
+  body += `    IntegrationTestHelpers.assert_aggregator_post(self, aggregator, ${aggLit}, ${expectedLit}, endpoint: ${endpointLit})\n`;
   return body;
 }
 
