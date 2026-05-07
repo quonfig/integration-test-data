@@ -924,6 +924,169 @@ tests:
           value: false
 
 
+      ############################################################
+      ## IS_PRESENT / IS_NOT_PRESENT                            ##
+      ##                                                        ##
+      ## Semantics: 'present' means the property path resolves  ##
+      ## AND the value is not null/undefined. Empty string '',  ##
+      ## 0, and false ARE present (this is intentional -- the   ##
+      ## question 'is the field set at all' is type-agnostic).  ##
+      ## Missing key or null value = NOT present.               ##
+      ############################################################
+
+      - name: returns true for IS_PRESENT rule when the given prop is a non-empty string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: "abc"
+        input:
+          flag: "feature-flag.is-present"
+        expected:
+          value: true
+
+      - name: returns true for IS_PRESENT rule when the given prop is an empty string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: ""
+        input:
+          flag: "feature-flag.is-present"
+        expected:
+          value: true
+
+      - name: returns true for IS_PRESENT rule when the given prop is the integer zero
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: 0
+        input:
+          flag: "feature-flag.is-present"
+        expected:
+          value: true
+
+      - name: returns true for IS_PRESENT rule when the given prop is boolean false
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: false
+        input:
+          flag: "feature-flag.is-present"
+        expected:
+          value: true
+
+      - name: returns false for IS_PRESENT rule when the given prop is null
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: null
+        input:
+          flag: "feature-flag.is-present"
+        expected:
+          value: false
+
+      - name: returns false for IS_PRESENT rule when the given prop key is missing from the context
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              name: "bob"
+        input:
+          flag: "feature-flag.is-present"
+        expected:
+          value: false
+
+      - name: returns false for IS_PRESENT rule when no contexts are provided at all
+        client: feature_flag_client
+        function: enabled
+        input:
+          flag: "feature-flag.is-present"
+        expected:
+          value: false
+
+      - name: returns false for IS_NOT_PRESENT rule when the given prop is a non-empty string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: "abc"
+        input:
+          flag: "feature-flag.is-not-present"
+        expected:
+          value: false
+
+      - name: returns true for IS_NOT_PRESENT rule when the given prop is null
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: null
+        input:
+          flag: "feature-flag.is-not-present"
+        expected:
+          value: true
+
+      - name: returns true for IS_NOT_PRESENT rule when the given prop key is missing from the context
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              name: "bob"
+        input:
+          flag: "feature-flag.is-not-present"
+        expected:
+          value: true
+
+      - name: returns true for IS_PRESENT rule on a nested path when the nested prop is set
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            organization:
+              domain: "example.com"
+        input:
+          flag: "feature-flag.is-present-nested"
+        expected:
+          value: true
+
+      - name: returns false for IS_PRESENT rule on a nested path when the nested key is missing but the parent context exists
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            organization:
+              name: "Acme Inc"
+        input:
+          flag: "feature-flag.is-present-nested"
+        expected:
+          value: false
+
+      - name: returns false for IS_PRESENT rule on a nested path when the parent context is entirely absent
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              id: "abc"
+        input:
+          flag: "feature-flag.is-present-nested"
+        expected:
+          value: false
+
+
       #####################################
       ## PROP_SEMVER_EQUAL -- the version is 2.0.0  ##
       #####################################

@@ -1,0 +1,67 @@
+{
+  "id": "17400000000000002",
+  "projectId": "124",
+  "key": "feature-flag.is-not-present",
+  "type": "feature_flag",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "propertyName": "user.id",
+              "operator": "IS_NOT_PRESENT"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": true
+          }
+        },
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "bool",
+            "value": false
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "bool",
+        "value": true
+      }
+    },
+    {
+      "value": {
+        "type": "bool",
+        "value": false
+      }
+    }
+  ],
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}
