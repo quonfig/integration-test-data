@@ -622,7 +622,10 @@ function renderPostBody(kase: YamlCase): string {
   let body = '';
   body += `${indent}agg = build_aggregator(${aggLit}, ${overridesLit})\n`;
   body += `${indent}feed_aggregator(agg, ${aggLit}, ${dataLit}, contexts=${ctxLit})\n`;
-  body += `${indent}assert aggregator_post(agg, ${aggLit}, endpoint=${endpointLit}) == ${expectedLit}\n`;
+  // E711: use `is None` rather than `== None` when the right-hand side is the
+  // None literal (happens when the YAML's expected_data is null/missing).
+  const cmp = expectedLit === 'None' ? 'is' : '==';
+  body += `${indent}assert aggregator_post(agg, ${aggLit}, endpoint=${endpointLit}) ${cmp} ${expectedLit}\n`;
   return body;
 }
 
@@ -641,14 +644,20 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `# Source: ${GENERATOR_PATH}\n`;
   out += `\n`;
   out += `from __future__ import annotations\n\n`;
-  out += `import os\n\n`;
-  out += `import pytest\n\n`;
+
+  // Eval/datadir suites use os (os.environ, os.path.join) and pytest
+  // (pytest.raises, @pytest.fixture); post/telemetry suites use neither, so
+  // omitting them keeps ruff (F401) happy without a post-format pass.
+  if (!isPost) {
+    out += `import os\n\n`;
+    out += `import pytest\n\n`;
+  }
 
   if (isPost) {
     // Aggregator helpers — these don't exist yet. Importing them will fail
     // at module-load time once that module doesn't exist. Either failure
     // surfaces the gap correctly.
-    out += `from .aggregator_helpers import build_aggregator, feed_aggregator, aggregator_post\n\n`;
+    out += `from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator\n\n\n`;
   } else {
     out += `from quonfig import Quonfig\n`;
     if (result.exceptions.size > 0) {

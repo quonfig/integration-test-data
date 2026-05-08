@@ -54,25 +54,94 @@ export function rubyLiteral(value: unknown): string {
   if (value === true) return 'true';
   if (value === false) return 'false';
   if (typeof value === 'number') {
-    if (Number.isInteger(value)) return value.toString();
+    if (Number.isInteger(value)) return formatRubyInt(value);
     return value.toString();
   }
   if (typeof value === 'string') return rubyStringLiteral(value);
   if (Array.isArray(value)) {
+    // Style/WordArray: arrays of bare-word strings (alphanumerics +
+    // underscore + a couple of common punctuation chars rubocop tolerates)
+    // render as `%w[a b c]` rather than `['a', 'b', 'c']`. Default
+    // MinSize is 2; only kick in at length >= 2.
+    if (value.length >= 2 && value.every(isWordArrayElement)) {
+      return '%w[' + (value as string[]).join(' ') + ']';
+    }
     return '[' + value.map(rubyLiteral).join(', ') + ']';
   }
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>).map(
       ([k, v]) => `${rubyLiteral(k)} => ${rubyLiteral(v)}`,
     );
-    return '{' + entries.join(', ') + '}';
+    if (entries.length === 0) return '{}';
+    // Layout/SpaceInsideHashLiteralBraces: `{ a => b }` not `{a => b}`.
+    return '{ ' + entries.join(', ') + ' }';
   }
   // Fallback — shouldn't hit for the YAML shapes we use.
   return rubyStringLiteral(String(value));
 }
 
-/** Quote a string the way Ruby's `String#inspect` does for the safe ASCII subset. */
+/**
+ * True when a string is a candidate for `%w[]` array notation — i.e.
+ * matches rubocop's default Style/WordArray WordRegex of `\A[\p{Word}]+\z`
+ * (letters, digits, underscore). We deliberately exclude whitespace,
+ * dots, dashes, and punctuation so the output stays unambiguous.
+ */
+function isWordArrayElement(v: unknown): boolean {
+  if (typeof v !== 'string') return false;
+  if (v.length === 0) return false;
+  return /^[A-Za-z0-9_]+$/.test(v);
+}
+
+/**
+ * Render a Ruby integer with underscores every three digits when the
+ * magnitude is large enough to trigger Style/NumericLiterals (default
+ * MinDigits: 5).
+ */
+function formatRubyInt(n: number): string {
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n).toString();
+  if (abs.length < 5) return sign + abs;
+  // Insert `_` every 3 digits from the right.
+  let out = '';
+  for (let i = 0; i < abs.length; i++) {
+    if (i > 0 && (abs.length - i) % 3 === 0) out += '_';
+    out += abs[i];
+  }
+  return sign + out;
+}
+
+/**
+ * Render a Ruby string literal. Prefers single quotes (Style/StringLiterals
+ * default) when the string is safe for them — i.e. has no escape sequences
+ * that single-quoted strings can't represent (control chars, embedded `'`
+ * or `\`). Falls back to double-quoted with the usual `\n`/`\t`/`\xNN`
+ * escapes when needed.
+ */
 function rubyStringLiteral(s: string): string {
+  // Single-quoted strings only need to escape `\` and `'`. They cannot
+  // represent `\n`, `\t`, `\r`, or other control chars without losing
+  // their literal meaning, so fall back to double-quoted in that case.
+  let needsDouble = false;
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    if (code < 0x20 || code === 0x7f) {
+      needsDouble = true;
+      break;
+    }
+  }
+  if (!needsDouble) {
+    let out = "'";
+    for (const ch of s) {
+      if (ch === '\\' || ch === "'") {
+        out += '\\' + ch;
+      } else {
+        out += ch;
+      }
+    }
+    out += "'";
+    return out;
+  }
+
   let out = '"';
   for (const ch of s) {
     const code = ch.codePointAt(0)!;
@@ -238,8 +307,15 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
   const def = (input as { default?: unknown }).default;
 
+  // The `assert_get_with_default` branch takes `@store` directly and never
+  // touches `resolver`, so building one would trip Lint/UselessAssignment.
+  // Only emit the resolver setup line for branches that actually use it.
+  const needsResolver = fn === 'enabled' || !hasDefault;
+
   let inner = '';
-  inner += `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
+  if (needsResolver) {
+    inner += `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
+  }
   const envWrap = envVars && typeof envVars === 'object';
   if (envWrap) {
     inner += `    IntegrationTestHelpers.with_env(${rubyLiteral(stringifyEnvVars(envVars))}) do\n`;
@@ -460,7 +536,9 @@ function stringifyEnvVars(env: Record<string, unknown>): Record<string, string> 
 function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   let out = '';
   out += `# frozen_string_literal: true\n`;
-  out += `#\n`;
+  // Layout/EmptyLineAfterMagicComment requires a blank line between the
+  // magic comment and the next non-comment block.
+  out += `\n`;
   out += `# AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}.\n`;
   out += `# Regenerate with:\n`;
   out += `#   cd integration-test-data/generators && npm run generate -- --target=ruby\n`;
