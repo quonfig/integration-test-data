@@ -88,3 +88,34 @@ export function goSuiteName(yamlBasename: string): string {
     .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
     .join('');
 }
+
+/**
+ * Java test method suffix — `void <suffix>()`. Lower-camel-case, ASCII only,
+ * stable across regenerations. JUnit's @DisplayName carries the original
+ * human-readable name; the method identifier just has to compile.
+ */
+export function javaTestMethodName(name: string): string {
+  const raw = (name ?? '').toString();
+  const parts = raw.split(/[^a-zA-Z0-9]+/).filter((p) => p.length > 0);
+  const first = parts[0];
+  if (first === undefined) return 'unnamed';
+  let result = first.toLowerCase();
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts[i]!;
+    result += p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+  }
+  // Java identifiers can't start with a digit; prefix with underscore.
+  if (/^[0-9]/.test(result)) result = '_' + result;
+  return result;
+}
+
+/**
+ * Convert a YAML basename ("get.yaml", "datadir_environment.yaml") into the
+ * Java test class name ("GetTest", "DatadirEnvironmentTest"). The "Test"
+ * suffix is JUnit-conventional and lets a single `*Test.java` glob in
+ * Gradle's testClassesDirs pick up the generated suite alongside hand-written
+ * unit tests.
+ */
+export function javaSuiteClassName(yamlBasename: string): string {
+  return goSuiteName(yamlBasename) + 'Test';
+}

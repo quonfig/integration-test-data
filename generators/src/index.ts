@@ -8,11 +8,12 @@ import { runRubyTarget } from './targets/ruby.js';
 import { runGoTarget } from './targets/go.js';
 import { runNodeTarget } from './targets/node.js';
 import { runPythonTarget } from './targets/python.js';
+import { runJavaTarget } from './targets/java.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const KNOWN_TARGETS = ['ruby', 'go', 'node', 'python'] as const;
+const KNOWN_TARGETS = ['ruby', 'go', 'node', 'python', 'java'] as const;
 type Target = (typeof KNOWN_TARGETS)[number];
 
 interface CliArgs {
@@ -53,6 +54,7 @@ function printHelp(): void {
       '  go       sdk-go/internal/fixtures/*_generated_test.go (go test)',
       '  node     sdk-node/test/integration/*.generated.test.ts (Vitest)',
       '  python   sdk-python/tests/integration/test_*.py (pytest)',
+      '  java     sdk-java/src/test/java/com/quonfig/sdk/integration/*Test.java (JUnit 5)',
       '',
       'Pass --target multiple times to run a subset; default is all.',
     ].join('\n'),
@@ -110,6 +112,27 @@ async function main(): Promise<void> {
           const result = runPythonTarget(dataRoot, outDir);
           for (const w of result.written) {
             console.log(`[python] wrote ${w.path}: ${w.cases} cases`);
+          }
+          break;
+        }
+        case 'java': {
+          const outDir = resolve(
+            repoRoot(),
+            '..',
+            'sdk-java',
+            'src',
+            'test',
+            'java',
+            'com',
+            'quonfig',
+            'sdk',
+            'integration',
+          );
+          console.log(`[java] reading ${dataRoot}`);
+          console.log(`[java] writing to ${outDir}`);
+          const result = runJavaTarget(dataRoot, outDir);
+          for (const w of result.written) {
+            console.log(`[java] wrote ${w.path}: ${w.cases} cases`);
           }
           break;
         }

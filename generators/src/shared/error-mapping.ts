@@ -2,7 +2,7 @@
 // Adding a target = adding a key; missing entries indicate an unmapped
 // error and the generator MUST fail loudly rather than emit a skip.
 
-export type TargetName = 'ruby' | 'go' | 'node' | 'python';
+export type TargetName = 'ruby' | 'go' | 'node' | 'python' | 'java';
 
 export type ErrorMap = Readonly<Record<string, string>>;
 
@@ -59,11 +59,27 @@ const GO_ERRORS: ErrorMap = {
   missing_env_var: 'quonfig.ErrMissingEnvVar',
 };
 
+// sdk-java exception classes will live under com.quonfig.sdk.exceptions.
+// They don't exist yet (epic qfg-oi0j is in flight). Generated tests reference
+// these fully-qualified class names; compile errors at sdk-java build time are
+// the desired surfacing — they tell the SDK author exactly which exception
+// class to add. Mapping mirrors the Python target's coverage.
+const JAVA_ERRORS: ErrorMap = {
+  missing_default: 'com.quonfig.sdk.exceptions.QuonfigKeyNotFoundException',
+  initialization_timeout: 'com.quonfig.sdk.exceptions.QuonfigInitTimeoutException',
+  missing_env_var: 'com.quonfig.sdk.exceptions.QuonfigEnvVarNotSetException',
+  unable_to_coerce_env_var: 'com.quonfig.sdk.exceptions.QuonfigKeyNotFoundException',
+  unable_to_decrypt: 'com.quonfig.sdk.exceptions.QuonfigDecryptionException',
+  missing_environment: 'java.lang.RuntimeException',
+  invalid_environment: 'java.lang.RuntimeException',
+};
+
 const ERROR_MAPS: Record<TargetName, ErrorMap> = {
   ruby: RUBY_ERRORS,
   node: NODE_ERRORS,
   python: PYTHON_ERRORS,
   go: GO_ERRORS,
+  java: JAVA_ERRORS,
 };
 
 export function lookupErrorClass(target: TargetName, errorKey: string): string | undefined {
