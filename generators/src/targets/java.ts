@@ -111,18 +111,21 @@ export function javaLiteral(value: unknown): string {
 }
 
 /**
- * Render a number as a Java numeric literal. Integers (within int range)
- * render bare; integers outside int range get the `L` suffix; non-integers
- * render with a trailing `d` so the JVM treats them as `double` even when
- * they round-trip as e.g. "9.95" rather than "9.95d". NaN/Infinity use the
+ * Render a number as a Java numeric literal. Integer values *always* get the
+ * `L` suffix so they auto-box as `Long`, not `Integer` — the SDK's INT type,
+ * Jackson's JSON-int parsing (via {@code raw.asLong()}), and the env-var
+ * coercion path (`Long.parseLong`) all surface integer values as {@code
+ * Long}, so emitting bare {@code int} literals would make
+ * `assertEquals(expected, actual)` fail against any of those returns. Non-
+ * integers render with a trailing `d` so the JVM treats them as `double`
+ * even when they round-trip as e.g. "9.95". NaN/Infinity use the
  * `Double.NaN` / `Double.POSITIVE_INFINITY` constants.
  */
 function formatJavaNumber(n: number): string {
   if (Number.isNaN(n)) return 'Double.NaN';
   if (!Number.isFinite(n)) return n > 0 ? 'Double.POSITIVE_INFINITY' : 'Double.NEGATIVE_INFINITY';
   if (Number.isInteger(n)) {
-    if (n > 2147483647 || n < -2147483648) return n.toString() + 'L';
-    return n.toString();
+    return n.toString() + 'L';
   }
   return n.toString() + 'd';
 }
