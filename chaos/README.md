@@ -121,7 +121,7 @@ chaos:
       interval_ms: 6000
 ```
 
-The assertion expressions (`client.connectionState()`, `server_metric(...)`, etc.) are interpreted by each per-SDK test runner — the schema only enforces presence and shape. The expression vocabulary is part of the per-SDK supervisor unit-test contract (`project/plans/sdk-hardening-and-verification.md`, Tier 1).
+The assertion expressions (`client.connectionState()`, `server_metric(...)`, etc.) are interpreted by each per-SDK test runner — the schema only enforces presence and shape. The expression vocabulary is part of the per-SDK supervisor unit-test contract: see [`supervisor-test-contract.md`](./supervisor-test-contract.md) (plan reference: `project/plans/sdk-hardening-and-verification.md`, Tier 1).
 
 ## SDK CI wiring (one-time per SDK)
 
