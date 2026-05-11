@@ -1,0 +1,11 @@
+function: sse_resilience
+tests:
+  - name: "missing within_ms"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+    chaos:
+      - inject:
+          sse_silent_stall_after_ms: 100
+    expectations:
+      - assert: "client.connectionState() == 'connected'"

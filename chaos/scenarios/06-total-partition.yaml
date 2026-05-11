@@ -1,0 +1,30 @@
+function: sse_resilience
+tests:
+  - name: "06 total partition — SSE + HTTP both down for 180s"
+    description: |
+      Both layers fail cleanly. No crash, no tight retry loop, no exception
+      bubbling past the supervisor. When the partition clears, both come back.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 260
+    chaos:
+      - at_ms: 5000
+        inject:
+          name: total_outage
+          both_down_ms: 180000
+      - at_ms: 185000
+        clear: total_outage
+    expectations:
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 30000
+        assert: "client.connectionState() != 'connected'"
+      - within_ms: 200000
+        must_hold_for_ms: 60000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') < 200"
+      - within_ms: 230000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 230000
+        assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"

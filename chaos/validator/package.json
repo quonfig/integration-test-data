@@ -1,0 +1,22 @@
+{
+  "name": "@quonfig/chaos-validator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Validates chaos scenario YAML files in integration-test-data/chaos/scenarios/ against the JSON schema.",
+  "type": "module",
+  "scripts": {
+    "validate": "tsx src/cli.ts",
+    "test": "tsx --test test/validate.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,27 @@
+function: sse_resilience
+tests:
+  - name: "11 null-hypothesis — 30 minutes of healthy steady state"
+    description: |
+      The most important scenario for credibility. 30 minutes of zero chaos.
+      The chaos infrastructure itself MUST NOT introduce spurious reconnects,
+      false-positive lag, or premature Layer 2 engagement. If this is red, every
+      green elsewhere is suspect — and operators will learn to ignore the alarms.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 1800
+    chaos: []
+    expectations:
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 1800000
+        must_hold_for_ms: 1795000
+        assert: "client.connectionState() == 'connected' AND client.fallbackPollerActive() == false"
+      - within_ms: 1800000
+        must_hold_for_ms: 1795000
+        assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"
+      - within_ms: 1800000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') == 0"
+      - within_ms: 1800000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='2') == 0"

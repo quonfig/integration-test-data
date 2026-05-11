@@ -1,0 +1,24 @@
+function: sse_resilience
+tests:
+  - name: "08 auth failure — SSE returns 401 indefinitely"
+    description: |
+      API key is bad. SDK must back off (exponential, not tight-loop), surface
+      the error in logs, and stop hammering the endpoint.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 60
+    chaos:
+      - at_ms: 0
+        inject:
+          name: forbidden
+          sse_http_status: 401
+    expectations:
+      - within_ms: 10000
+        assert: "client.connectionState() == 'disconnected' OR client.connectionState() == 'reconnecting'"
+      - within_ms: 60000
+        must_hold_for_ms: 30000
+        assert: "client.sdkMetric('quonfig_sse_connect_attempts_total') < 20"
+      - within_ms: 60000
+        assert: "client.sdkLog('error', /401|unauthor/i) >= 1"

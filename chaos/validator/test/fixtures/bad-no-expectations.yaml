@@ -1,0 +1,10 @@
+function: sse_resilience
+tests:
+  - name: "no expectations at all"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+    chaos:
+      - inject:
+          sse_silent_stall_after_ms: 100
+    expectations: []

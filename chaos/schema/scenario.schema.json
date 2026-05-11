@@ -1,0 +1,227 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://quonfig.dev/schemas/chaos/scenario.json",
+  "title": "ChaosScenarioFile",
+  "description": "A single chaos scenario file. Lives under integration-test-data/chaos/scenarios/. Defines a chaos-injected test that every SDK CI can run identically via the shared launcher.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["function", "tests"],
+  "properties": {
+    "function": {
+      "description": "Logical grouping of tests, by parallel with tests/eval/<function>.yaml. Usually 'sse_resilience' for chaos.",
+      "type": "string",
+      "minLength": 1
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/test" }
+    }
+  },
+  "definitions": {
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "setup", "expectations"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "setup": { "$ref": "#/definitions/setup" },
+        "chaos": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/chaosStep" }
+        },
+        "expectations": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Time-bounded assertions. Each MUST have within_ms — assertions check during chaos, not just at final state.",
+          "items": { "$ref": "#/definitions/expectation" }
+        }
+      }
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sdk", "sse_endpoint"],
+      "properties": {
+        "sdk": {
+          "description": "Which SDK runs the test. 'any' means the same scenario applies to every SDK.",
+          "type": "string",
+          "enum": ["any", "sdk-go", "sdk-node", "sdk-python", "sdk-ruby", "sdk-java"]
+        },
+        "sse_endpoint": {
+          "description": "Whether SSE goes through the chaos proxy or direct to api-delivery.",
+          "type": "string",
+          "enum": ["chaos", "direct", "disabled"]
+        },
+        "http_endpoint": {
+          "description": "Whether HTTP polling goes through the chaos proxy or direct. Defaults to 'direct'.",
+          "type": "string",
+          "enum": ["chaos", "direct", "disabled"]
+        },
+        "wall_clock_seconds": {
+          "description": "Max wall-clock seconds the test runner should keep the process up. Default 30s per the plan.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "user_callback": {
+          "description": "Inject user-callback behavior. Used by scenario 10.",
+          "type": "string",
+          "enum": ["noop", "throw"]
+        },
+        "expected_state_on_start": {
+          "description": "Sanity assertion before chaos injection. Optional.",
+          "type": "string"
+        }
+      }
+    },
+    "chaosStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "at_ms": {
+          "description": "When to apply this step, in ms relative to test start. Default 0 (immediately).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "inject": { "$ref": "#/definitions/inject" },
+        "clear": {
+          "description": "Remove an earlier-injected toxic by name.",
+          "type": "string"
+        },
+        "process": {
+          "description": "Out-of-band process action: kill/restart the proxy itself. Used by scenario 9.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action"],
+          "properties": {
+            "action": { "type": "string", "enum": ["kill_sse_proxy", "restart_sse_proxy"] },
+            "count": { "type": "integer", "minimum": 1, "default": 1 },
+            "interval_ms": { "type": "integer", "minimum": 0 }
+          }
+        }
+      },
+      "oneOf": [
+        { "required": ["inject"] },
+        { "required": ["clear"] },
+        { "required": ["process"] }
+      ]
+    },
+    "inject": {
+      "description": "Either a convenience alias (one of the *_after_ms / *_ms / etc. shortcut keys) or a low-level toxiproxy 'toxic' spec.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Optional name so a later 'clear' step can remove this toxic.",
+          "type": "string"
+        },
+        "proxy": {
+          "description": "Which named proxy to apply the toxic to. Default 'sse'.",
+          "type": "string",
+          "enum": ["sse", "http", "both"]
+        },
+        "toxic": { "$ref": "#/definitions/toxic" },
+        "sse_silent_stall_after_ms": {
+          "description": "Convenience: server stops sending bytes after N ms. Maps to toxiproxy 'timeout' toxic on the sse proxy.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "sse_latency_ms": {
+          "description": "Convenience: add latency to every SSE packet.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "sse_bandwidth_kbps": {
+          "description": "Convenience: throttle SSE bandwidth to N KB/s.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "sse_down_ms": {
+          "description": "Convenience: close SSE connections and refuse new ones for N ms.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "http_down_ms": {
+          "description": "Convenience: close HTTP connections and refuse new ones for N ms.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "both_down_ms": {
+          "description": "Convenience: scenario 6 — kill both proxies for N ms.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "sse_half_open_after_bytes": {
+          "description": "Convenience: scenario 7 — server returns 200 then closes after N bytes.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "sse_http_status": {
+          "description": "Convenience: scenario 8 — force SSE endpoint to return this HTTP status indefinitely.",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        }
+      },
+      "oneOf": [
+        { "required": ["toxic"] },
+        { "required": ["sse_silent_stall_after_ms"] },
+        { "required": ["sse_latency_ms"] },
+        { "required": ["sse_bandwidth_kbps"] },
+        { "required": ["sse_down_ms"] },
+        { "required": ["http_down_ms"] },
+        { "required": ["both_down_ms"] },
+        { "required": ["sse_half_open_after_bytes"] },
+        { "required": ["sse_http_status"] }
+      ]
+    },
+    "toxic": {
+      "description": "Low-level toxiproxy toxic spec. Use only when no convenience alias above fits.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "latency",
+            "down",
+            "bandwidth",
+            "slow_close",
+            "timeout",
+            "reset_peer",
+            "slicer",
+            "limit_data"
+          ]
+        },
+        "stream": { "type": "string", "enum": ["upstream", "downstream"] },
+        "toxicity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "attributes": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["within_ms", "assert"],
+      "properties": {
+        "within_ms": {
+          "description": "Hard upper bound (ms from test start) by which the assertion MUST hold. Time-bounded assertions are checked during chaos, not at final state only.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "assert": {
+          "description": "Assertion expression. Interpreted by the per-SDK runner; the schema only enforces presence.",
+          "type": "string",
+          "minLength": 1
+        },
+        "must_hold_for_ms": {
+          "description": "Optional: once the assertion first holds, it must continue to hold for N ms (used for null-hypothesis steady-state assertions).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

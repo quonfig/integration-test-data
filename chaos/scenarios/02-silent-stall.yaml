@@ -1,0 +1,28 @@
+function: sse_resilience
+tests:
+  - name: "02 silent stall — timeout (no traffic) on SSE port for 120s"
+    description: |
+      Jeff's #1 fear. Server stops sending bytes but the socket is still 'open'.
+      Layer 1 (90s SSE read deadline) must drop the socket and reconnect.
+      sdk-go and sdk-java are expected to be RED here until Phase 1 ships.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 200
+    chaos:
+      - at_ms: 5000
+        inject:
+          name: stall
+          sse_silent_stall_after_ms: 0
+      - at_ms: 125000
+        clear: stall
+    expectations:
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 95000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"
+      - within_ms: 95000
+        assert: "client.connectionState() == 'reconnecting' OR client.connectionState() == 'connected'"
+      - within_ms: 180000
+        assert: "client.connectionState() == 'connected' AND server_metric('quonfig_subscriber_lag_seconds') == 0"

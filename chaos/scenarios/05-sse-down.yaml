@@ -1,0 +1,28 @@
+function: sse_resilience
+tests:
+  - name: "05 SSE down for 180s — Layer 2 fallback engages and recovers"
+    description: |
+      Hard SSE outage with HTTP still healthy. After 120s of disconnect Layer 2
+      fallback polling MUST engage (default 60s). When SSE returns, Layer 2 MUST
+      shut down again.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: direct
+      wall_clock_seconds: 260
+    chaos:
+      - at_ms: 5000
+        inject:
+          name: sse_dead
+          sse_down_ms: 180000
+      - at_ms: 185000
+        clear: sse_dead
+    expectations:
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 135000
+        assert: "client.connectionState() == 'falling_back' AND client.fallbackPollerActive() == true"
+      - within_ms: 135000
+        assert: "client.lastSuccessfulRefresh() >= (now() - 70000)"
+      - within_ms: 230000
+        assert: "client.connectionState() == 'connected' AND client.fallbackPollerActive() == false"

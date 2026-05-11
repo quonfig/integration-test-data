@@ -1,0 +1,73 @@
+name: quonfig-chaos
+
+# Shared chaos launcher used by every SDK's CI.
+#
+# Always boots:
+#   - toxiproxy  : the chaos injector
+#                  - admin API on host port ${TOXIPROXY_ADMIN_PORT:-8474}
+#                  - SSE proxy on host port ${SSE_PROXY_PORT:-18550}
+#                  - HTTP proxy on host port ${HTTP_PROXY_PORT:-18551}
+#                  - proxies are seeded from ./toxiproxy/proxies.json on boot
+#
+# Optional (enable via `--profile upstream`):
+#   - api-delivery : a real api-delivery binary in fixture mode, listening on
+#                    host port ${API_DELIVERY_PORT:-6550}. Use when the SDK CI
+#                    does not bring its own upstream.
+#
+# Env knobs (override on the docker-compose CLI):
+#   TOXIPROXY_ADMIN_PORT   admin/HTTP api for toxiproxy           (default 8474)
+#   SSE_PROXY_PORT         chaos SSE port — SDK targets this      (default 18550)
+#   HTTP_PROXY_PORT        chaos HTTP port — SDK targets this     (default 18551)
+#   API_DELIVERY_PORT      host-bound api-delivery port           (default 6550)
+#   CHAOS_UPSTREAM_HOST    where toxiproxy forwards to            (default host.docker.internal)
+#   CHAOS_UPSTREAM_SSE     upstream SSE port                      (default 6550)
+#   CHAOS_UPSTREAM_HTTP    upstream HTTP port                     (default 6550)
+
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: quonfig-chaos-toxiproxy
+    command:
+      - "-host=0.0.0.0"
+      - "-config=/etc/toxiproxy/proxies.json"
+    ports:
+      - "${TOXIPROXY_ADMIN_PORT:-8474}:8474"
+      - "${SSE_PROXY_PORT:-18550}:18550"
+      - "${HTTP_PROXY_PORT:-18551}:18551"
+    volumes:
+      - ./toxiproxy/proxies.json:/etc/toxiproxy/proxies.json:ro
+    extra_hosts:
+      # makes host.docker.internal resolve on Linux CI runners as well as macOS
+      - "host.docker.internal:host-gateway"
+    environment:
+      CHAOS_UPSTREAM_HOST: ${CHAOS_UPSTREAM_HOST:-host.docker.internal}
+      CHAOS_UPSTREAM_SSE: ${CHAOS_UPSTREAM_SSE:-6550}
+      CHAOS_UPSTREAM_HTTP: ${CHAOS_UPSTREAM_HTTP:-6550}
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  # Optional: bring up a real api-delivery in fixture mode so SDK CIs that
+  # don't already have an upstream can use this compose file standalone.
+  # Enable with: docker compose --profile upstream up
+  api-delivery:
+    profiles: ["upstream"]
+    build:
+      context: ../..
+      dockerfile: api-delivery/Dockerfile
+    container_name: quonfig-chaos-api-delivery
+    environment:
+      PORT: "8080"
+      FIXTURE_DIR: "/fixtures"
+      QUONFIG_ENVIRONMENT: "Production"
+    volumes:
+      - ../data/integration-tests:/fixtures:ro
+    ports:
+      - "${API_DELIVERY_PORT:-6550}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 30

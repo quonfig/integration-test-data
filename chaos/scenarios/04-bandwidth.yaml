@@ -1,0 +1,27 @@
+function: sse_resilience
+tests:
+  - name: "04 bandwidth — 1KBps on SSE port"
+    description: |
+      Trickle-feed. A 300KB initial config envelope cannot complete in the read
+      window. Either Layer 1 trips and the SDK reconnects (acceptable), or SSE
+      survives by chunking heartbeats (also acceptable). What matters: no permanent
+      damage, no unhandled exception, eventual recovery.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 60
+    chaos:
+      - at_ms: 2000
+        inject:
+          name: trickle
+          sse_bandwidth_kbps: 1
+      - at_ms: 30000
+        clear: trickle
+    expectations:
+      - within_ms: 2000
+        assert: "client.connectionState() == 'connected' OR client.connectionState() == 'initializing'"
+      - within_ms: 60000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 60000
+        assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"

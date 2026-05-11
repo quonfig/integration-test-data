@@ -1,0 +1,28 @@
+function: sse_resilience
+tests:
+  - name: "09 flapping — SSE proxy killed 5x in 30s"
+    description: |
+      Out-of-band: the proxy itself is killed and restarted 5 times in 30s.
+      Supervisor MUST exponential-backoff (no busy reconnect loop) and reach
+      eventual stability when flapping stops.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 90
+    chaos:
+      - at_ms: 5000
+        process:
+          action: kill_sse_proxy
+          count: 5
+          interval_ms: 6000
+    expectations:
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 90000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 5"
+      - within_ms: 90000
+        must_hold_for_ms: 30000
+        assert: "client.sdkMetric('quonfig_sse_connect_attempts_total') < 100"
+      - within_ms: 90000
+        assert: "client.connectionState() == 'connected'"

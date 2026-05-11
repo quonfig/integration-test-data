@@ -25,6 +25,7 @@ integration-test-data/
 │       ├── segments/        # Segment JSON files
 │       └── schemas/         # Schema JSON files
 ├── quonfig.json             # Lists valid environments (e.g. {"environments": ["Production"]})
+├── chaos/                   # Cross-SDK network-chaos harness (toxiproxy + 11 scenarios) — see chaos/README.md
 └── .claude/
     └── skills/
         └── verify-sdks.md   # Skill to check all SDKs have generated tests

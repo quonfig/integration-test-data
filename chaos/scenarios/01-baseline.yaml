@@ -1,0 +1,22 @@
+function: sse_resilience
+tests:
+  - name: "01 baseline — healthy server, healthy network"
+    description: |
+      The null-ish baseline: no toxics injected. SSE must connect and stay connected
+      for the full window. If this fails, every other scenario is unreliable.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 30
+    chaos: []
+    expectations:
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 30000
+        must_hold_for_ms: 25000
+        assert: "client.connectionState() == 'connected' AND client.fallbackPollerActive() == false"
+      - within_ms: 30000
+        assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"
+      - within_ms: 30000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') == 0"

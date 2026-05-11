@@ -1,0 +1,23 @@
+function: sse_resilience
+tests:
+  - name: "10 callback throw — user code throws inside onConfigUpdate"
+    description: |
+      A panic/throw inside the customer-provided onConfigUpdate callback MUST be
+      caught by the supervisor. The SDK continues to operate; subsequent updates
+      are still delivered. The 'worker_restart_total' counter increments.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 45
+      user_callback: throw
+    chaos: []
+    expectations:
+      - within_ms: 10000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"
+      - within_ms: 45000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 45000
+        assert: "client.processStillAlive() == true"
+      - within_ms: 45000
+        assert: "client.sdkLog('error', /callback|onConfigUpdate/i) >= 1"

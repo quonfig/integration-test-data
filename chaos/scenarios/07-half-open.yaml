@@ -1,0 +1,27 @@
+function: sse_resilience
+tests:
+  - name: "07 half-open — SSE returns 200 then closes after 1 byte"
+    description: |
+      Server-side TCP rug-pull. The SSE handler 'succeeds' (200 OK), writes a single
+      byte, and closes. SDK must NOT deadlock on the close, must reconnect, and the
+      reconnect must succeed. Trips a real bug in any SDK that treats 200 as
+      'connected' before the heartbeat lands.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 60
+    chaos:
+      - at_ms: 5000
+        inject:
+          name: half_open
+          sse_half_open_after_bytes: 1
+      - at_ms: 30000
+        clear: half_open
+    expectations:
+      - within_ms: 15000
+        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"
+      - within_ms: 60000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 60000
+        assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"

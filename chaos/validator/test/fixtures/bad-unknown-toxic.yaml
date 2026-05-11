@@ -1,0 +1,14 @@
+function: sse_resilience
+tests:
+  - name: "unknown toxic"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+    chaos:
+      - inject:
+          toxic:
+            type: not_a_real_toxic
+            attributes: {}
+    expectations:
+      - within_ms: 1000
+        assert: "true"

@@ -1,0 +1,19 @@
+function: sse_resilience
+tests:
+  - name: "silent stall recovery"
+    description: "Layer 1 must drop a silently-stalled SSE socket within 90s."
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      wall_clock_seconds: 200
+    chaos:
+      - at_ms: 100
+        inject:
+          sse_silent_stall_after_ms: 100
+    expectations:
+      - within_ms: 90000
+        assert: "client.connectionState() == 'reconnecting' OR client.connectionState() == 'falling_back'"
+      - within_ms: 90000
+        assert: "server_metric('quonfig_subscriber_lag_seconds') > 60"
+      - within_ms: 180000
+        assert: "client.connectionState() == 'connected' AND server_metric('quonfig_subscriber_lag_seconds') == 0"
