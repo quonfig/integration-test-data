@@ -8,6 +8,7 @@ import { validateYaml } from '../src/validate.ts';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, 'fixtures');
 const SCENARIOS = join(HERE, '..', '..', 'scenarios');
+const SCENARIOS_HTTP_PROXY = join(HERE, '..', '..', 'scenarios-http-proxy');
 
 function load(rel: string): string {
   return readFileSync(rel, 'utf8');
@@ -45,9 +46,9 @@ test('rejects unknown toxiproxy toxic types', () => {
   );
 });
 
-test('every scenario in chaos/scenarios/*.yaml validates', () => {
+test('every default-suite scenario in chaos/scenarios/*.yaml validates', () => {
   const files = readdirSync(SCENARIOS).filter((f) => f.endsWith('.yaml'));
-  assert.ok(files.length >= 11, `expected at least 11 scenarios, found ${files.length}`);
+  assert.ok(files.length >= 10, `expected at least 10 default scenarios, found ${files.length}`);
   const failures: string[] = [];
   for (const f of files) {
     const result = validateYaml(load(join(SCENARIOS, f)));
@@ -58,8 +59,23 @@ test('every scenario in chaos/scenarios/*.yaml validates', () => {
   assert.deepEqual(failures, [], `scenarios failed validation:\n${failures.join('\n')}`);
 });
 
-test('scenarios cover the 11 named cases from the plan', () => {
-  const files = readdirSync(SCENARIOS).filter((f) => f.endsWith('.yaml'));
+test('every http-proxy scenario in chaos/scenarios-http-proxy/*.yaml validates', () => {
+  const files = readdirSync(SCENARIOS_HTTP_PROXY).filter((f) => f.endsWith('.yaml'));
+  assert.ok(files.length >= 1, `expected at least 1 http-proxy scenario, found ${files.length}`);
+  const failures: string[] = [];
+  for (const f of files) {
+    const result = validateYaml(load(join(SCENARIOS_HTTP_PROXY, f)));
+    if (!result.valid) {
+      failures.push(`${f}: ${JSON.stringify(result.errors)}`);
+    }
+  }
+  assert.deepEqual(failures, [], `scenarios failed validation:\n${failures.join('\n')}`);
+});
+
+test('scenarios cover the 11 named cases from the plan (across all suites)', () => {
+  const defaultFiles = readdirSync(SCENARIOS).filter((f) => f.endsWith('.yaml'));
+  const httpProxyFiles = readdirSync(SCENARIOS_HTTP_PROXY).filter((f) => f.endsWith('.yaml'));
+  const files = [...defaultFiles, ...httpProxyFiles];
   const required = [
     'baseline',
     'silent-stall',

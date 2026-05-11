@@ -16,9 +16,19 @@ chaos/
   stop-chaos.sh              teardown
   toxiproxy/proxies.json     empty seed (start-chaos.sh creates the proxies at boot)
   schema/scenario.schema.json  JSON-schema for chaos YAML
-  scenarios/                 11 scenarios from the plan's Tier 2 table
+  scenarios/                 default suite — every SDK runner globs *.yaml here
+  scenarios-http-proxy/      requires HTTP-aware injection (not toxiproxy)
+  scenarios-manual/          deferred / out-of-band; not wired to any SDK runner
   validator/                 node validator + tests; CI gate for the schema
 ```
+
+## Scenario directories — what each is for
+
+Every SDK runner does `glob("scenarios/*.yaml")` at the top level. Moving a YAML into a sibling subdir auto-excludes it from the default chaos run; runners that want the alternate harness pick them up explicitly.
+
+- **`scenarios/`** — the default suite. Every YAML here is expected to be feasible against toxiproxy (TCP-level chaos: stalls, latency, bandwidth, disables, byte limits, process flapping). A failure here is either a real SDK bug or a runner bug — never a known infrastructure limitation. **The default chaos run is intended as a green/red signal you can trust.**
+- **`scenarios-http-proxy/`** — scenarios that require HTTP-aware injection (auth failures, bad response bodies, malformed headers). Toxiproxy is TCP-only and structurally cannot model these. A future HTTP-aware harness (mitmproxy, mock server, or per-SDK fixture mode) will pick these up — for now they sit here as a record of intent. SDK runners do NOT include this directory by default.
+- **`scenarios-manual/`** — scenarios that don't fit either automated harness today (process-level chaos requiring container privileges, multi-host scenarios, etc.). Placeholder; populate as the need arises.
 
 ## Boot the harness
 
@@ -52,7 +62,9 @@ All port and host knobs can be overridden via env (`SSE_PROXY_PORT`, `HTTP_PROXY
 
 ## Scenarios
 
-The plan's Tier 2 table, one YAML per scenario:
+The plan's Tier 2 table, one YAML per scenario. Most live in `scenarios/` (the default suite); scenarios that need HTTP-aware injection live in `scenarios-http-proxy/`.
+
+### Default suite (`scenarios/`)
 
 | File                            | What it stresses                                   |
 | ------------------------------- | -------------------------------------------------- |
@@ -63,10 +75,15 @@ The plan's Tier 2 table, one YAML per scenario:
 | `05-sse-down.yaml`              | SSE down 180s — Layer 2 fallback engages.          |
 | `06-total-partition.yaml`       | SSE + HTTP down — both layers fail clean, recover. |
 | `07-half-open.yaml`             | 200 then close after 1 byte — no deadlock.         |
-| `08-auth-failure.yaml`          | 401 indefinitely — back off, don't busy-loop.      |
 | `09-flapping.yaml`              | Toxiproxy killed 5x in 30s — eventual stability.   |
 | `10-callback-throw.yaml`        | User callback throws — supervisor catches.         |
 | `11-null-hypothesis.yaml`       | 30 min of nothing — no spurious reconnects.        |
+
+### Requires HTTP-aware harness (`scenarios-http-proxy/`)
+
+| File                            | Why it's not in the default suite                  |
+| ------------------------------- | -------------------------------------------------- |
+| `08-auth-failure.yaml`          | 401 response injection — toxiproxy is TCP-only and cannot rewrite HTTP responses. Needs mitmproxy / mock server / fixture mode. |
 
 Each scenario is wall-clock-bounded (`setup.wall_clock_seconds`, ~30s default; longer for fallback engagement and the null-hypothesis run).
 
