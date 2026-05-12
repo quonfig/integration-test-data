@@ -27,6 +27,30 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# shellcheck source=./chaos-lock.sh
+source "$HERE/chaos-lock.sh"
+
+# Concurrent-run guard (qfg-47c2.32). The chaos docker-compose stack is a
+# host-wide singleton — two SDK chaos suites trying to share it produce the
+# cascading ECONNREFUSED / clearToxics failures this lock exists to prevent.
+# Callers that want serial reuse should export QUONFIG_CHAOS_SESSION (run-chaos.sh
+# wrappers do this).
+QUONFIG_CHAOS_SESSION="${QUONFIG_CHAOS_SESSION:-pid-$$}"
+# The owner PID drives stale-lock detection (kill -0). When invoked from a
+# per-SDK run-chaos.sh wrapper, the wrapper exports its own PID here so the
+# lock outlives this short-lived start script.
+QUONFIG_CHAOS_OWNER_PID="${QUONFIG_CHAOS_OWNER_PID:-$$}"
+export QUONFIG_CHAOS_SESSION QUONFIG_CHAOS_OWNER_PID
+CHAOS_LOCK_DIR="$(quonfig_chaos_lock_path)"
+if ! quonfig_chaos_lock_acquire "$CHAOS_LOCK_DIR" "$QUONFIG_CHAOS_SESSION" "$QUONFIG_CHAOS_OWNER_PID"; then
+  echo "==> chaos harness is already in use by another session:" >&2
+  if [[ -f "$CHAOS_LOCK_DIR/owner" ]]; then
+    sed 's/^/      /' "$CHAOS_LOCK_DIR/owner" >&2
+  fi
+  echo "==> wait for it to finish, or run \`./stop-chaos.sh --force\` if you believe it is stale." >&2
+  exit 2
+fi
+
 TOXIPROXY_ADMIN_PORT="${TOXIPROXY_ADMIN_PORT:-8474}"
 SSE_PROXY_PORT="${SSE_PROXY_PORT:-18550}"
 HTTP_PROXY_PORT="${HTTP_PROXY_PORT:-18551}"

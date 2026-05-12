@@ -60,6 +60,23 @@ After boot:
 
 All port and host knobs can be overridden via env (`SSE_PROXY_PORT`, `HTTP_PROXY_PORT`, `TOXIPROXY_ADMIN_PORT`, `CHAOS_UPSTREAM_HOST`, `CHAOS_UPSTREAM_SSE`, `CHAOS_UPSTREAM_HTTP`).
 
+### Concurrent runs
+
+The harness is a host-wide singleton: only one chaos run can own the
+docker-compose stack at a time. `start-chaos.sh` acquires a file lock at
+`${TMPDIR}/quonfig-chaos.lock` and refuses to start if another live session
+already owns it. `stop-chaos.sh` refuses to tear down a stack owned by a
+different session unless you pass `--force` (qfg-47c2.32).
+
+Each per-SDK `run-chaos.sh` exports `QUONFIG_CHAOS_SESSION` and
+`QUONFIG_CHAOS_OWNER_PID` (the wrapper's PID) at the top so the lock is tied
+to the wrapper's lifetime; the lock is released automatically when
+`stop-chaos.sh` runs in the cleanup trap. Stale locks (recorded PID is no
+longer alive on this host) are reclaimed automatically on the next acquire.
+
+Tests for the lock helper: `test/test-chaos-lock.sh` and
+`test/test-start-stop-locking.sh` — both pure bash, no docker required.
+
 ## Scenarios
 
 The plan's Tier 2 table, one YAML per scenario. Most live in `scenarios/` (the default suite); scenarios that need HTTP-aware injection live in `scenarios-http-proxy/`.
