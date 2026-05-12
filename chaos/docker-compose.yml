@@ -62,6 +62,11 @@ services:
       PORT: "8080"
       FIXTURE_DIR: "/fixtures"
       QUONFIG_ENVIRONMENT: "Production"
+      # Compress SSE keepalive cadence so it fits inside the chaos SDK read
+      # deadlines (5s in sdk-go, sdk-java; tighter in other SDKs). Production
+      # runs at 30s; without this override scenario 01 baseline drops the
+      # connection before the first keepalive arrives (qfg-47c2.28).
+      SSE_HEARTBEAT_INTERVAL: "${SSE_HEARTBEAT_INTERVAL:-1s}"
     volumes:
       - ../data/integration-tests:/fixtures:ro
     ports:
