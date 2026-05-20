@@ -1,0 +1,46 @@
+# Datadir loader value-type coercion guard.
+#
+# Quonfig config files store `int` and `double` value fields as JSON STRINGS
+# on disk (e.g. {"type": "int", "value": "123"}). api-delivery normalizes
+# these to real JSON numbers at config-load time, so every SDK that loads a
+# datadir directly must do the same in its loader.
+#
+# The ordinary getter-level tests (get.yaml) cannot catch a broken datadir
+# loader: every SDK's public getter coerces string -> number at unwrap, which
+# masks a loader that left the value as a string. So this suite asserts the
+# LOADED envelope's raw Value type, BEFORE unwrap — `expected.raw_value_type`
+# is the new field the generator honors only inside the datadir render branch.
+#
+# Reuses existing corpus configs (no new fixtures):
+#   - brand.new.int   -> int 123     (default.rules[0] is ALWAYS_TRUE)
+#   - my-double-key   -> double 9.95 (default.rules[0] is ALWAYS_TRUE)
+# Neither config has an `environments` block, so they resolve via
+# `default.rules[0]` regardless of which environment is selected; the
+# `environment: Production` override is required only so datadir init does
+# not fail (see datadir_environment.yaml "datadir without environment").
+function: get
+tests:
+  - cases:
+      - name: "datadir int config value is loaded as a number, not a string"
+        function: get
+        type: INT
+        input:
+          key: "brand.new.int"
+        client_overrides:
+          datadir: "integration-tests"
+          environment: "Production"
+        expected:
+          value: 123
+          raw_value_type: number
+
+      - name: "datadir double config value is loaded as a number, not a string"
+        function: get
+        type: DOUBLE
+        input:
+          key: "my-double-key"
+        client_overrides:
+          datadir: "integration-tests"
+          environment: "Production"
+        expected:
+          value: 9.95
+          raw_value_type: number

@@ -26,6 +26,12 @@ export interface CaseExpected {
   message?: string;
   value?: unknown;
   millis?: number; // duration cases
+  // raw_value_type: datadir_value_type.yaml only. When set to "number" the
+  // generator emits — in addition to the normal value assertion — an
+  // assertion that the LOADED config envelope's raw Value for the key is a
+  // real number, not a string. Honored ONLY inside the datadir render
+  // branch; a server-mode case carrying it is a generator error.
+  raw_value_type?: string;
   [k: string]: unknown;
 }
 

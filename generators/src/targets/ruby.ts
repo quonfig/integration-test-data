@@ -37,6 +37,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'context_precedence.yaml', out: 'test_context_precedence.rb', className: 'TestContextPrecedence' },
   { yaml: 'enabled_with_contexts.yaml', out: 'test_enabled_with_contexts.rb', className: 'TestEnabledWithContexts' },
   { yaml: 'datadir_environment.yaml', out: 'test_datadir_environment.rb', className: 'TestDatadirEnvironment' },
+  { yaml: 'datadir_value_type.yaml', out: 'test_datadir_value_type.rb', className: 'TestDatadirValueType' },
   { yaml: 'post.yaml', out: 'test_post.rb', className: 'TestPost' },
   { yaml: 'telemetry.yaml', out: 'test_telemetry.rb', className: 'TestTelemetry' },
   { yaml: 'dev_overrides.yaml', out: 'test_dev_overrides.rb', className: 'TestDevOverrides' },
@@ -230,6 +231,19 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   // datadir suite drives `Quonfig::Client.new(...)` directly.
   if (yamlBasename === 'datadir_environment.yaml') {
     return renderDatadirBody(kase);
+  }
+
+  if (yamlBasename === 'datadir_value_type.yaml') {
+    return renderDatadirValueTypeBody(kase);
+  }
+
+  // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
+  // server-mode case carrying it would silently lose the raw-Value assertion,
+  // so fail the generator loudly instead.
+  if (Object.prototype.hasOwnProperty.call(expected, 'raw_value_type')) {
+    throw new Error(
+      `expected.raw_value_type is only valid in datadir_value_type.yaml, not ${yamlBasename}`,
+    );
   }
 
   // Cases that override real-client-construction params (init timeout, fake
@@ -468,6 +482,60 @@ function renderDatadirBody(kase: YamlCase): string {
 
   if (useEnv) {
     body += `    end\n`;
+  }
+  return body;
+}
+
+/**
+ * Render a datadir_value_type.yaml case body. Builds a real datadir-mode
+ * Quonfig::Client, asserts the public getter's coerced value, and — when
+ * `expected.raw_value_type == "number"` — ALSO asserts the LOADED envelope's
+ * raw Value is a Numeric, not a String. `client.store` is a public
+ * attr_reader; `store.get(key)` returns the raw ConfigResponse hash, whose
+ * raw Value for a simple single-rule ALWAYS_TRUE config lives at
+ * `['default']['rules'][0]['value']['value']`. A datadir loader that left
+ * int/double as on-disk strings fails the `is_a?(Numeric)` assertion.
+ */
+function renderDatadirValueTypeBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('datadir_value_type case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('datadir_value_type case has no expected.value');
+  }
+  const rawType = expected.raw_value_type;
+  if (rawType !== undefined && rawType !== 'number') {
+    throw new Error(
+      `datadir_value_type case has unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
+    );
+  }
+
+  const opts: string[] = [];
+  if ('datadir' in overrides) {
+    opts.push('datadir: IntegrationTestHelpers.data_dir');
+  }
+  if ('environment' in overrides) {
+    opts.push(`environment: ${rubyLiteral(overrides.environment)}`);
+  }
+  const optsLit = opts.join(', ');
+
+  const keyLit = rubyLiteral(key);
+  const indent = '    ';
+
+  let body = '';
+  body += `${indent}client = Quonfig::Client.new(${optsLit})\n`;
+  body += `${indent}assert_equal ${rubyLiteral(expected.value)}, client.get(${keyLit})\n`;
+  if (rawType === 'number') {
+    body += `${indent}raw_config = client.store.get(${keyLit})\n`;
+    body += `${indent}refute_nil raw_config, ${rubyLiteral(`store.get(${key}) should be loaded`)}\n`;
+    body += `${indent}raw_value = raw_config['default']['rules'][0]['value']['value']\n`;
+    body += `${indent}assert_kind_of Numeric, raw_value,\n`;
+    body += `${indent}               "datadir loader must coerce ${key} to a number, got #{raw_value.class} (#{raw_value.inspect})"\n`;
   }
   return body;
 }

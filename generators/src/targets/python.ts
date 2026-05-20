@@ -44,6 +44,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'context_precedence.yaml', out: 'test_context_precedence.py' },
   { yaml: 'enabled_with_contexts.yaml', out: 'test_enabled_with_contexts.py' },
   { yaml: 'datadir_environment.yaml', out: 'test_datadir_environment.py' },
+  { yaml: 'datadir_value_type.yaml', out: 'test_datadir_value_type.py' },
   { yaml: 'post.yaml', out: 'test_post.py' },
   { yaml: 'telemetry.yaml', out: 'test_telemetry.py' },
   { yaml: 'dev_overrides.yaml', out: 'test_dev_overrides.py' },
@@ -195,12 +196,32 @@ function renderCase(
     };
   }
 
+  if (yamlBasename === 'datadir_value_type.yaml') {
+    const body = renderDatadirValueTypeBody(kase);
+    return {
+      source: header + `def ${fnName}() -> None:\n${body}`,
+      usesFixture: false,
+    };
+  }
+
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
     const body = renderPostBody(kase);
     return {
       source: header + `def ${fnName}() -> None:\n${body}`,
       usesFixture: false,
     };
+  }
+
+  // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
+  // server-mode case carrying it would silently lose the raw-Value assertion,
+  // so fail the generator loudly instead.
+  if (
+    kase.expected &&
+    Object.prototype.hasOwnProperty.call(kase.expected, 'raw_value_type')
+  ) {
+    throw new Error(
+      `expected.raw_value_type is only valid in datadir_value_type.yaml, not ${yamlBasename}`,
+    );
   }
 
   // Eval-style cases: pick fixture vs fresh-client based on whether the
@@ -578,6 +599,87 @@ function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
 }
 
 // ---------------------------------------------------------------------------
+// datadir_value_type.yaml renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a datadir_value_type.yaml case body. Constructs a datadir-mode
+ * Quonfig client, asserts the public typed getter's coerced value, and — when
+ * `expected.raw_value_type == "number"` — ALSO asserts the LOADED envelope's
+ * raw Value is a real number, not a string.
+ *
+ * NOTE: this references `c.raw_config(key)`, a PUBLIC accessor that does not
+ * exist in sdk-python yet — it is added under the same bead (qfg-bwwj, Work
+ * item B2), mirroring sdk-node's existing `rawConfig`. Until that accessor
+ * lands the generated test raises AttributeError, which is the desired
+ * fail-loud surface. `raw_config(key)` returns a ConfigResponse dataclass;
+ * the raw Value for a simple single-rule ALWAYS_TRUE config lives at
+ * `.default.rules[0].value.value`.
+ */
+function renderDatadirValueTypeBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('datadir_value_type case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('datadir_value_type case has no expected.value');
+  }
+  const rawType = expected.raw_value_type;
+  if (rawType !== undefined && rawType !== 'number') {
+    throw new Error(
+      `datadir_value_type case has unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
+    );
+  }
+
+  const opts: string[] = [];
+  if ('datadir' in overrides) {
+    opts.push('datadir=DATADIR');
+  }
+  if ('environment' in overrides) {
+    opts.push(`environment=${pyStringLiteral(String(overrides.environment))}`);
+  }
+  const optsRendered = opts.join(', ');
+
+  const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
+  const methodMap: Record<string, string> = {
+    INT: 'get_int',
+    DOUBLE: 'get_float',
+  };
+  const method = methodMap[yamlType];
+  if (!method) {
+    throw new Error(`datadir_value_type case has unsupported type: ${yamlType}`);
+  }
+
+  const keyLit = pyStringLiteral(key);
+  const indent = '    ';
+
+  let body = '';
+  body += `${indent}c = Quonfig(${optsRendered})\n`;
+  body += `${indent}c.init()\n`;
+  body += `${indent}result = c.${method}(${keyLit})\n`;
+  body += renderAssertion(indent, expected);
+  if (rawType === 'number') {
+    // Inspect the LOADED envelope's raw Value, before unwrap. raw_config is
+    // the public accessor added under qfg-bwwj (does not exist yet).
+    body += `${indent}# raw_config(...) is added under qfg-bwwj; until then this raises AttributeError.\n`;
+    body += `${indent}raw = c.raw_config(${keyLit})\n`;
+    body += `${indent}assert raw is not None, ${pyStringLiteral(`raw_config(${key}) should be loaded`)}\n`;
+    body += `${indent}raw_value = raw.default.rules[0].value.value\n`;
+    body += `${indent}assert isinstance(raw_value, (int, float)) and not isinstance(\n`;
+    body += `${indent}    raw_value, bool\n`;
+    body += `${indent}), (\n`;
+    body += `${indent}    ${pyStringLiteral(`datadir loader must coerce ${key} to a number, `)}\n`;
+    body += `${indent}    f"got {type(raw_value).__name__} ({raw_value!r})"\n`;
+    body += `${indent})\n`;
+  }
+  return body;
+}
+
+// ---------------------------------------------------------------------------
 // post.yaml / telemetry.yaml renderer
 // ---------------------------------------------------------------------------
 
@@ -634,7 +736,9 @@ function renderPostBody(kase: YamlCase): string {
 // ---------------------------------------------------------------------------
 
 function renderFile(suite: SuiteEntry, result: RenderResult): string {
-  const isDatadir = suite.yaml === 'datadir_environment.yaml';
+  const isDatadir =
+    suite.yaml === 'datadir_environment.yaml' ||
+    suite.yaml === 'datadir_value_type.yaml';
   const isPost = suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml';
 
   let out = '';
@@ -645,12 +749,17 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `\n`;
   out += `from __future__ import annotations\n\n`;
 
-  // Eval/datadir suites use os (os.environ, os.path.join) and pytest
-  // (pytest.raises, @pytest.fixture); post/telemetry suites use neither, so
-  // omitting them keeps ruff (F401) happy without a post-format pass.
+  // Eval/datadir suites use os (os.environ, os.path.join via the DATADIR
+  // constant). pytest (pytest.raises, @pytest.fixture) is only used by suites
+  // that actually raise or define a fixture — datadir_value_type does
+  // neither, so emit `import pytest` only when something references it, to
+  // keep ruff (F401) happy without a post-format pass.
+  const usesPytest = result.rendered.some((r) => /\bpytest\b/.test(r.source));
   if (!isPost) {
     out += `import os\n\n`;
-    out += `import pytest\n\n`;
+    if (usesPytest || result.needsFixture) {
+      out += `import pytest\n\n`;
+    }
   }
 
   if (isPost) {

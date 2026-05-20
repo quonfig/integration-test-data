@@ -67,6 +67,11 @@ const SUITES: SuiteEntry[] = [
     out: 'DatadirEnvironmentTest.java',
     className: 'DatadirEnvironmentTest',
   },
+  {
+    yaml: 'datadir_value_type.yaml',
+    out: 'DatadirValueTypeTest.java',
+    className: 'DatadirValueTypeTest',
+  },
   { yaml: 'post.yaml', out: 'PostTest.java', className: 'PostTest' },
   { yaml: 'telemetry.yaml', out: 'TelemetryTest.java', className: 'TelemetryTest' },
   {
@@ -220,8 +225,22 @@ function renderBody(
   if (suite.yaml === 'datadir_environment.yaml') {
     return renderDatadirBody(kase, exceptions);
   }
+  if (suite.yaml === 'datadir_value_type.yaml') {
+    return renderDatadirValueTypeBody(kase);
+  }
   if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
     return renderPostBody(kase);
+  }
+  // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
+  // server-mode case carrying it would silently lose the raw-Value assertion,
+  // so fail the generator loudly instead.
+  if (
+    kase.expected &&
+    Object.prototype.hasOwnProperty.call(kase.expected, 'raw_value_type')
+  ) {
+    throw new Error(
+      `expected.raw_value_type is only valid in datadir_value_type.yaml, not ${suite.yaml}`,
+    );
   }
   return renderEvalBody(kase, exceptions);
 }
@@ -516,6 +535,66 @@ function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
 
   if (hasEnv) {
     body += `${indent}});\n`;
+  }
+  return body;
+}
+
+// ---------------------------------------------------------------------------
+// datadir_value_type.yaml renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a datadir_value_type.yaml case body. Asserts the public typed
+ * getter's coerced value (via TestSetup.datadirGet), and — when
+ * `expected.raw_value_type == "number"` — ALSO asserts the LOADED envelope's
+ * raw Value is a real number, not a string, via TestSetup.assertRawValueNumeric.
+ *
+ * NOTE: TestSetup.assertRawValueNumeric does not exist yet — TestSetup is
+ * still being built (qfg-mol-5bw). It is added under the same bead
+ * (qfg-bwwj, Work item B2). Emitting the reference now is consistent with
+ * java.ts's documented "fail-loud until TestSetup lands" policy: the
+ * generated file references a helper that the SDK side must supply.
+ */
+function renderDatadirValueTypeBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const func = (kase.function ?? 'get').toString();
+  const indent = '    ';
+
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('datadir_value_type case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('datadir_value_type case has no expected.value');
+  }
+  const rawType = expected.raw_value_type;
+  if (rawType !== undefined && rawType !== 'number') {
+    throw new Error(
+      `datadir_value_type case has unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
+    );
+  }
+
+  const opts: string[] = [];
+  if ('datadir' in overrides) {
+    opts.push(`"datadir", TestSetup.DATADIR`);
+  }
+  if ('environment' in overrides) {
+    opts.push(`"environment", ${javaStringLiteral(String(overrides.environment))}`);
+  }
+  const optsLit = opts.length > 0 ? `TestSetup.map(${opts.join(', ')})` : 'TestSetup.map()';
+
+  const keyLit = javaStringLiteral(key);
+  const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
+
+  let body = '';
+  body += `${indent}Object actual = TestSetup.datadirGet(${optsLit}, ${keyLit});\n`;
+  body += renderAssertion(indent, expected, func, yamlType);
+  if (rawType === 'number') {
+    // Inspect the LOADED envelope's raw Value, before unwrap.
+    // assertRawValueNumeric is added under qfg-bwwj (does not exist yet).
+    body += `${indent}TestSetup.assertRawValueNumeric(${optsLit}, ${keyLit});\n`;
   }
   return body;
 }

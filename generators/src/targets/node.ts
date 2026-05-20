@@ -55,6 +55,11 @@ const SUITES: SuiteEntry[] = [
     out: 'datadir_environment.generated.test.ts',
     describe: 'datadir_environment',
   },
+  {
+    yaml: 'datadir_value_type.yaml',
+    out: 'datadir_value_type.generated.test.ts',
+    describe: 'datadir_value_type',
+  },
   { yaml: 'post.yaml', out: 'post.generated.test.ts', describe: 'post' },
   { yaml: 'telemetry.yaml', out: 'telemetry.generated.test.ts', describe: 'telemetry' },
   {
@@ -185,7 +190,10 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
  * cases (init-timeout) likewise drive Promise-returning helpers.
  */
 function callbackSignature(yamlBasename: string, kase: YamlCase): string {
-  if (yamlBasename === 'datadir_environment.yaml') {
+  if (
+    yamlBasename === 'datadir_environment.yaml' ||
+    yamlBasename === 'datadir_value_type.yaml'
+  ) {
     return 'async ()';
   }
   if (hasClientConstructionOverrides(kase.client_overrides)) {
@@ -213,6 +221,19 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
 
   if (yamlBasename === 'datadir_environment.yaml') {
     return renderDatadirBody(kase);
+  }
+
+  if (yamlBasename === 'datadir_value_type.yaml') {
+    return renderDatadirValueTypeBody(kase);
+  }
+
+  // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
+  // server-mode case carrying it would silently lose the raw-Value assertion,
+  // so fail the generator loudly instead.
+  if (Object.prototype.hasOwnProperty.call(expected, 'raw_value_type')) {
+    throw new Error(
+      `expected.raw_value_type is only valid in datadir_value_type.yaml, not ${yamlBasename}`,
+    );
   }
 
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
@@ -491,6 +512,69 @@ function renderDatadirBody(kase: YamlCase): RenderedBody {
 }
 
 /**
+ * Render a datadir_value_type.yaml case body. Drives `new Quonfig({...})` in
+ * datadir mode, asserts the public getter's coerced value, and — when
+ * `expected.raw_value_type === "number"` — ALSO asserts the LOADED envelope's
+ * raw Value (via the public `rawConfig(key)` accessor) is a real number, not
+ * a string. The raw assertion is what structurally catches a datadir loader
+ * that left int/double as on-disk strings; the getter assertion alone would
+ * stay green because `unwrapValue` coerces.
+ */
+function renderDatadirValueTypeBody(kase: YamlCase): RenderedBody {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('datadir_value_type case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('datadir_value_type case has no expected.value');
+  }
+  const rawType = expected.raw_value_type;
+  if (rawType !== undefined && rawType !== 'number') {
+    throw new Error(
+      `datadir_value_type case has unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
+    );
+  }
+
+  const opts: string[] = [`sdkKey: "test-unused"`];
+  if ('datadir' in overrides) {
+    opts.push(`datadir: TEST_DATA_DIR`);
+  }
+  if ('environment' in overrides) {
+    opts.push(`environment: ${tsStringLiteral(String(overrides.environment))}`);
+  }
+  opts.push(`enableSSE: false`);
+  opts.push(`enablePolling: false`);
+  opts.push(`collectEvaluationSummaries: false`);
+  opts.push(`contextUploadMode: "none"`);
+  const optsLit = `{ ${opts.join(', ')} }`;
+
+  const keyLit = tsStringLiteral(key);
+  const expLit = tsLiteral(expected.value);
+
+  let body = '';
+  body += `    const client = new Quonfig(${optsLit});\n`;
+  body += `    await client.init();\n`;
+  body += `    expect(client.get(${keyLit}, {})).toBe(${expLit});\n`;
+  if (rawType === 'number') {
+    // Inspect the LOADED envelope's raw Value, before unwrap. rawConfig is a
+    // public accessor; the matched config is a simple single-rule ALWAYS_TRUE
+    // config so the raw Value lives at default.rules[0].value.
+    body += `    const __raw = client.rawConfig(${keyLit});\n`;
+    body += `    expect(__raw, ${tsStringLiteral(`rawConfig(${key}) should be loaded`)}).toBeDefined();\n`;
+    body += `    const __rawValue = __raw!.default.rules[0].value.value;\n`;
+    body += `    expect(\n`;
+    body += `      typeof __rawValue,\n`;
+    body += `      \`datadir loader must coerce ${key} to a number, got \${typeof __rawValue} (\${JSON.stringify(__rawValue)})\`,\n`;
+    body += `    ).toBe("number");\n`;
+  }
+  return { body, usesMergeContexts: false, usesContextsType: false };
+}
+
+/**
  * Render a post.yaml / telemetry.yaml case body.
  *
  * Every such case has:
@@ -562,7 +646,9 @@ function stringifyEnvVars(env: Record<string, unknown>): Record<string, string> 
 }
 
 function renderFile(suite: SuiteEntry, result: RenderResult): string {
-  const isDatadir = suite.yaml === 'datadir_environment.yaml';
+  const isDatadir =
+    suite.yaml === 'datadir_environment.yaml' ||
+    suite.yaml === 'datadir_value_type.yaml';
   const isPost = suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml';
 
   let out = '';

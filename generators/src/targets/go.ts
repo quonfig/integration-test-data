@@ -42,6 +42,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'context_precedence.yaml', out: 'context_precedence_generated_test.go', suite: 'ContextPrecedence' },
   { yaml: 'enabled_with_contexts.yaml', out: 'enabled_with_contexts_generated_test.go', suite: 'EnabledWithContexts' },
   { yaml: 'datadir_environment.yaml', out: 'datadir_environment_generated_test.go', suite: 'DatadirEnvironment' },
+  { yaml: 'datadir_value_type.yaml', out: 'datadir_value_type_generated_test.go', suite: 'DatadirValueType' },
   { yaml: 'post.yaml', out: 'post_generated_test.go', suite: 'Post' },
   { yaml: 'telemetry.yaml', out: 'telemetry_generated_test.go', suite: 'Telemetry' },
   { yaml: 'dev_overrides.yaml', out: 'dev_overrides_generated_test.go', suite: 'DevOverrides' },
@@ -230,6 +231,25 @@ function renderBody(
     features.add('require');
     features.add('assert');
     return renderDatadirBody(kase);
+  }
+
+  if (suite.yaml === 'datadir_value_type.yaml') {
+    features.add('quonfig');
+    features.add('require');
+    features.add('assert');
+    return renderDatadirValueTypeBody(kase, features);
+  }
+
+  // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
+  // server-mode case carrying it would silently lose the raw-Value assertion,
+  // so fail the generator loudly instead.
+  if (
+    kase.expected &&
+    Object.prototype.hasOwnProperty.call(kase.expected, 'raw_value_type')
+  ) {
+    throw new Error(
+      `expected.raw_value_type is only valid in datadir_value_type.yaml, not ${suite.yaml}`,
+    );
   }
 
   // Cases that drive real-Client construction (init timeout, fake api URL,
@@ -582,6 +602,95 @@ function renderDatadirBody(kase: YamlCase): string {
 }
 
 /**
+ * Render a datadir_value_type.yaml case body. Constructs a real datadir-mode
+ * client, asserts the public typed getter's coerced value, and — when
+ * `expected.raw_value_type === "number"` — ALSO asserts the resolved-but-not-
+ * coerced `*Value` returned by `client.EvaluateKey(key, nil)` carries a real
+ * numeric `.Value` (float64 / int64 / json.Number), not a string. sdk-go
+ * coerces int/double at load (`Value.UnmarshalJSON`), so this is green
+ * immediately and doubles as confirmation the reference loader is correct.
+ */
+function renderDatadirValueTypeBody(kase: YamlCase, features: Set<string>): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const indent = '\t';
+
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('datadir_value_type case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('datadir_value_type case has no expected.value');
+  }
+  const rawType = expected.raw_value_type;
+  if (rawType !== undefined && rawType !== 'number') {
+    throw new Error(
+      `datadir_value_type case has unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
+    );
+  }
+
+  const opts: string[] = [];
+  if ('datadir' in overrides) {
+    opts.push('quonfig.WithDataDir(dataDir)');
+  }
+  if ('environment' in overrides) {
+    opts.push(`quonfig.WithEnvironment(${goStringLiteral(String(overrides.environment))})`);
+  }
+  const optsRendered = opts.join(', ');
+
+  const keyLit = goStringLiteral(key);
+  const yamlType = (kase.type ?? '').toString().toUpperCase();
+  const expVal = expected.value;
+
+  let body = '';
+  body += `${indent}client, err := quonfig.NewClient(${optsRendered})\n`;
+  body += `${indent}require.NoError(t, err)\n`;
+  body += `${indent}defer client.Close()\n`;
+  body += `\n`;
+
+  // Public typed getter — the coerced value.
+  if (yamlType === 'INT') {
+    if (typeof expVal !== 'number' || !Number.isInteger(expVal)) {
+      throw new Error(`INT type but expected.value is not an integer: ${expVal}`);
+    }
+    body += `${indent}val, ok, err := client.GetIntValue(${keyLit}, nil)\n`;
+    body += `${indent}require.NoError(t, err)\n`;
+    body += `${indent}require.True(t, ok)\n`;
+    body += `${indent}assert.Equal(t, int64(${expVal}), val)\n`;
+  } else if (yamlType === 'DOUBLE') {
+    if (typeof expVal !== 'number') {
+      throw new Error(`DOUBLE type but expected.value is not a number: ${expVal}`);
+    }
+    body += `${indent}val, ok, err := client.GetFloatValue(${keyLit}, nil)\n`;
+    body += `${indent}require.NoError(t, err)\n`;
+    body += `${indent}require.True(t, ok)\n`;
+    body += `${indent}assert.Equal(t, ${formatDouble(expVal)}, val)\n`;
+  } else {
+    throw new Error(`datadir_value_type case has unsupported type: ${yamlType}`);
+  }
+
+  if (rawType === 'number') {
+    // Inspect the resolved-but-not-coerced *Value, before any typed-getter
+    // coercion. A datadir loader that left int/double as on-disk strings
+    // surfaces here as a string-typed raw.Value.
+    features.add('json');
+    body += `\n`;
+    body += `${indent}raw, _, found, err := client.EvaluateKey(${keyLit}, nil)\n`;
+    body += `${indent}require.NoError(t, err)\n`;
+    body += `${indent}require.True(t, found)\n`;
+    body += `${indent}require.NotNil(t, raw)\n`;
+    body += `${indent}switch raw.Value.(type) {\n`;
+    body += `${indent}case float64, float32, int, int64, int32, json.Number:\n`;
+    body += `${indent}\t// ok — datadir loader coerced int/double to a real number\n`;
+    body += `${indent}default:\n`;
+    body += `${indent}\tt.Fatalf("datadir loader must coerce %s to a number, got %T (%v)", ${keyLit}, raw.Value, raw.Value)\n`;
+    body += `${indent}}\n`;
+  }
+  return body;
+}
+
+/**
  * Render post.yaml / telemetry.yaml case bodies.
  *
  * Uniform shape (matches Ruby target conceptually):
@@ -699,6 +808,9 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<s
   const imports: string[] = ['"testing"'];
   if (features.has('errors')) {
     imports.unshift('"errors"');
+  }
+  if (features.has('json')) {
+    imports.unshift('"encoding/json"');
   }
   // Third-party / project imports go in a separate block per gofmt style.
   const projectImports: string[] = [];
