@@ -638,7 +638,14 @@ function renderPostBody(kase: YamlCase): string {
   let body = '';
   body += `${indent}object? aggregator = TestSetup.BuildAggregator(${aggLit}, ${overridesLit});\n`;
   body += `${indent}TestSetup.FeedAggregator(aggregator, ${aggLit}, ${dataLit}, ${ctxLit});\n`;
-  body += `${indent}Assert.Equal(${expectedLit}, TestSetup.AggregatorPost(aggregator, ${aggLit}, ${endpointLit}));\n`;
+  // xUnit2003 forbids Assert.Equal(null, ...) — use Assert.Null for parity with the
+  // analyzer-friendly form. Generator emits the correct shape so callers don't need
+  // to special-case post.yaml in code review.
+  if (expectedData === null || expectedData === undefined) {
+    body += `${indent}Assert.Null(TestSetup.AggregatorPost(aggregator, ${aggLit}, ${endpointLit}));\n`;
+  } else {
+    body += `${indent}Assert.Equal(${expectedLit}, TestSetup.AggregatorPost(aggregator, ${aggLit}, ${endpointLit}));\n`;
+  }
   return body;
 }
 
