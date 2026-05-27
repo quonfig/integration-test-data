@@ -9,11 +9,12 @@ import { runGoTarget } from './targets/go.js';
 import { runNodeTarget } from './targets/node.js';
 import { runPythonTarget } from './targets/python.js';
 import { runJavaTarget } from './targets/java.js';
+import { runDotnetTarget } from './targets/dotnet.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const KNOWN_TARGETS = ['ruby', 'go', 'node', 'python', 'java'] as const;
+const KNOWN_TARGETS = ['ruby', 'go', 'node', 'python', 'java', 'dotnet'] as const;
 type Target = (typeof KNOWN_TARGETS)[number];
 
 interface CliArgs {
@@ -55,6 +56,7 @@ function printHelp(): void {
       '  node     sdk-node/test/integration/*.generated.test.ts (Vitest)',
       '  python   sdk-python/tests/integration/test_*.py (pytest)',
       '  java     sdk-java/core/src/test/java/com/quonfig/sdk/integration/*Test.java (JUnit 5)',
+      '  dotnet   sdk-net/tests/Quonfig.Sdk.Tests/Integration/*Tests.cs (xUnit)',
       '',
       'Pass --target multiple times to run a subset; default is all.',
     ].join('\n'),
@@ -134,6 +136,23 @@ async function main(): Promise<void> {
           const result = runJavaTarget(dataRoot, outDir);
           for (const w of result.written) {
             console.log(`[java] wrote ${w.path}: ${w.cases} cases`);
+          }
+          break;
+        }
+        case 'dotnet': {
+          const outDir = resolve(
+            repoRoot(),
+            '..',
+            'sdk-net',
+            'tests',
+            'Quonfig.Sdk.Tests',
+            'Integration',
+          );
+          console.log(`[dotnet] reading ${dataRoot}`);
+          console.log(`[dotnet] writing to ${outDir}`);
+          const result = runDotnetTarget(dataRoot, outDir);
+          for (const w of result.written) {
+            console.log(`[dotnet] wrote ${w.path}: ${w.cases} cases`);
           }
           break;
         }

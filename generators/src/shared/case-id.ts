@@ -119,3 +119,29 @@ export function javaTestMethodName(name: string): string {
 export function javaSuiteClassName(yamlBasename: string): string {
   return goSuiteName(yamlBasename) + 'Test';
 }
+
+/**
+ * .NET test method suffix — `public void <Suffix>()`. PascalCase, ASCII only,
+ * stable across regenerations. The xUnit DisplayName attribute carries the
+ * original human-readable name; the method identifier just has to compile.
+ * C# identifiers can't start with a digit; prefix with underscore.
+ */
+export function dotnetTestMethodName(name: string): string {
+  const raw = (name ?? '').toString();
+  const parts = raw.split(/[^a-zA-Z0-9]+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return 'Unnamed';
+  let result = parts
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+    .join('');
+  if (/^[0-9]/.test(result)) result = '_' + result;
+  return result;
+}
+
+/**
+ * Convert a YAML basename ("get.yaml", "datadir_environment.yaml") into the
+ * .NET test class name ("GetTests", "DatadirEnvironmentTests"). The plural
+ * "Tests" suffix matches the existing sdk-net convention (SdkInfoTests.cs).
+ */
+export function dotnetSuiteClassName(yamlBasename: string): string {
+  return goSuiteName(yamlBasename) + 'Tests';
+}
