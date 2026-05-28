@@ -372,8 +372,15 @@ function buildClientArgs(kase: YamlCase): string {
 
   // datadir — either the default integration-tests dir or a YAML override
   // (currently only "integration-tests" is referenced, but support arbitrary
-  // names so future YAML can flex).
-  if (
+  // names so future YAML can flex). Suppressed when `prefab_api_url` is set
+  // so HTTP-mode tests don't get short-circuited by a synchronous datadir
+  // load. (sdk-python removed the `prefab_api_url` kwarg in qfg-l3xp; the
+  // URL is now passed via `api_urls=[...]` below, which only spins up a
+  // transport when no datadir is configured.)
+  const hasHttpOverride = typeof overrides.prefab_api_url === 'string';
+  if (hasHttpOverride) {
+    // skip datadir
+  } else if (
     'datadir' in overrides &&
     typeof overrides.datadir === 'string' &&
     overrides.datadir !== 'integration-tests'
@@ -411,7 +418,7 @@ function buildClientArgs(kase: YamlCase): string {
     parts.push(`on_init_failure=${pyStringLiteral(onInit)}`);
   }
   if (typeof overrides.prefab_api_url === 'string') {
-    parts.push(`prefab_api_url=${pyStringLiteral(overrides.prefab_api_url)}`);
+    parts.push(`api_urls=[${pyStringLiteral(overrides.prefab_api_url)}]`);
   }
 
   return parts.join(', ');
