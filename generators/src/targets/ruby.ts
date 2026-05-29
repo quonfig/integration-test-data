@@ -625,6 +625,12 @@ function renderDeliveryBody(kase: YamlCase): string {
   body += `${indent})\n`;
   body += `${indent}assert_equal ${expVal ? 'true' : 'false'}, client.get(${rubyStringLiteral(key)}, :missing),\n`;
   body += `${indent}             ${rubyStringLiteral(`delivery-wire env override: expected ${expVal} for ${key}`)}\n`;
+  if ('environment' in overrides) {
+    // An explicit env pin in delivery (SDK-key) mode is ignored, and the SDK
+    // WARNs about it. The ruby test harness teardown rejects any unhandled log
+    // line, so acknowledge the expected WARN here.
+    body += `${indent}assert_logged([/was set but the client is in delivery \\(SDK-key\\) mode/])\n`;
+  }
   body += `  ensure\n`;
   body += `${indent}client&.stop\n`;
   body += `${indent}server&.shutdown\n`;

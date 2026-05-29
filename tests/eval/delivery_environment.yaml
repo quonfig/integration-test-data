@@ -52,7 +52,15 @@ tests:
         expected:
           value: false
 
-      - name: "explicit environment pin wins over meta.environment"
+      # DECIDED 2026-05-29 (qfg-pinh): in delivery (SDK-key) mode meta.environment
+      # is authoritative and an explicit environment pin is datadir-only — it must
+      # be IGNORED. This case uses the REAL wire invariant (the singular block's id
+      # always equals meta.environment, both from the key's env) and a MISMATCHED
+      # pin ("staging"): a correct SDK ignores the pin, evaluates against
+      # meta.environment="development", and returns the env override (false). An SDK
+      # that wrongly honors the pin would find no "staging" block and return
+      # default (true) — so `false` distinguishes correct from buggy.
+      - name: "explicit environment pin is ignored in delivery mode (meta.environment authoritative)"
         function: get
         type: BOOLEAN
         input:
@@ -60,7 +68,7 @@ tests:
         envelope:
           meta:
             version: "v1"
-            environment: "staging"
+            environment: "development"
           configs:
             - id: "c-env"
               key: "flag.env-scoped"
@@ -78,7 +86,7 @@ tests:
                     value: { type: bool, value: false }
         client_overrides:
           sdk_key: "sdk-test"
-          environment: "development"
+          environment: "staging"
         expected:
           value: false
 
