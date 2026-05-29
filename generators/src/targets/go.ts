@@ -744,7 +744,7 @@ function renderDeliveryBody(kase: YamlCase): string {
     `quonfig.WithSSE(false)`,
     `quonfig.WithFallbackPoll(false, 0)`,
     `quonfig.WithAllTelemetryDisabled()`,
-    `quonfig.WithInitTimeout(5 * time.Second)`,
+    `quonfig.WithInitTimeout(5*time.Second)`,
   ];
   if ('environment' in overrides) {
     // Explicit pin must win over meta.environment.
@@ -896,13 +896,13 @@ function formatDouble(n: number): string {
 function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<string>): string {
   const imports: string[] = ['"testing"'];
   if (features.has('errors')) {
-    imports.unshift('"errors"');
+    imports.push('"errors"');
   }
   if (features.has('json')) {
-    imports.unshift('"encoding/json"');
+    imports.push('"encoding/json"');
   }
   if (features.has('http')) {
-    imports.unshift('"net/http"');
+    imports.push('"net/http"');
   }
   if (features.has('httptest')) {
     imports.push('"net/http/httptest"');
@@ -910,6 +910,9 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<s
   if (features.has('time')) {
     imports.push('"time"');
   }
+  // gofmt orders the stdlib block lexically (by the quoted path). Sort so the
+  // emitted file is gofmt-clean without a post-pass.
+  imports.sort((a, b) => a.localeCompare(b));
   // Third-party / project imports go in a separate block per gofmt style.
   const projectImports: string[] = [];
   if (features.has('quonfig')) {

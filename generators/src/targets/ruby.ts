@@ -625,10 +625,10 @@ function renderDeliveryBody(kase: YamlCase): string {
   body += `${indent})\n`;
   body += `${indent}assert_equal ${expVal ? 'true' : 'false'}, client.get(${rubyStringLiteral(key)}, :missing),\n`;
   body += `${indent}             ${rubyStringLiteral(`delivery-wire env override: expected ${expVal} for ${key}`)}\n`;
-  body += `${indent}ensure\n`;
-  body += `${indent}  client&.stop\n`;
-  body += `${indent}  server&.shutdown\n`;
-  body += `${indent}  ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env\n`;
+  body += `  ensure\n`;
+  body += `${indent}client&.stop\n`;
+  body += `${indent}server&.shutdown\n`;
+  body += `${indent}ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env\n`;
   return body;
 }
 
