@@ -45,6 +45,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'enabled_with_contexts.yaml', out: 'test_enabled_with_contexts.py' },
   { yaml: 'datadir_environment.yaml', out: 'test_datadir_environment.py' },
   { yaml: 'datadir_value_type.yaml', out: 'test_datadir_value_type.py' },
+  { yaml: 'delivery_environment.yaml', out: 'test_delivery_environment.py' },
   { yaml: 'post.yaml', out: 'test_post.py' },
   { yaml: 'telemetry.yaml', out: 'test_telemetry.py' },
   { yaml: 'dev_overrides.yaml', out: 'test_dev_overrides.py' },
@@ -198,6 +199,14 @@ function renderCase(
 
   if (yamlBasename === 'datadir_value_type.yaml') {
     const body = renderDatadirValueTypeBody(kase);
+    return {
+      source: header + `def ${fnName}() -> None:\n${body}`,
+      usesFixture: false,
+    };
+  }
+
+  if (yamlBasename === 'delivery_environment.yaml') {
+    const body = renderDeliveryBody(kase);
     return {
       source: header + `def ${fnName}() -> None:\n${body}`,
       usesFixture: false,
@@ -703,6 +712,78 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
  * is the *desired* surfacing behavior. Hiding the case via a generator-side
  * omission is strictly worse.
  */
+/**
+ * Render a delivery_environment.yaml case body. Cross-SDK DELIVERY-WIRE-SHAPE
+ * gate (qfg-xpln): stands up a real threaded http.server returning the literal
+ * `envelope` JSON on `/api/v2/configs`, builds a real `Quonfig(...)` in SDK-key
+ * mode (NO environment pin unless client_overrides.environment is set), calls
+ * init() (which fetches + installs the wire envelope), and asserts the
+ * resolved boolean. Exercises the wire parse + meta.environment selection path
+ * the datadir tests never touch.
+ */
+function renderDeliveryBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const envelope = kase.envelope;
+  const indent = '    ';
+
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('delivery case has no `envelope` wire shape');
+  }
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('delivery case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('delivery case has no expected.value');
+  }
+  const expVal = expected.value;
+  if (typeof expVal !== 'boolean') {
+    throw new Error(`delivery case currently only handles boolean expected.value, got ${typeof expVal}`);
+  }
+  if (!('sdk_key' in overrides)) {
+    throw new Error('delivery case must set client_overrides.sdk_key (SDK-key mode)');
+  }
+
+  const envelopeJson = JSON.stringify(envelope);
+  const sdkKey = String(overrides.sdk_key);
+  const expPy = expVal === true ? 'True' : 'False';
+
+  const kwargs: string[] = [
+    `sdk_key=${pyStringLiteral(sdkKey)}`,
+    `api_urls=[f"http://127.0.0.1:{port}"]`,
+    `fallback_poll_enabled=False`,
+    `collect_evaluation_summaries=False`,
+    `context_upload_mode="none"`,
+    `init_timeout_ms=5000`,
+    `on_init_failure="raise"`,
+  ];
+  if ('environment' in overrides) {
+    kwargs.push(`environment=${pyStringLiteral(String(overrides.environment))}`);
+  }
+
+  let body = '';
+  body += `${indent}envelope_json = ${pyStringLiteral(envelopeJson)}\n`;
+  body += `${indent}server, port = start_delivery_server(envelope_json)\n`;
+  body += `${indent}try:\n`;
+  body += `${indent}    client = Quonfig(\n`;
+  for (const kw of kwargs) {
+    body += `${indent}        ${kw},\n`;
+  }
+  body += `${indent}    )\n`;
+  body += `${indent}    try:\n`;
+  body += `${indent}        client.init()\n`;
+  body += `${indent}        assert client.get_bool(${pyStringLiteral(key)}, default=None) is ${expPy}, (\n`;
+  body += `${indent}            "delivery-wire env override: expected ${expPy} for ${key}"\n`;
+  body += `${indent}        )\n`;
+  body += `${indent}    finally:\n`;
+  body += `${indent}        client.close()\n`;
+  body += `${indent}finally:\n`;
+  body += `${indent}    server.shutdown()\n`;
+  return body;
+}
+
 function renderPostBody(kase: YamlCase): string {
   const aggregator = (kase.aggregator ?? '').toString();
   if (aggregator.length === 0) {
@@ -746,6 +827,7 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   const isDatadir =
     suite.yaml === 'datadir_environment.yaml' ||
     suite.yaml === 'datadir_value_type.yaml';
+  const isDelivery = suite.yaml === 'delivery_environment.yaml';
   const isPost = suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml';
 
   let out = '';
@@ -755,6 +837,44 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `# Source: ${GENERATOR_PATH}\n`;
   out += `\n`;
   out += `from __future__ import annotations\n\n`;
+
+  if (isDelivery) {
+    // Self-contained: a threaded HTTP server returning the literal wire
+    // envelope on /api/v2/configs (the shape api-delivery emits in SDK-key
+    // mode). No DATADIR, no fixture — each case builds its own client.
+    out += `import threading\n`;
+    out += `from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n\n`;
+    out += `from quonfig import Quonfig\n\n\n`;
+    out += `def start_delivery_server(\n`;
+    out += `    envelope_json: str,\n`;
+    out += `) -> "tuple[ThreadingHTTPServer, int]":\n`;
+    out += `    body = envelope_json.encode("utf-8")\n\n`;
+    out += `    class Handler(BaseHTTPRequestHandler):\n`;
+    out += `        def do_GET(self) -> None:  # noqa: N802\n`;
+    out += `            if self.path.startswith("/api/v2/configs"):\n`;
+    out += `                self.send_response(200)\n`;
+    out += `                self.send_header("Content-Type", "application/json")\n`;
+    out += `                self.send_header("ETag", '"v1"')\n`;
+    out += `                self.send_header("Content-Length", str(len(body)))\n`;
+    out += `                self.end_headers()\n`;
+    out += `                self.wfile.write(body)\n`;
+    out += `            else:\n`;
+    out += `                self.send_response(404)\n`;
+    out += `                self.end_headers()\n\n`;
+    out += `        def log_message(self, *args: object) -> None:  # silence test logs\n`;
+    out += `            pass\n\n`;
+    out += `    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)\n`;
+    out += `    port = server.server_address[1]\n`;
+    out += `    thread = threading.Thread(target=server.serve_forever, daemon=True)\n`;
+    out += `    thread.start()\n`;
+    out += `    return server, port\n\n\n`;
+    result.rendered.forEach((r, i) => {
+      out += r.source;
+      if (i < result.rendered.length - 1) out += '\n\n';
+    });
+    if (!out.endsWith('\n')) out += '\n';
+    return out;
+  }
 
   // Eval/datadir suites use os (os.environ, os.path.join via the DATADIR
   // constant). pytest (pytest.raises, @pytest.fixture) is only used by suites
@@ -810,13 +930,12 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     out += `    return c\n\n\n`;
   }
 
-  for (let i = 0; i < result.rendered.length; i++) {
-    const r = result.rendered[i];
+  result.rendered.forEach((r, i) => {
     out += r.source;
     if (i < result.rendered.length - 1) {
       out += '\n\n';
     }
-  }
+  });
   if (!out.endsWith('\n')) out += '\n';
   return out;
 }

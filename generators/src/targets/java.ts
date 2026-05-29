@@ -72,6 +72,11 @@ const SUITES: SuiteEntry[] = [
     out: 'DatadirValueTypeTest.java',
     className: 'DatadirValueTypeTest',
   },
+  {
+    yaml: 'delivery_environment.yaml',
+    out: 'DeliveryEnvironmentTest.java',
+    className: 'DeliveryEnvironmentTest',
+  },
   { yaml: 'post.yaml', out: 'PostTest.java', className: 'PostTest' },
   { yaml: 'telemetry.yaml', out: 'TelemetryTest.java', className: 'TelemetryTest' },
   {
@@ -227,6 +232,9 @@ function renderBody(
   }
   if (suite.yaml === 'datadir_value_type.yaml') {
     return renderDatadirValueTypeBody(kase);
+  }
+  if (suite.yaml === 'delivery_environment.yaml') {
+    return renderDeliveryBody(kase);
   }
   if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
     return renderPostBody(kase);
@@ -600,6 +608,86 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
 }
 
 // ---------------------------------------------------------------------------
+// delivery_environment.yaml renderer (self-contained HttpServer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a delivery_environment.yaml case body. Cross-SDK DELIVERY-WIRE-SHAPE
+ * gate (qfg-xpln): stands up an in-process com.sun.net.httpserver.HttpServer
+ * returning the literal `envelope` JSON on /api/v2/configs (the shape
+ * api-delivery emits in SDK-key mode), builds a real Quonfig in SDK-key mode
+ * (NO environment pin unless client_overrides.environment is set), awaits init
+ * (which installs the wire envelope), and asserts the resolved boolean.
+ * Exercises the wire parse + meta.environment selection path the datadir tests
+ * never touch. Modeled on the hand-written HttpDeliverySingularEnvironmentTest.
+ */
+function renderDeliveryBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const envelope = kase.envelope;
+  const indent = '    ';
+
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('delivery case has no `envelope` wire shape');
+  }
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('delivery case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('delivery case has no expected.value');
+  }
+  const expVal = expected.value;
+  if (typeof expVal !== 'boolean') {
+    throw new Error(`delivery case currently only handles boolean expected.value, got ${typeof expVal}`);
+  }
+  if (!('sdk_key' in overrides)) {
+    throw new Error('delivery case must set client_overrides.sdk_key (SDK-key mode)');
+  }
+
+  const envelopeJson = JSON.stringify(envelope);
+  const sdkKey = String(overrides.sdk_key);
+  const expectedBool = expVal === true ? 'Boolean.TRUE' : 'Boolean.FALSE';
+  const builderLines: string[] = [
+    `.sdkKey(${javaStringLiteral(sdkKey)})`,
+    `.apiUrls(java.util.List.of(base))`,
+    `.streamUrls(java.util.List.of(base))`,
+    `.telemetryUrl(base)`,
+    `.fallbackPollEnabled(false)`,
+    `.initTimeout(java.time.Duration.ofSeconds(5))`,
+    `.disableTelemetry(true)`,
+  ];
+  if ('environment' in overrides) {
+    builderLines.push(`.environment(${javaStringLiteral(String(overrides.environment))})`);
+  }
+
+  let body = '';
+  body += `${indent}String envelope = ${javaStringLiteral(envelopeJson)};\n`;
+  body += `${indent}HttpServer server = startDeliveryServer(envelope);\n`;
+  body += `${indent}try {\n`;
+  body += `${indent}  String base = "http://127.0.0.1:" + server.getAddress().getPort();\n`;
+  body += `${indent}  Options o =\n`;
+  body += `${indent}      Options.builder()\n`;
+  for (const line of builderLines) {
+    body += `${indent}          ${line}\n`;
+  }
+  body += `${indent}          .build();\n`;
+  body += `${indent}  try (Quonfig q = new Quonfig(o)) {\n`;
+  body += `${indent}    q.initFuture().get(5, java.util.concurrent.TimeUnit.SECONDS);\n`;
+  body += `${indent}    Boolean v = q.getBool(${javaStringLiteral(key)}, Boolean.${expVal === true ? 'FALSE' : 'TRUE'});\n`;
+  body += `${indent}    assertEquals(\n`;
+  body += `${indent}        ${expectedBool},\n`;
+  body += `${indent}        v,\n`;
+  body += `${indent}        ${javaStringLiteral(`delivery-wire env override: expected ${expVal} for ${key}`)});\n`;
+  body += `${indent}  }\n`;
+  body += `${indent}} finally {\n`;
+  body += `${indent}  server.stop(0);\n`;
+  body += `${indent}}\n`;
+  return body;
+}
+
+// ---------------------------------------------------------------------------
 // post.yaml / telemetry.yaml renderer
 // ---------------------------------------------------------------------------
 
@@ -639,7 +727,93 @@ function renderPostBody(kase: YamlCase): string {
 // File assembly
 // ---------------------------------------------------------------------------
 
+function renderDeliveryFile(suite: SuiteEntry, result: RenderResult): string {
+  let out = '';
+  out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
+  out += `// Regenerate with:\n`;
+  out += `//   cd integration-test-data/generators && npm run generate -- --target=java\n`;
+  out += `// Source: ${GENERATOR_PATH}\n`;
+  out += `\n`;
+  out += `package ${PACKAGE};\n`;
+  out += `\n`;
+  out += `import static org.junit.jupiter.api.Assertions.assertEquals;\n`;
+  out += `\n`;
+  out += `import com.quonfig.sdk.Options;\n`;
+  out += `import com.quonfig.sdk.Quonfig;\n`;
+  out += `import com.sun.net.httpserver.HttpExchange;\n`;
+  out += `import com.sun.net.httpserver.HttpHandler;\n`;
+  out += `import com.sun.net.httpserver.HttpServer;\n`;
+  out += `import java.io.IOException;\n`;
+  out += `import java.io.OutputStream;\n`;
+  out += `import java.net.InetSocketAddress;\n`;
+  out += `import java.nio.charset.StandardCharsets;\n`;
+  out += `import java.util.ArrayList;\n`;
+  out += `import java.util.List;\n`;
+  out += `import org.junit.jupiter.api.AfterEach;\n`;
+  out += `import org.junit.jupiter.api.DisplayName;\n`;
+  out += `import org.junit.jupiter.api.Test;\n`;
+  out += `\n`;
+  out += `class ${suite.className} {\n`;
+  out += `\n`;
+  out += `  private final List<HttpServer> servers = new ArrayList<>();\n`;
+  out += `\n`;
+  out += `  @AfterEach\n`;
+  out += `  void stopServers() {\n`;
+  out += `    for (HttpServer s : servers) s.stop(0);\n`;
+  out += `    servers.clear();\n`;
+  out += `  }\n`;
+  out += `\n`;
+  out += `  // Stand up an in-process server returning the literal wire envelope on\n`;
+  out += `  // /api/v2/configs (the shape api-delivery emits in SDK-key mode). The SSE\n`;
+  out += `  // context stays open without frames so the initial HTTP install stands.\n`;
+  out += `  private HttpServer startDeliveryServer(String envelope) throws IOException {\n`;
+  out += `    HttpServer s = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);\n`;
+  out += `    HttpHandler getHandler =\n`;
+  out += `        (HttpExchange ex) -> {\n`;
+  out += `          byte[] body = envelope.getBytes(StandardCharsets.UTF_8);\n`;
+  out += `          ex.getResponseHeaders().add("Content-Type", "application/json");\n`;
+  out += `          ex.getResponseHeaders().add("ETag", "\\"v1\\"");\n`;
+  out += `          ex.sendResponseHeaders(200, body.length);\n`;
+  out += `          try (OutputStream out = ex.getResponseBody()) {\n`;
+  out += `            out.write(body);\n`;
+  out += `          }\n`;
+  out += `        };\n`;
+  out += `    HttpHandler sseHandler =\n`;
+  out += `        (HttpExchange ex) -> {\n`;
+  out += `          ex.getResponseHeaders().add("Content-Type", "text/event-stream");\n`;
+  out += `          ex.sendResponseHeaders(200, 0);\n`;
+  out += `          try (OutputStream out = ex.getResponseBody()) {\n`;
+  out += `            out.write(":ok\\n\\n".getBytes(StandardCharsets.UTF_8));\n`;
+  out += `            out.flush();\n`;
+  out += `            for (int i = 0; i < 100; i++) {\n`;
+  out += `              try {\n`;
+  out += `                Thread.sleep(50);\n`;
+  out += `              } catch (InterruptedException e) {\n`;
+  out += `                Thread.currentThread().interrupt();\n`;
+  out += `                return;\n`;
+  out += `              }\n`;
+  out += `            }\n`;
+  out += `          } catch (IOException ignored) {\n`;
+  out += `            // expected when the client disconnects\n`;
+  out += `          }\n`;
+  out += `        };\n`;
+  out += `    s.createContext("/api/v2/configs", getHandler);\n`;
+  out += `    s.createContext("/api/v2/sse/config", sseHandler);\n`;
+  out += `    s.start();\n`;
+  out += `    servers.add(s);\n`;
+  out += `    return s;\n`;
+  out += `  }\n`;
+  for (const r of result.rendered) {
+    out += r.source;
+  }
+  out += `}\n`;
+  return out;
+}
+
 function renderFile(suite: SuiteEntry, result: RenderResult): string {
+  if (suite.yaml === 'delivery_environment.yaml') {
+    return renderDeliveryFile(suite, result);
+  }
   let out = '';
   out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
   out += `// Regenerate with:\n`;

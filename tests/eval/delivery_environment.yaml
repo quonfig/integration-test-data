@@ -1,0 +1,107 @@
+# Delivery-wire-shape regression gate (cross-SDK).
+#
+# WHY THIS FILE EXISTS
+# tests/eval/*.yaml load datadir/workspace configs (PLURAL `environments` array)
+# in-process and pin an environment. That shape NEVER exercises the HTTP+SSE
+# DELIVERY path, where api-delivery scopes each config to ONE environment and
+# serializes it as a SINGULAR `environment` object alongside `meta.environment`,
+# with the SDK run in SDK-key mode and NO environment pinned (the server scopes
+# by key). The whole class of bug audited in qfg-xpln / qfg-64m9 — singular
+# block dropped on parse (sdk-net, sdk-java), or env id never taken from
+# meta.environment (sdk-ruby, sdk-python) — was invisible to every datadir test.
+#
+# These cases close that hole permanently: each SDK target emits a test that
+# stands up a mock HTTP `/api/v2/configs` server returning the literal `envelope`
+# below, builds the client in SDK-key mode (no env pin unless `environment` is
+# in client_overrides), and asserts the resolved value. The envelope shape is
+# byte-for-byte what api-delivery emits (see api-delivery/internal/serve/configs.go
+# buildConfigEnvelope + internal/config/types.go ConfigResponse).
+#
+# Canonical correct behavior: singular `environment` parses AND meta.environment
+# is authoritative when unpinned (sdk-go: c.envID = envelope.Meta.Environment).
+function: delivery
+mode: http_wire
+tests:
+  - cases:
+      - name: "singular environment override wins over default when env not pinned"
+        function: get
+        type: BOOLEAN
+        input:
+          key: "flag.env-scoped"
+        envelope:
+          meta:
+            version: "v1"
+            environment: "development"
+          configs:
+            - id: "c-env"
+              key: "flag.env-scoped"
+              type: "bool"
+              valueType: "bool"
+              sendToClientSdk: false
+              default:
+                rules:
+                  - criteria: [{ operator: ALWAYS_TRUE }]
+                    value: { type: bool, value: true }
+              environment:
+                id: "development"
+                rules:
+                  - criteria: [{ operator: ALWAYS_TRUE }]
+                    value: { type: bool, value: false }
+        client_overrides:
+          sdk_key: "sdk-test"
+        expected:
+          value: false
+
+      - name: "explicit environment pin wins over meta.environment"
+        function: get
+        type: BOOLEAN
+        input:
+          key: "flag.env-scoped"
+        envelope:
+          meta:
+            version: "v1"
+            environment: "staging"
+          configs:
+            - id: "c-env"
+              key: "flag.env-scoped"
+              type: "bool"
+              valueType: "bool"
+              sendToClientSdk: false
+              default:
+                rules:
+                  - criteria: [{ operator: ALWAYS_TRUE }]
+                    value: { type: bool, value: true }
+              environment:
+                id: "development"
+                rules:
+                  - criteria: [{ operator: ALWAYS_TRUE }]
+                    value: { type: bool, value: false }
+        client_overrides:
+          sdk_key: "sdk-test"
+          environment: "development"
+        expected:
+          value: false
+
+      - name: "config without environment block falls back to default in delivery mode"
+        function: get
+        type: BOOLEAN
+        input:
+          key: "flag.default-only"
+        envelope:
+          meta:
+            version: "v1"
+            environment: "development"
+          configs:
+            - id: "c-def"
+              key: "flag.default-only"
+              type: "bool"
+              valueType: "bool"
+              sendToClientSdk: false
+              default:
+                rules:
+                  - criteria: [{ operator: ALWAYS_TRUE }]
+                    value: { type: bool, value: true }
+        client_overrides:
+          sdk_key: "sdk-test"
+        expected:
+          value: true

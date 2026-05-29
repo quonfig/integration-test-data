@@ -43,6 +43,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'enabled_with_contexts.yaml', out: 'enabled_with_contexts_generated_test.go', suite: 'EnabledWithContexts' },
   { yaml: 'datadir_environment.yaml', out: 'datadir_environment_generated_test.go', suite: 'DatadirEnvironment' },
   { yaml: 'datadir_value_type.yaml', out: 'datadir_value_type_generated_test.go', suite: 'DatadirValueType' },
+  { yaml: 'delivery_environment.yaml', out: 'delivery_environment_generated_test.go', suite: 'DeliveryEnvironment' },
   { yaml: 'post.yaml', out: 'post_generated_test.go', suite: 'Post' },
   { yaml: 'telemetry.yaml', out: 'telemetry_generated_test.go', suite: 'Telemetry' },
   { yaml: 'dev_overrides.yaml', out: 'dev_overrides_generated_test.go', suite: 'DevOverrides' },
@@ -238,6 +239,16 @@ function renderBody(
     features.add('require');
     features.add('assert');
     return renderDatadirValueTypeBody(kase, features);
+  }
+
+  if (suite.yaml === 'delivery_environment.yaml') {
+    features.add('quonfig');
+    features.add('require');
+    features.add('assert');
+    features.add('http');
+    features.add('httptest');
+    features.add('time');
+    return renderDeliveryBody(kase);
   }
 
   // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
@@ -691,6 +702,84 @@ function renderDatadirValueTypeBody(kase: YamlCase, features: Set<string>): stri
 }
 
 /**
+ * Render a delivery_environment.yaml case body. This is the cross-SDK
+ * DELIVERY-WIRE-SHAPE regression gate (qfg-xpln): it stands up a real
+ * httptest server returning the literal `envelope` JSON from the YAML on
+ * `/api/v2/configs`, builds a public SDK-key-mode client against it (NO
+ * environment pin unless `client_overrides.environment` is present), and
+ * asserts the resolved boolean. The whole point is to exercise the wire
+ * parse + meta.environment env-selection path the datadir tests never touch.
+ */
+function renderDeliveryBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const envelope = kase.envelope;
+  const indent = '\t';
+
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('delivery case has no `envelope` wire shape');
+  }
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('delivery case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('delivery case has no expected.value');
+  }
+  const expVal = expected.value;
+  if (typeof expVal !== 'boolean') {
+    throw new Error(`delivery case currently only handles boolean expected.value, got ${typeof expVal}`);
+  }
+  if (!('sdk_key' in overrides)) {
+    throw new Error('delivery case must set client_overrides.sdk_key (SDK-key mode)');
+  }
+
+  const envelopeJson = JSON.stringify(envelope);
+  const sdkKey = String(overrides.sdk_key);
+
+  const opts: string[] = [
+    `quonfig.WithAPIKey(${goStringLiteral(sdkKey)})`,
+    `quonfig.WithAPIURLs([]string{server.URL})`,
+    `quonfig.WithSSE(false)`,
+    `quonfig.WithFallbackPoll(false, 0)`,
+    `quonfig.WithAllTelemetryDisabled()`,
+    `quonfig.WithInitTimeout(5 * time.Second)`,
+  ];
+  if ('environment' in overrides) {
+    // Explicit pin must win over meta.environment.
+    opts.push(`quonfig.WithEnvironment(${goStringLiteral(String(overrides.environment))})`);
+  }
+
+  let body = '';
+  body += `${indent}const envelopeJSON = ${goStringLiteral(envelopeJson)}\n`;
+  body += `${indent}server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n`;
+  body += `${indent}\tif r.URL.Path != "/api/v2/configs" {\n`;
+  body += `${indent}\t\tw.WriteHeader(http.StatusNotFound)\n`;
+  body += `${indent}\t\treturn\n`;
+  body += `${indent}\t}\n`;
+  body += `${indent}\tw.Header().Set("Content-Type", "application/json")\n`;
+  body += `${indent}\tw.Header().Set("ETag", "\\"v1\\"")\n`;
+  body += `${indent}\t_, _ = w.Write([]byte(envelopeJSON))\n`;
+  body += `${indent}}))\n`;
+  body += `${indent}defer server.Close()\n`;
+  body += `\n`;
+  body += `${indent}client, err := quonfig.NewClient(\n`;
+  for (const o of opts) {
+    body += `${indent}\t${o},\n`;
+  }
+  body += `${indent})\n`;
+  body += `${indent}require.NoError(t, err)\n`;
+  body += `${indent}defer client.Close()\n`;
+  body += `\n`;
+  body += `${indent}val, ok, err := client.GetBoolValue(${goStringLiteral(key)}, nil)\n`;
+  body += `${indent}require.NoError(t, err)\n`;
+  body += `${indent}require.True(t, ok, "expected config %q to be present from wire envelope", ${goStringLiteral(key)})\n`;
+  body += `${indent}assert.Equal(t, ${expVal === true}, val, "delivery-wire env override: expected %v for %q", ${expVal === true}, ${goStringLiteral(key)})\n`;
+  return body;
+}
+
+/**
  * Render post.yaml / telemetry.yaml case bodies.
  *
  * Uniform shape (matches Ruby target conceptually):
@@ -811,6 +900,15 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<s
   }
   if (features.has('json')) {
     imports.unshift('"encoding/json"');
+  }
+  if (features.has('http')) {
+    imports.unshift('"net/http"');
+  }
+  if (features.has('httptest')) {
+    imports.push('"net/http/httptest"');
+  }
+  if (features.has('time')) {
+    imports.push('"time"');
   }
   // Third-party / project imports go in a separate block per gofmt style.
   const projectImports: string[] = [];

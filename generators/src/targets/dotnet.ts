@@ -73,6 +73,11 @@ const SUITES: SuiteEntry[] = [
     out: 'DatadirValueTypeTests.cs',
     className: 'DatadirValueTypeTests',
   },
+  {
+    yaml: 'delivery_environment.yaml',
+    out: 'DeliveryEnvironmentTests.cs',
+    className: 'DeliveryEnvironmentTests',
+  },
   { yaml: 'post.yaml', out: 'PostTests.cs', className: 'PostTests' },
   { yaml: 'telemetry.yaml', out: 'TelemetryTests.cs', className: 'TelemetryTests' },
   {
@@ -200,10 +205,14 @@ function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderResult {
       );
     }
 
+    const signature =
+      suite.yaml === 'delivery_environment.yaml'
+        ? `    public async Task ${methodName}()\n`
+        : `    public void ${methodName}()\n`;
     const block =
       `\n` +
       `    [Fact(DisplayName = ${csStringLiteral(rawName)})]\n` +
-      `    public void ${methodName}()\n` +
+      signature +
       `    {\n` +
       body +
       `    }\n`;
@@ -228,6 +237,9 @@ function renderBody(
   }
   if (suite.yaml === 'datadir_value_type.yaml') {
     return renderDatadirValueTypeBody(kase);
+  }
+  if (suite.yaml === 'delivery_environment.yaml') {
+    return renderDeliveryBody(kase);
   }
   if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
     return renderPostBody(kase);
@@ -607,6 +619,79 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
 }
 
 // ---------------------------------------------------------------------------
+// delivery_environment.yaml renderer (self-contained WireMock server)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a delivery_environment.yaml case body. Cross-SDK DELIVERY-WIRE-SHAPE
+ * gate (qfg-xpln): stands up a WireMock server returning the literal `envelope`
+ * JSON on /api/v2/configs (the shape api-delivery emits in SDK-key mode),
+ * builds a real Quonfig in SDK-key mode (NO Environment pin unless
+ * client_overrides.environment is set), awaits InitAsync (which installs the
+ * wire envelope), and asserts the resolved boolean. Exercises the wire parse +
+ * meta.environment selection path the datadir tests never touch. Modeled on
+ * the hand-written HttpDeliveryEnvironmentTests.cs (Transport/).
+ */
+function renderDeliveryBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const envelope = kase.envelope;
+  const indent = '        ';
+
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('delivery case has no `envelope` wire shape');
+  }
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('delivery case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('delivery case has no expected.value');
+  }
+  const expVal = expected.value;
+  if (typeof expVal !== 'boolean') {
+    throw new Error(`delivery case currently only handles boolean expected.value, got ${typeof expVal}`);
+  }
+  if (!('sdk_key' in overrides)) {
+    throw new Error('delivery case must set client_overrides.sdk_key (SDK-key mode)');
+  }
+
+  const envelopeJson = JSON.stringify(envelope);
+  const sdkKey = String(overrides.sdk_key);
+  const expCs = expVal === true ? 'true' : 'false';
+
+  const optionInits: string[] = [
+    `SdkKey = ${csStringLiteral(sdkKey)}`,
+    `ApiUrls = new[] { server.Urls[0] }`,
+    `StreamUrls = Array.Empty<string>()`,
+    `FallbackPollEnabled = false`,
+    `InitTimeout = TimeSpan.FromSeconds(5)`,
+  ];
+  if ('environment' in overrides) {
+    optionInits.push(`Environment = ${csStringLiteral(String(overrides.environment))}`);
+  }
+
+  let body = '';
+  body += `${indent}using var server = WireMockServer.Start();\n`;
+  body += `${indent}server\n`;
+  body += `${indent}    .Given(Request.Create().WithPath("/api/v2/configs").UsingGet())\n`;
+  body += `${indent}    .RespondWith(Response.Create().WithStatusCode(200)\n`;
+  body += `${indent}        .WithHeader("Content-Type", "application/json")\n`;
+  body += `${indent}        .WithHeader("ETag", "\\"v1\\"")\n`;
+  body += `${indent}        .WithBody(${csStringLiteral(envelopeJson)}));\n`;
+  body += `\n`;
+  body += `${indent}await using var client = new Quonfig(new QuonfigOptions\n`;
+  body += `${indent}{\n`;
+  body += optionInits.map((o) => `${indent}    ${o},`).join('\n') + '\n';
+  body += `${indent}});\n`;
+  body += `${indent}await client.InitAsync();\n`;
+  body += `\n`;
+  body += `${indent}Assert.Equal(${expCs}, client.GetBool(${csStringLiteral(key)}));\n`;
+  return body;
+}
+
+// ---------------------------------------------------------------------------
 // post.yaml / telemetry.yaml renderer
 // ---------------------------------------------------------------------------
 
@@ -653,7 +738,35 @@ function renderPostBody(kase: YamlCase): string {
 // File assembly
 // ---------------------------------------------------------------------------
 
+function renderDeliveryFile(suite: SuiteEntry, result: RenderResult): string {
+  let out = '';
+  out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
+  out += `// Regenerate with:\n`;
+  out += `//   cd integration-test-data/generators && npm run generate -- --target=dotnet\n`;
+  out += `// Source: ${GENERATOR_PATH}\n`;
+  out += `\n`;
+  out += `using System;\n`;
+  out += `using System.Threading.Tasks;\n`;
+  out += `using WireMock.RequestBuilders;\n`;
+  out += `using WireMock.ResponseBuilders;\n`;
+  out += `using WireMock.Server;\n`;
+  out += `using Xunit;\n`;
+  out += `\n`;
+  out += `namespace ${NAMESPACE};\n`;
+  out += `\n`;
+  out += `public sealed class ${suite.className}\n`;
+  out += `{\n`;
+  for (const r of result.rendered) {
+    out += r.source;
+  }
+  out += `}\n`;
+  return out;
+}
+
 function renderFile(suite: SuiteEntry, result: RenderResult): string {
+  if (suite.yaml === 'delivery_environment.yaml') {
+    return renderDeliveryFile(suite, result);
+  }
   let out = '';
   out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
   out += `// Regenerate with:\n`;

@@ -47,6 +47,22 @@ export interface ClientOverrides {
   [k: string]: unknown;
 }
 
+// delivery_environment.yaml: the literal HTTP/SSE wire shape api-delivery
+// emits in SDK-key mode. The generator serializes `envelope` to JSON verbatim
+// and stands up a mock `/api/v2/configs` returning it, so the fields are kept
+// open (Record) — the wire JSON passes straight through, no per-field typing.
+export interface DeliveryEnvelopeMeta {
+  version?: string;
+  environment?: string;
+  [k: string]: unknown;
+}
+
+export interface DeliveryEnvelope {
+  meta: DeliveryEnvelopeMeta;
+  configs: Array<Record<string, unknown>>;
+  [k: string]: unknown;
+}
+
 export interface YamlCase {
   name: string;
   client?: string;
@@ -64,6 +80,10 @@ export interface YamlCase {
   data?: unknown;
   expected_data?: unknown;
 
+  // delivery_environment.yaml: literal wire-shape envelope returned by the
+  // mock `/api/v2/configs` server. Present only on `mode: http_wire` cases.
+  envelope?: DeliveryEnvelope;
+
   [k: string]: unknown;
 }
 
@@ -74,6 +94,8 @@ export interface YamlGroup {
 
 export interface YamlDoc {
   function?: string;
+  // delivery_environment.yaml carries a top-level `mode: http_wire` marker.
+  mode?: string;
   tests?: YamlGroup[];
   [k: string]: unknown;
 }

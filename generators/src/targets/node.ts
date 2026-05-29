@@ -60,6 +60,11 @@ const SUITES: SuiteEntry[] = [
     out: 'datadir_value_type.generated.test.ts',
     describe: 'datadir_value_type',
   },
+  {
+    yaml: 'delivery_environment.yaml',
+    out: 'delivery_environment.generated.test.ts',
+    describe: 'delivery_environment',
+  },
   { yaml: 'post.yaml', out: 'post.generated.test.ts', describe: 'post' },
   { yaml: 'telemetry.yaml', out: 'telemetry.generated.test.ts', describe: 'telemetry' },
   {
@@ -192,7 +197,8 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
 function callbackSignature(yamlBasename: string, kase: YamlCase): string {
   if (
     yamlBasename === 'datadir_environment.yaml' ||
-    yamlBasename === 'datadir_value_type.yaml'
+    yamlBasename === 'datadir_value_type.yaml' ||
+    yamlBasename === 'delivery_environment.yaml'
   ) {
     return 'async ()';
   }
@@ -225,6 +231,10 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
 
   if (yamlBasename === 'datadir_value_type.yaml') {
     return renderDatadirValueTypeBody(kase);
+  }
+
+  if (yamlBasename === 'delivery_environment.yaml') {
+    return renderDeliveryBody(kase);
   }
 
   // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
@@ -575,6 +585,73 @@ function renderDatadirValueTypeBody(kase: YamlCase): RenderedBody {
 }
 
 /**
+ * Render a delivery_environment.yaml case body. Cross-SDK DELIVERY-WIRE-SHAPE
+ * gate (qfg-xpln): stands up a real node http server returning the literal
+ * `envelope` JSON on `/api/v2/configs`, builds a real `new Quonfig({...})` in
+ * SDK-key mode (NO environment pin unless client_overrides.environment is
+ * set), awaits init (which installs the wire envelope), and asserts the
+ * resolved boolean. Exercises the wire parse + meta.environment selection
+ * path the datadir tests never touch.
+ */
+function renderDeliveryBody(kase: YamlCase): RenderedBody {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const envelope = kase.envelope;
+
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('delivery case has no `envelope` wire shape');
+  }
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('delivery case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('delivery case has no expected.value');
+  }
+  const expVal = expected.value;
+  if (typeof expVal !== 'boolean') {
+    throw new Error(`delivery case currently only handles boolean expected.value, got ${typeof expVal}`);
+  }
+  if (!('sdk_key' in overrides)) {
+    throw new Error('delivery case must set client_overrides.sdk_key (SDK-key mode)');
+  }
+
+  const envelopeJson = JSON.stringify(envelope);
+  const sdkKey = String(overrides.sdk_key);
+
+  const opts: string[] = [
+    `sdkKey: ${tsStringLiteral(sdkKey)}`,
+    `apiUrls: [\`http://127.0.0.1:\${__port}\`]`,
+    `enableSSE: false`,
+    `fallbackPollEnabled: false`,
+    `collectEvaluationSummaries: false`,
+    `contextUploadMode: "none"`,
+    `initTimeout: 5000`,
+  ];
+  if ('environment' in overrides) {
+    opts.push(`environment: ${tsStringLiteral(String(overrides.environment))}`);
+  }
+  const optsLit = `{ ${opts.join(', ')} }`;
+
+  let body = '';
+  body += `    const __envelope = ${envelopeJson ? tsStringLiteral(envelopeJson) : '"{}"'};\n`;
+  body += `    const { server: __server, port: __port } = await startDeliveryServer(__envelope);\n`;
+  body += `    try {\n`;
+  body += `      const client = new Quonfig(${optsLit});\n`;
+  body += `      await client.init();\n`;
+  body += `      try {\n`;
+  body += `        expect(client.getBool(${tsStringLiteral(key)})).toBe(${expVal === true});\n`;
+  body += `      } finally {\n`;
+  body += `        await client.close();\n`;
+  body += `      }\n`;
+  body += `    } finally {\n`;
+  body += `      await new Promise<void>((res) => __server.close(() => res()));\n`;
+  body += `    }\n`;
+  return { body, usesMergeContexts: false, usesContextsType: false };
+}
+
+/**
  * Render a post.yaml / telemetry.yaml case body.
  *
  * Every such case has:
@@ -649,6 +726,7 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   const isDatadir =
     suite.yaml === 'datadir_environment.yaml' ||
     suite.yaml === 'datadir_value_type.yaml';
+  const isDelivery = suite.yaml === 'delivery_environment.yaml';
   const isPost = suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml';
 
   let out = '';
@@ -657,6 +735,45 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `//   cd integration-test-data/generators && npm run generate -- --target=node\n`;
   out += `// Source: ${GENERATOR_PATH}\n`;
   out += `\n`;
+
+  if (isDelivery) {
+    out += `import { describe, it, expect } from "vitest";\n`;
+    out += `import * as http from "node:http";\n`;
+    out += `import type { AddressInfo } from "node:net";\n`;
+    out += `import { Quonfig } from "../../src/quonfig";\n`;
+    out += `\n`;
+    out += `// Stand up a mock api-delivery returning the literal wire envelope on\n`;
+    out += `// /api/v2/configs (the exact shape api-delivery emits in SDK-key mode).\n`;
+    out += `function startDeliveryServer(\n`;
+    out += `  envelopeJson: string\n`;
+    out += `): Promise<{ server: http.Server; port: number }> {\n`;
+    out += `  return new Promise((resolve) => {\n`;
+    out += `    const server = http.createServer((req, res) => {\n`;
+    out += `      if (req.url?.startsWith("/api/v2/configs")) {\n`;
+    out += `        res.writeHead(200, {\n`;
+    out += `          "Content-Type": "application/json",\n`;
+    out += `          ETag: '"v1"',\n`;
+    out += `        });\n`;
+    out += `        res.end(envelopeJson);\n`;
+    out += `        return;\n`;
+    out += `      }\n`;
+    out += `      res.writeHead(404);\n`;
+    out += `      res.end();\n`;
+    out += `    });\n`;
+    out += `    server.listen(0, "127.0.0.1", () => {\n`;
+    out += `      const addr = server.address() as AddressInfo;\n`;
+    out += `      resolve({ server, port: addr.port });\n`;
+    out += `    });\n`;
+    out += `  });\n`;
+    out += `}\n`;
+    out += `\n`;
+    out += `describe(${tsStringLiteral(suite.describe)}, () => {\n`;
+    for (const r of result.rendered) {
+      out += r.source;
+    }
+    out += `});\n`;
+    return out;
+  }
 
   if (isDatadir) {
     out += `import { describe, it, expect } from "vitest";\n`;

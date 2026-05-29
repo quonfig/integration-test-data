@@ -38,6 +38,7 @@ const SUITES: SuiteEntry[] = [
   { yaml: 'enabled_with_contexts.yaml', out: 'test_enabled_with_contexts.rb', className: 'TestEnabledWithContexts' },
   { yaml: 'datadir_environment.yaml', out: 'test_datadir_environment.rb', className: 'TestDatadirEnvironment' },
   { yaml: 'datadir_value_type.yaml', out: 'test_datadir_value_type.rb', className: 'TestDatadirValueType' },
+  { yaml: 'delivery_environment.yaml', out: 'test_delivery_environment.rb', className: 'TestDeliveryEnvironment' },
   { yaml: 'post.yaml', out: 'test_post.rb', className: 'TestPost' },
   { yaml: 'telemetry.yaml', out: 'test_telemetry.rb', className: 'TestTelemetry' },
   { yaml: 'dev_overrides.yaml', out: 'test_dev_overrides.rb', className: 'TestDevOverrides' },
@@ -235,6 +236,10 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
 
   if (yamlBasename === 'datadir_value_type.yaml') {
     return renderDatadirValueTypeBody(kase);
+  }
+
+  if (yamlBasename === 'delivery_environment.yaml') {
+    return renderDeliveryBody(kase);
   }
 
   // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
@@ -562,6 +567,71 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
  * helper to whoever is implementing the SDK side. Hiding the case via a
  * generator-side omission is strictly worse.
  */
+/**
+ * Render a delivery_environment.yaml case body. Cross-SDK DELIVERY-WIRE-SHAPE
+ * gate (qfg-xpln): stands up a WEBrick server returning the literal `envelope`
+ * JSON on /api/v2/configs (the shape api-delivery emits in SDK-key mode),
+ * builds a real Quonfig::Client in SDK-key mode (NO environment pin unless
+ * client_overrides.environment is set), then asserts the resolved boolean.
+ * Exercises the wire parse + meta.environment selection path the datadir tests
+ * never touch. Modeled on the hand-written test_client_network_mode.rb.
+ */
+function renderDeliveryBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const envelope = kase.envelope;
+  const indent = '    ';
+
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('delivery case has no `envelope` wire shape');
+  }
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('delivery case has no input.key/flag');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    throw new Error('delivery case has no expected.value');
+  }
+  const expVal = expected.value;
+  if (typeof expVal !== 'boolean') {
+    throw new Error(`delivery case currently only handles boolean expected.value, got ${typeof expVal}`);
+  }
+  if (!('sdk_key' in overrides)) {
+    throw new Error('delivery case must set client_overrides.sdk_key (SDK-key mode)');
+  }
+
+  const envelopeJson = JSON.stringify(envelope);
+  const sdkKey = String(overrides.sdk_key);
+
+  const kwargs: string[] = [
+    `sdk_key: ${rubyStringLiteral(sdkKey)}`,
+    `api_urls: ["http://127.0.0.1:#{port}"]`,
+    `enable_sse: false`,
+    `enable_polling: false`,
+    `context_upload_mode: :none`,
+    `collect_evaluation_summaries: false`,
+  ];
+  if ('environment' in overrides) {
+    kwargs.push(`environment: ${rubyStringLiteral(String(overrides.environment))}`);
+  }
+
+  let body = '';
+  body += `${indent}prev_env = ENV.delete('QUONFIG_ENVIRONMENT')\n`;
+  body += `${indent}envelope_json = ${rubyStringLiteral(envelopeJson)}\n`;
+  body += `${indent}server, port = start_delivery_server(envelope_json)\n`;
+  body += `${indent}client = Quonfig::Client.new(\n`;
+  body += kwargs.map((kw) => `${indent}  ${kw}`).join(',\n') + '\n';
+  body += `${indent})\n`;
+  body += `${indent}assert_equal ${expVal ? 'true' : 'false'}, client.get(${rubyStringLiteral(key)}, :missing),\n`;
+  body += `${indent}             ${rubyStringLiteral(`delivery-wire env override: expected ${expVal} for ${key}`)}\n`;
+  body += `${indent}ensure\n`;
+  body += `${indent}  client&.stop\n`;
+  body += `${indent}  server&.shutdown\n`;
+  body += `${indent}  ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env\n`;
+  return body;
+}
+
 function renderPostBody(kase: YamlCase): string {
   const aggregator = (kase.aggregator ?? '').toString();
   if (aggregator.length === 0) {
@@ -601,7 +671,60 @@ function stringifyEnvVars(env: Record<string, unknown>): Record<string, string> 
   return out;
 }
 
+function renderDeliveryFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
+  let out = '';
+  out += `# frozen_string_literal: true\n`;
+  out += `\n`;
+  out += `# AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}.\n`;
+  out += `# Regenerate with:\n`;
+  out += `#   cd integration-test-data/generators && npm run generate -- --target=ruby\n`;
+  out += `# Source: ${GENERATOR_PATH}\n`;
+  out += `# Do NOT edit by hand — changes will be overwritten.\n`;
+  out += `\n`;
+  out += `require 'test_helper'\n`;
+  out += `require 'webrick'\n`;
+  out += `require 'json'\n`;
+  out += `require 'socket'\n`;
+  out += `\n`;
+  out += `class ${suite.className} < Minitest::Test\n`;
+  out += `  # Stand up a WEBrick server returning the literal wire envelope on\n`;
+  out += `  # /api/v2/configs (the shape api-delivery emits in SDK-key mode).\n`;
+  out += `  def start_delivery_server(envelope_json)\n`;
+  out += `    log = WEBrick::Log.new(StringIO.new)\n`;
+  out += `    server = WEBrick::HTTPServer.new(Port: 0, Logger: log, AccessLog: [])\n`;
+  out += `    server.mount_proc '/api/v2/configs' do |_req, res|\n`;
+  out += `      res.status = 200\n`;
+  out += `      res['Content-Type'] = 'application/json'\n`;
+  out += `      res['ETag'] = '"v1"'\n`;
+  out += `      res.body = envelope_json\n`;
+  out += `    end\n`;
+  out += `    port = server.config[:Port]\n`;
+  out += `    Thread.new { server.start }\n`;
+  out += `    50.times do\n`;
+  out += `      break if tcp_open?(port)\n`;
+  out += `\n`;
+  out += `      sleep 0.05\n`;
+  out += `    end\n`;
+  out += `    [server, port]\n`;
+  out += `  end\n`;
+  out += `\n`;
+  out += `  def tcp_open?(port)\n`;
+  out += `    TCPSocket.new('127.0.0.1', port).tap(&:close)\n`;
+  out += `    true\n`;
+  out += `  rescue StandardError\n`;
+  out += `    false\n`;
+  out += `  end\n`;
+  for (const r of rendered) {
+    out += r.source;
+  }
+  out += `end\n`;
+  return out;
+}
+
 function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
+  if (suite.yaml === 'delivery_environment.yaml') {
+    return renderDeliveryFile(suite, rendered);
+  }
   let out = '';
   out += `# frozen_string_literal: true\n`;
   // Layout/EmptyLineAfterMagicComment requires a blank line between the
