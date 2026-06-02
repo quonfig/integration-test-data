@@ -50,8 +50,11 @@ verify-dev-injection/
 ```
 
 Scope mirrors `verify-sdk-boot`: sdk-node, sdk-go, sdk-ruby, sdk-python.
-sdk-java / sdk-net join once their token-file loaders land (qfg-bw7g.6/.7).
-Browser SDKs are excluded — no filesystem.
+sdk-java and sdk-net now have token-file loaders too (qfg-bw7g.6/.7), but
+they assert this same contract with in-repo tests against the dev-override
+flag (`sdk-java` `DevContextTest`, `sdk-net` `DevContextTests`) rather than
+this bash rig — adding JVM/.NET runners here would be bespoke scaffolding for
+no extra coverage. Browser SDKs are excluded — no filesystem.
 
 ## Prerequisites
 
