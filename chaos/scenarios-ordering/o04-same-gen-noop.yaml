@@ -1,0 +1,25 @@
+function: ordering
+tests:
+  - name: "o04 same generation — second leg is a no-op, no flap"
+    description: |
+      Both upstreams serve the same gen=42. The install guard treats same-generation
+      as a no-op (install only if incoming.generation >= held.generation, but a
+      same-gen install must not re-emit a change). After the first install the SDK
+      holds 42 and must not flap: no second install, no churn from the equal leg.
+    setup:
+      sdk: any
+      topology: ordering
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 15
+      upstreams:
+        - role: primary
+          generation: 42
+        - role: secondary
+          generation: 42
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.heldGeneration() == 42"
+      - within_ms: 15000
+        must_hold_for_ms: 8000
+        assert: "client.heldGeneration() == 42 AND client.configInstallCount() <= 1"

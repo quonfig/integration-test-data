@@ -18,6 +18,8 @@ chaos/
   schema/scenario.schema.json  JSON-schema for chaos YAML
   scenarios/                 default suite — every SDK runner globs *.yaml here
   scenarios-http-proxy/      requires HTTP-aware injection (not toxiproxy)
+  scenarios-failover/        failover rig — 1 upstream, primary+secondary proxies
+  scenarios-ordering/        ordering rig — 2 upstreams at divergent generations
   scenarios-manual/          deferred / out-of-band; not wired to any SDK runner
   validator/                 node validator + tests; CI gate for the schema
 ```
@@ -28,6 +30,8 @@ Every SDK runner does `glob("scenarios/*.yaml")` at the top level. Moving a YAML
 
 - **`scenarios/`** — the default suite. Every YAML here is expected to be feasible against toxiproxy (TCP-level chaos: stalls, latency, bandwidth, disables, byte limits, process flapping). A failure here is either a real SDK bug or a runner bug — never a known infrastructure limitation. **The default chaos run is intended as a green/red signal you can trust.**
 - **`scenarios-http-proxy/`** — scenarios that require HTTP-aware injection (auth failures, bad response bodies, malformed headers). Toxiproxy is TCP-only and structurally cannot model these. A future HTTP-aware harness (mitmproxy, mock server, or per-SDK fixture mode) will pick these up — for now they sit here as a record of intent. SDK runners do NOT include this directory by default.
+- **`scenarios-failover/`** — the **failover rig** (`topology: failover`). One fixture upstream sits behind TWO HTTP proxies — `http` (primary) and `secondary`. The SDK is configured with both URLs as `[primary, secondary]`; toxics target the primary leg, and the SDK must keep serving config by failing the HTTP config-fetch over to the secondary, fast. Boot with `./start-chaos.sh --failover`. Picked up explicitly by a per-SDK failover runner, not the default glob.
+- **`scenarios-ordering/`** — the **ordering rig** (`topology: ordering`). TWO fixture upstreams at divergent `Meta.generation`s (via `FIXTURE_GENERATION`), each behind its own proxy. Proves canonical ordering: the SDK ends up holding the **higher** generation and an established client never regresses to an older payload. Boot with `./start-chaos.sh --ordering --primary-gen N --secondary-gen M`. Picked up explicitly by a per-SDK ordering runner.
 - **`scenarios-manual/`** — scenarios that don't fit either automated harness today (process-level chaos requiring container privileges, multi-host scenarios, etc.). Placeholder; populate as the need arises.
 
 ## Boot the harness
@@ -40,6 +44,12 @@ cd integration-test-data/chaos
 
 # Toxiproxy + api-delivery in fixture mode (standalone).
 ./start-chaos.sh --with-upstream
+
+# Failover rig: one upstream behind primary (http) + secondary proxies.
+./start-chaos.sh --failover
+
+# Ordering rig: two upstreams at divergent generations.
+./start-chaos.sh --ordering --primary-gen 41 --secondary-gen 42
 
 # Point at a custom upstream that already exists on the host.
 ./start-chaos.sh --upstream-host my-host --upstream-port 6550
@@ -55,10 +65,12 @@ After boot:
 | -------------------------------- | ------------------------------ | ------------------------------ |
 | Toxiproxy admin API              | `http://127.0.0.1:8474`        | inject/clear toxics here       |
 | Chaos SSE port                   | `http://127.0.0.1:18550`       | SDK clients target this        |
-| Chaos HTTP port                  | `http://127.0.0.1:18551`       | SDK clients target this        |
-| api-delivery (with `--with-upstream`) | `http://127.0.0.1:6550`   | only when profile is on        |
+| Chaos HTTP port (primary)        | `http://127.0.0.1:18551`       | SDK clients target this        |
+| Chaos HTTP port (secondary)      | `http://127.0.0.1:18552`       | failover/ordering secondary leg |
+| api-delivery (with `--with-upstream`/`--failover`) | `http://127.0.0.1:6550` | only when profile is on |
+| api-delivery-secondary (`--ordering`) | `http://127.0.0.1:6551`   | second upstream, divergent gen |
 
-All port and host knobs can be overridden via env (`SSE_PROXY_PORT`, `HTTP_PROXY_PORT`, `TOXIPROXY_ADMIN_PORT`, `CHAOS_UPSTREAM_HOST`, `CHAOS_UPSTREAM_SSE`, `CHAOS_UPSTREAM_HTTP`).
+All port and host knobs can be overridden via env (`SSE_PROXY_PORT`, `HTTP_PROXY_PORT`, `SECONDARY_PROXY_PORT`, `TOXIPROXY_ADMIN_PORT`, `CHAOS_UPSTREAM_HOST`, `CHAOS_UPSTREAM_SSE`, `CHAOS_UPSTREAM_HTTP`, `CHAOS_SECONDARY_UPSTREAM_HOST`, `CHAOS_SECONDARY_UPSTREAM_HTTP`, `PRIMARY_GENERATION`, `SECONDARY_GENERATION`).
 
 ### Concurrent runs
 
@@ -101,6 +113,31 @@ The plan's Tier 2 table, one YAML per scenario. Most live in `scenarios/` (the d
 | File                            | Why it's not in the default suite                  |
 | ------------------------------- | -------------------------------------------------- |
 | `08-auth-failure.yaml`          | 401 response injection — toxiproxy is TCP-only and cannot rewrite HTTP responses. Needs mitmproxy / mock server / fixture mode. |
+
+### Failover suite (`scenarios-failover/`, 1 upstream + primary+secondary proxies)
+
+Boot with `./start-chaos.sh --failover`. The SDK targets `[http (primary), secondary]`; toxics hit the primary leg and the HTTP config-fetch must fail over to the secondary, fast.
+
+| File                            | Primary-leg fault                          | Expectation |
+| ------------------------------- | ------------------------------------------ | ----------- |
+| `f01-primary-refused.yaml`      | disable proxy (port refused)               | resolves off secondary, < ~4s |
+| `f02-primary-hang.yaml`         | `timeout` toxic (accepts, never responds)  | resolves off secondary, < ~4s — **RED until per-URL timeout (§5g)** |
+| `f03-primary-slow.yaml`         | ~30s latency toxic                         | resolves off secondary without waiting the full latency |
+| `f04-recover.yaml`              | refused 6s, then re-enable                 | keeps serving across the flap |
+| `f05-sse-no-failover.yaml`      | primary SSE down, both HTTP up             | SSE does **not** repoint to secondary (explicit design choice) |
+
+### Ordering suite (`scenarios-ordering/`, 2 upstreams at divergent generations)
+
+Boot with `./start-chaos.sh --ordering --primary-gen N --secondary-gen M`. The two upstreams serve different `Meta.generation`s; the SDK must hold the higher one and never regress.
+
+| File                            | Setup                                          | Expectation |
+| ------------------------------- | ---------------------------------------------- | ----------- |
+| `o01-secondary-newer.yaml`      | primary gen=41, secondary gen=42               | SDK holds 42 |
+| `o02-secondary-older.yaml`      | client holds 42 (primary), secondary serves 41 | SDK does **not** regress; stays 42 — **RED until reject-older guard (§5f)** |
+| `o03-late-primary-heals.yaml`   | older secondary wins the race, newer primary lands late | SDK heals forward to 42 |
+| `o04-same-gen-noop.yaml`        | both serve gen=42                              | install is a no-op; no flap |
+
+Reference: `project/plans/sdk-failover-integration-tests.md` §§ D + Scenarios.
 
 Each scenario is wall-clock-bounded (`setup.wall_clock_seconds`, ~30s default; longer for fallback engagement and the null-hypothesis run).
 
@@ -153,9 +190,26 @@ chaos:
       action: kill_sse_proxy
       count: 5
       interval_ms: 6000
+
+  # failover rig — primary-leg convenience aliases (imply proxy=primary):
+  - inject:
+      name: primary_dead
+      primary_refused_ms: 15000      # f01/f04: disable primary HTTP, refuse for N ms
+  - inject: { primary_hang_ms: 30000 }    # f02: timeout toxic — accept, never respond
+  - inject: { primary_latency_ms: 30000 } # f03/o03: latency on the primary leg
 ```
 
 The assertion expressions (`client.connectionState()`, `server_metric(...)`, etc.) are interpreted by each per-SDK test runner — the schema only enforces presence and shape. The expression vocabulary is part of the per-SDK supervisor unit-test contract: see [`supervisor-test-contract.md`](./supervisor-test-contract.md) (plan reference: `project/plans/sdk-hardening-and-verification.md`, Tier 1).
+
+### Failover + ordering assertion vocabulary
+
+The failover and ordering suites add these expressions (still free-form strings the per-SDK runner interprets):
+
+- `client.ready()` — the SDK has installed a config and can serve evaluations.
+- `client.resolvedFrom()` — which leg the last successful config-fetch came from: `'primary'` or `'secondary'`. Used by the failover suite to assert config resolved off the secondary.
+- `client.heldGeneration()` — the `Meta.generation` of the currently-installed config. Used by the ordering suite to assert the SDK holds the higher generation and never regresses.
+- `client.configInstallCount()` — how many times the SDK has installed a config payload. Used by `o04` to assert a same-generation second leg is a no-op (no flap).
+- `client.sseFailedOverToSecondary()` — whether the SSE stream silently repointed to the secondary host. Must stay `false` (`f05`): SSE does not fail over.
 
 ## SDK CI wiring (one-time per SDK)
 

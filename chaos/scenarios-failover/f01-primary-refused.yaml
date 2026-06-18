@@ -1,0 +1,27 @@
+function: failover
+tests:
+  - name: "f01 primary refused — HTTP config fetch fails over to secondary"
+    description: |
+      The primary HTTP proxy is disabled at t=0, so the port refuses connections.
+      With the SDK configured for [primary, secondary], the initial config fetch
+      must skip the refused primary and resolve off the secondary leg well inside
+      the init budget (< ~4s). One fixture upstream sits behind both proxies, so
+      the secondary serves identical content — this proves failover routing, not
+      divergent data (that's the ordering suite).
+    setup:
+      sdk: any
+      topology: failover
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 15
+    chaos:
+      - at_ms: 0
+        inject:
+          name: primary_dead
+          primary_refused_ms: 15000
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.resolvedFrom() == 'secondary'"
+      - within_ms: 15000
+        must_hold_for_ms: 5000
+        assert: "client.ready() == true"

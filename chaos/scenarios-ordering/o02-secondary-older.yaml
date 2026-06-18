@@ -1,0 +1,31 @@
+function: ordering
+tests:
+  - name: "o02 secondary older — an established client never regresses"
+    description: |
+      The client establishes on the primary at gen=42. The primary is then refused,
+      so the SDK fails over to the secondary, which serves the OLDER gen=41. The
+      reject-older install guard must drop that payload: install only if
+      incoming.generation >= held.generation. RED until §5f lands — without the
+      guard the failover fetch installs 41 and the client regresses.
+    setup:
+      sdk: any
+      topology: ordering
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 20
+      upstreams:
+        - role: primary
+          generation: 42
+        - role: secondary
+          generation: 41
+    chaos:
+      - at_ms: 5000
+        inject:
+          name: primary_dead
+          primary_refused_ms: 12000
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.heldGeneration() == 42"
+      - within_ms: 20000
+        must_hold_for_ms: 8000
+        assert: "client.heldGeneration() == 42"

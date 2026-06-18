@@ -1,0 +1,31 @@
+function: ordering
+tests:
+  - name: "o03 late primary heals — older secondary wins the race, newer primary heals forward"
+    description: |
+      Primary serves the newer gen=42 but sits behind a ~3s latency toxic; the
+      secondary serves the older gen=41 and answers first. The SDK may seed off the
+      secondary's 41 initially (bounded, accepted for a fresh client), but when the
+      primary's newer 42 lands late it must heal forward to 42 — reject-older only
+      blocks going backward, never going forward.
+    setup:
+      sdk: any
+      topology: ordering
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 20
+      upstreams:
+        - role: primary
+          generation: 42
+        - role: secondary
+          generation: 41
+    chaos:
+      - at_ms: 0
+        inject:
+          name: primary_slow
+          primary_latency_ms: 3000
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.heldGeneration() >= 41"
+      - within_ms: 12000
+        must_hold_for_ms: 4000
+        assert: "client.heldGeneration() == 42"

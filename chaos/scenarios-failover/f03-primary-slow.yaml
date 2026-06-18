@@ -1,0 +1,22 @@
+function: failover
+tests:
+  - name: "f03 primary slow — resolves off secondary without waiting the full latency"
+    description: |
+      A ~30s latency toxic on the primary HTTP leg. The SDK must not block on the
+      slow primary for the whole 30s; it resolves off the secondary inside the
+      init budget. (Distinct from f02: here the primary eventually would answer,
+      but far too late — failover must not wait for it.)
+    setup:
+      sdk: any
+      topology: failover
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 15
+    chaos:
+      - at_ms: 0
+        inject:
+          name: primary_slow
+          primary_latency_ms: 30000
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.resolvedFrom() == 'secondary'"

@@ -1,0 +1,26 @@
+function: failover
+tests:
+  - name: "f04 recover — keeps serving across a primary flap"
+    description: |
+      The primary leg is refused for 6s, then auto re-enables. Across the whole
+      flap the SDK must keep serving config: it resolves off the secondary while
+      the primary is down, and never drops to an un-ready state when the primary
+      comes back. v1 asserts only "keeps serving," not "prefers primary again on
+      the next fetch."
+    setup:
+      sdk: any
+      topology: failover
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 20
+    chaos:
+      - at_ms: 0
+        inject:
+          name: primary_flap
+          primary_refused_ms: 6000
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.resolvedFrom() == 'secondary'"
+      - within_ms: 20000
+        must_hold_for_ms: 12000
+        assert: "client.ready() == true"
