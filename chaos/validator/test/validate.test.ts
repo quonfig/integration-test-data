@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateYaml } from '../src/validate.ts';
+import { validateYaml, validateObject } from '../src/validate.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, 'fixtures');
 const SCENARIOS = join(HERE, '..', '..', 'scenarios');
 const SCENARIOS_HTTP_PROXY = join(HERE, '..', '..', 'scenarios-http-proxy');
+const SCENARIOS_FAILOVER = join(HERE, '..', '..', 'scenarios-failover');
+const SCENARIOS_ORDERING = join(HERE, '..', '..', 'scenarios-ordering');
 
 function load(rel: string): string {
   return readFileSync(rel, 'utf8');
@@ -91,4 +93,87 @@ test('scenarios cover the 11 named cases from the plan (across all suites)', () 
   ];
   const missing = required.filter((tag) => !files.some((f) => f.includes(tag)));
   assert.deepEqual(missing, [], `missing scenario tags: ${missing.join(', ')}`);
+});
+
+test('every failover scenario in chaos/scenarios-failover/*.yaml validates', () => {
+  const files = readdirSync(SCENARIOS_FAILOVER).filter((f) => f.endsWith('.yaml'));
+  assert.ok(files.length >= 5, `expected at least 5 failover scenarios, found ${files.length}`);
+  const failures: string[] = [];
+  for (const f of files) {
+    const result = validateYaml(load(join(SCENARIOS_FAILOVER, f)));
+    if (!result.valid) {
+      failures.push(`${f}: ${JSON.stringify(result.errors)}`);
+    }
+  }
+  assert.deepEqual(failures, [], `scenarios failed validation:\n${failures.join('\n')}`);
+});
+
+test('every ordering scenario in chaos/scenarios-ordering/*.yaml validates', () => {
+  const files = readdirSync(SCENARIOS_ORDERING).filter((f) => f.endsWith('.yaml'));
+  assert.ok(files.length >= 4, `expected at least 4 ordering scenarios, found ${files.length}`);
+  const failures: string[] = [];
+  for (const f of files) {
+    const result = validateYaml(load(join(SCENARIOS_ORDERING, f)));
+    if (!result.valid) {
+      failures.push(`${f}: ${JSON.stringify(result.errors)}`);
+    }
+  }
+  assert.deepEqual(failures, [], `scenarios failed validation:\n${failures.join('\n')}`);
+});
+
+test('failover suite covers f01-f05; ordering suite covers o01-o04', () => {
+  const failoverFiles = readdirSync(SCENARIOS_FAILOVER).filter((f) => f.endsWith('.yaml'));
+  const orderingFiles = readdirSync(SCENARIOS_ORDERING).filter((f) => f.endsWith('.yaml'));
+  const requiredFailover = ['f01', 'f02', 'f03', 'f04', 'f05'];
+  const requiredOrdering = ['o01', 'o02', 'o03', 'o04'];
+  const missingFailover = requiredFailover.filter((tag) => !failoverFiles.some((f) => f.includes(tag)));
+  const missingOrdering = requiredOrdering.filter((tag) => !orderingFiles.some((f) => f.includes(tag)));
+  assert.deepEqual(missingFailover, [], `missing failover scenarios: ${missingFailover.join(', ')}`);
+  assert.deepEqual(missingOrdering, [], `missing ordering scenarios: ${missingOrdering.join(', ')}`);
+});
+
+test('schema accepts the failover topology + primary-leg inject vocabulary', () => {
+  const doc = {
+    function: 'failover',
+    tests: [
+      {
+        name: 'probe',
+        setup: { sdk: 'any', topology: 'failover', sse_endpoint: 'disabled', http_endpoint: 'failover' },
+        chaos: [
+          { at_ms: 0, inject: { name: 'p', proxy: 'primary', primary_refused_ms: 8000 } },
+          { at_ms: 0, inject: { proxy: 'primary', primary_hang_ms: 30000 } },
+          { at_ms: 0, inject: { proxy: 'primary', primary_latency_ms: 30000 } },
+          { at_ms: 0, inject: { proxy: 'secondary', toxic: { type: 'latency', attributes: { latency: 10 } } } },
+        ],
+        expectations: [{ within_ms: 4000, assert: "client.resolvedFrom() == 'secondary'" }],
+      },
+    ],
+  };
+
+  const result = validateObject(doc);
+  assert.equal(result.valid, true, `expected valid, got errors: ${JSON.stringify(result.errors)}`);
+});
+
+test('schema accepts the ordering topology + per-upstream generation vocabulary', () => {
+  const doc = {
+    function: 'ordering',
+    tests: [
+      {
+        name: 'probe',
+        setup: {
+          sdk: 'any',
+          topology: 'ordering',
+          sse_endpoint: 'disabled',
+          upstreams: [
+            { role: 'primary', generation: 7 },
+            { role: 'secondary', generation: 8 },
+          ],
+        },
+        expectations: [{ within_ms: 4000, assert: 'client.heldGeneration() == 8' }],
+      },
+    ],
+  };
+
+  const result = validateObject(doc);
+  assert.equal(result.valid, true, `expected valid, got errors: ${JSON.stringify(result.errors)}`);
 });

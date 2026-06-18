@@ -1,0 +1,23 @@
+function: failover
+tests:
+  - name: "f02 primary hang — failover does not wait for the global init timeout"
+    description: |
+      A 'timeout' toxic on the primary HTTP leg accepts the connection but never
+      responds. Without a per-URL config-fetch deadline the SDK blocks on the
+      shared init context, starving the secondary until the global InitTimeout —
+      so this is RED until §5g lands a per-URL timeout. Once it lands, the primary
+      attempt times out fast (~3s) and the secondary resolves inside the budget.
+    setup:
+      sdk: any
+      topology: failover
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 15
+    chaos:
+      - at_ms: 0
+        inject:
+          name: primary_hung
+          primary_hang_ms: 30000
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.resolvedFrom() == 'secondary'"

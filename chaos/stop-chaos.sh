@@ -37,9 +37,9 @@ if [[ "$FORCE" == "0" && -n "$CURRENT_OWNER" && "$CURRENT_OWNER" != "$QUONFIG_CH
   exit 0
 fi
 
-# `down` with all profiles removes the api-delivery container too if it was started
-# via --with-upstream. Safe either way.
-"$DOCKER_BIN" compose --profile upstream down --remove-orphans
+# `down` with all profiles removes the api-delivery container(s) too if they were
+# started via --with-upstream / --failover / --ordering. Safe either way.
+"$DOCKER_BIN" compose --profile upstream --profile ordering down --remove-orphans
 
 if [[ "$FORCE" == "1" ]]; then
   # Force-clear the lock regardless of owner.

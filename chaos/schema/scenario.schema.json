@@ -47,7 +47,31 @@
         "sdk": {
           "description": "Which SDK runs the test. 'any' means the same scenario applies to every SDK.",
           "type": "string",
-          "enum": ["any", "sdk-go", "sdk-node", "sdk-python", "sdk-ruby", "sdk-java"]
+          "enum": ["any", "sdk-go", "sdk-node", "sdk-python", "sdk-ruby", "sdk-java", "sdk-net"]
+        },
+        "topology": {
+          "description": "Rig topology. 'single' (default, original suite) — one upstream behind the sse/http proxies. 'failover' — one fixture upstream behind TWO HTTP proxies (primary+secondary); the SDK is configured with both URLs and toxics target the primary leg. 'ordering' — TWO fixture upstreams at divergent generations (see 'upstreams'); the SDK is configured with both and must end up holding the higher generation.",
+          "type": "string",
+          "enum": ["single", "failover", "ordering"]
+        },
+        "upstreams": {
+          "description": "Two-upstream layout for topology=ordering. The runner stands up one api-delivery fixture per entry, each pinned to its 'generation' via FIXTURE_GENERATION, and points the SDK at primary then secondary.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "generation"],
+            "properties": {
+              "role": { "type": "string", "enum": ["primary", "secondary"] },
+              "generation": {
+                "description": "Meta.generation this upstream serves (FIXTURE_GENERATION). Higher is strictly newer.",
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
         },
         "sse_endpoint": {
           "description": "Whether SSE goes through the chaos proxy or direct to api-delivery.",
@@ -55,9 +79,9 @@
           "enum": ["chaos", "direct", "disabled"]
         },
         "http_endpoint": {
-          "description": "Whether HTTP polling goes through the chaos proxy or direct. Defaults to 'direct'.",
+          "description": "Whether HTTP polling goes through the chaos proxy or direct. Defaults to 'direct'. 'failover' — route HTTP through the primary+secondary proxy pair (topology=failover/ordering).",
           "type": "string",
-          "enum": ["chaos", "direct", "disabled"]
+          "enum": ["chaos", "direct", "disabled", "failover"]
         },
         "wall_clock_seconds": {
           "description": "Max wall-clock seconds the test runner should keep the process up. Default 30s per the plan.",
@@ -118,9 +142,9 @@
           "type": "string"
         },
         "proxy": {
-          "description": "Which named proxy to apply the toxic to. Default 'sse'.",
+          "description": "Which named proxy to apply the toxic to. Default 'sse'. 'primary'/'secondary' name the failover-rig HTTP legs (topology=failover/ordering): 'primary' is the leg toxics target, 'secondary' is the fail-to leg.",
           "type": "string",
-          "enum": ["sse", "http", "both"]
+          "enum": ["sse", "http", "both", "primary", "secondary"]
         },
         "toxic": { "$ref": "#/definitions/toxic" },
         "sse_silent_stall_after_ms": {
@@ -163,6 +187,21 @@
           "type": "integer",
           "minimum": 100,
           "maximum": 599
+        },
+        "primary_refused_ms": {
+          "description": "Failover convenience (f01/f04): disable the primary HTTP proxy so the port refuses connections for N ms, then auto re-enable. Implies proxy=primary.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "primary_hang_ms": {
+          "description": "Failover convenience (f02): apply a 'timeout' toxic to the primary HTTP proxy — the connection is accepted but never responds — for N ms. Implies proxy=primary.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "primary_latency_ms": {
+          "description": "Failover/ordering convenience (f03/o03): add N ms of latency to the primary HTTP leg so the secondary wins the race. Implies proxy=primary.",
+          "type": "integer",
+          "minimum": 0
         }
       },
       "oneOf": [
@@ -174,7 +213,10 @@
         { "required": ["http_down_ms"] },
         { "required": ["both_down_ms"] },
         { "required": ["sse_half_open_after_bytes"] },
-        { "required": ["sse_http_status"] }
+        { "required": ["sse_http_status"] },
+        { "required": ["primary_refused_ms"] },
+        { "required": ["primary_hang_ms"] },
+        { "required": ["primary_latency_ms"] }
       ]
     },
     "toxic": {

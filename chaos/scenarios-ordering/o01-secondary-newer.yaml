@@ -1,0 +1,24 @@
+function: ordering
+tests:
+  - name: "o01 secondary newer — SDK holds the higher generation"
+    description: |
+      Two upstreams at divergent generations: primary gen=41, secondary gen=42.
+      Regardless of which leg the SDK reaches first, it must converge on the
+      higher generation (42) and hold it steady. Canonical ordering = max wins.
+    setup:
+      sdk: any
+      topology: ordering
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 15
+      upstreams:
+        - role: primary
+          generation: 41
+        - role: secondary
+          generation: 42
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true"
+      - within_ms: 10000
+        must_hold_for_ms: 5000
+        assert: "client.heldGeneration() == 42"

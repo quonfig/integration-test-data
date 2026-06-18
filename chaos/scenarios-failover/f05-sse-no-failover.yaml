@@ -1,0 +1,26 @@
+function: failover
+tests:
+  - name: "f05 SSE no-failover — the live stream does not repoint to secondary"
+    description: |
+      The primary SSE leg goes down while both HTTP legs stay up. This asserts an
+      explicit design choice: SSE does NOT fail over. The stream stays on its own
+      endpoint and degrades per the single-upstream chaos contract (stall-detect →
+      SSE↔HTTP fallback on its own host); it must never silently repoint to the
+      secondary. HTTP config delivery is unaffected, so the client stays ready.
+    setup:
+      sdk: any
+      topology: failover
+      sse_endpoint: chaos
+      http_endpoint: failover
+      wall_clock_seconds: 30
+    chaos:
+      - at_ms: 2000
+        inject:
+          name: sse_dead
+          sse_down_ms: 20000
+    expectations:
+      - within_ms: 5000
+        assert: "client.ready() == true"
+      - within_ms: 30000
+        must_hold_for_ms: 18000
+        assert: "client.sseFailedOverToSecondary() == false"

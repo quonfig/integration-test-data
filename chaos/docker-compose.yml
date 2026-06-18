@@ -14,14 +14,25 @@ name: quonfig-chaos
 #                    host port ${API_DELIVERY_PORT:-6550}. Use when the SDK CI
 #                    does not bring its own upstream.
 #
+# Optional (enable via `--profile ordering`, for the two-upstream ordering rig):
+#   - api-delivery-secondary : a SECOND fixture upstream, pinned to a divergent
+#                    Meta.generation via FIXTURE_GENERATION, listening on host
+#                    port ${API_DELIVERY_SECONDARY_PORT:-6551}. Lets the ordering
+#                    scenarios (o01-o04) stand up primary+secondary at different
+#                    generations. Pair with `--profile upstream`.
+#
 # Env knobs (override on the docker-compose CLI):
-#   TOXIPROXY_ADMIN_PORT   admin/HTTP api for toxiproxy           (default 8474)
-#   SSE_PROXY_PORT         chaos SSE port — SDK targets this      (default 18550)
-#   HTTP_PROXY_PORT        chaos HTTP port — SDK targets this     (default 18551)
-#   API_DELIVERY_PORT      host-bound api-delivery port           (default 6550)
-#   CHAOS_UPSTREAM_HOST    where toxiproxy forwards to            (default host.docker.internal)
-#   CHAOS_UPSTREAM_SSE     upstream SSE port                      (default 6550)
-#   CHAOS_UPSTREAM_HTTP    upstream HTTP port                     (default 6550)
+#   TOXIPROXY_ADMIN_PORT       admin/HTTP api for toxiproxy           (default 8474)
+#   SSE_PROXY_PORT             chaos SSE port — SDK targets this      (default 18550)
+#   HTTP_PROXY_PORT            chaos HTTP (primary) port              (default 18551)
+#   SECONDARY_PROXY_PORT       chaos HTTP secondary-leg port          (default 18552)
+#   API_DELIVERY_PORT          host-bound primary api-delivery port   (default 6550)
+#   API_DELIVERY_SECONDARY_PORT host-bound secondary api-delivery port(default 6551)
+#   CHAOS_UPSTREAM_HOST        where toxiproxy forwards to            (default host.docker.internal)
+#   CHAOS_UPSTREAM_SSE         upstream SSE port                      (default 6550)
+#   CHAOS_UPSTREAM_HTTP        upstream HTTP port                     (default 6550)
+#   PRIMARY_GENERATION         FIXTURE_GENERATION for primary upstream (default 0)
+#   SECONDARY_GENERATION       FIXTURE_GENERATION for secondary upstream (default 0)
 
 services:
   toxiproxy:
@@ -34,6 +45,9 @@ services:
       - "${TOXIPROXY_ADMIN_PORT:-8474}:8474"
       - "${SSE_PROXY_PORT:-18550}:18550"
       - "${HTTP_PROXY_PORT:-18551}:18551"
+      # secondary HTTP leg for the failover/ordering rigs (start-chaos.sh seeds
+      # the 'secondary' proxy on this container port).
+      - "${SECONDARY_PROXY_PORT:-18552}:18552"
     volumes:
       - ./toxiproxy/proxies.json:/etc/toxiproxy/proxies.json:ro
     extra_hosts:
@@ -67,10 +81,41 @@ services:
       # runs at 30s; without this override scenario 01 baseline drops the
       # connection before the first keepalive arrives (qfg-47c2.28).
       SSE_HEARTBEAT_INTERVAL: "${SSE_HEARTBEAT_INTERVAL:-1s}"
+      # Meta.generation this (primary) upstream serves. Defaults to 0 — the same
+      # as fixture mode's own default — so the single/failover rigs are unaffected.
+      # The ordering rig overrides it to stand primary and secondary at divergent
+      # generations (qfg-7h5d.1.1 added the FIXTURE_GENERATION override).
+      FIXTURE_GENERATION: "${PRIMARY_GENERATION:-0}"
     volumes:
       - ../data/integration-tests:/fixtures:ro
     ports:
       - "${API_DELIVERY_PORT:-6550}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  # Optional second fixture upstream for the ordering rig. Identical to
+  # api-delivery except it serves a divergent Meta.generation, so o01-o04 can
+  # assert the SDK ends up holding the higher generation across the two legs.
+  # Enable with: docker compose --profile upstream --profile ordering up
+  api-delivery-secondary:
+    profiles: ["ordering"]
+    build:
+      context: ../..
+      dockerfile: api-delivery/Dockerfile
+    container_name: quonfig-chaos-api-delivery-secondary
+    environment:
+      PORT: "8080"
+      FIXTURE_DIR: "/fixtures"
+      QUONFIG_ENVIRONMENT: "Production"
+      SSE_HEARTBEAT_INTERVAL: "${SSE_HEARTBEAT_INTERVAL:-1s}"
+      FIXTURE_GENERATION: "${SECONDARY_GENERATION:-0}"
+    volumes:
+      - ../data/integration-tests:/fixtures:ro
+    ports:
+      - "${API_DELIVERY_SECONDARY_PORT:-6551}:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 2s
