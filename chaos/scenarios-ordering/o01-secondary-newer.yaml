@@ -1,10 +1,19 @@
 function: ordering
 tests:
-  - name: "o01 secondary newer — SDK holds the higher generation"
+  - name: "o01 secondary newer — fast primary wins, secondary never contacted (hedge cold standby)"
     description: |
-      Two upstreams at divergent generations: primary gen=41, secondary gen=42.
-      Regardless of which leg the SDK reaches first, it must converge on the
-      higher generation (42) and hold it steady. Canonical ordering = max wins.
+      Both legs are healthy and fast: primary gen=41, secondary gen=42. Under the
+      parallel-failover hedge the primary returns well under the hedge delay, so the
+      hedge timer is cancelled and the SECONDARY IS NEVER CONTACTED (cold standby,
+      zero extra load). The SDK installs the primary's gen=41, latches ready off it,
+      and holds steady — resolvedFrom stays 'primary', the generation does not jump
+      to 42 (leg 1 never fires), and configInstallCount stays 1 across the hold
+      window (the secondary's 42 is never installed). install-count==1 in the hold
+      assertion proves no fire-then-reject churn without needing a request counter;
+      a true zero-contact proof lives in a per-SDK unit test, since the rig has no
+      server-side request counter. This is the happy-path inverse of the old
+      "max wins regardless of leg" framing: a fast healthy primary wins even though
+      the secondary is higher, because the hedge never contacts it.
     setup:
       sdk: any
       topology: ordering
@@ -18,7 +27,7 @@ tests:
           generation: 42
     expectations:
       - within_ms: 4000
-        assert: "client.ready() == true"
+        assert: "client.ready() == true AND client.heldGeneration() == 41 AND client.resolvedFrom() == 'primary'"
       - within_ms: 10000
         must_hold_for_ms: 5000
-        assert: "client.heldGeneration() == 42"
+        assert: "client.heldGeneration() == 41 AND client.resolvedFrom() == 'primary' AND client.configInstallCount() == 1"

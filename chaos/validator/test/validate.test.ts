@@ -110,7 +110,7 @@ test('every failover scenario in chaos/scenarios-failover/*.yaml validates', () 
 
 test('every ordering scenario in chaos/scenarios-ordering/*.yaml validates', () => {
   const files = readdirSync(SCENARIOS_ORDERING).filter((f) => f.endsWith('.yaml'));
-  assert.ok(files.length >= 4, `expected at least 4 ordering scenarios, found ${files.length}`);
+  assert.ok(files.length >= 5, `expected at least 5 ordering scenarios, found ${files.length}`);
   const failures: string[] = [];
   for (const f of files) {
     const result = validateYaml(load(join(SCENARIOS_ORDERING, f)));
@@ -121,11 +121,11 @@ test('every ordering scenario in chaos/scenarios-ordering/*.yaml validates', () 
   assert.deepEqual(failures, [], `scenarios failed validation:\n${failures.join('\n')}`);
 });
 
-test('failover suite covers f01-f05; ordering suite covers o01-o04', () => {
+test('failover suite covers f01-f05; ordering suite covers o01-o05', () => {
   const failoverFiles = readdirSync(SCENARIOS_FAILOVER).filter((f) => f.endsWith('.yaml'));
   const orderingFiles = readdirSync(SCENARIOS_ORDERING).filter((f) => f.endsWith('.yaml'));
   const requiredFailover = ['f01', 'f02', 'f03', 'f04', 'f05'];
-  const requiredOrdering = ['o01', 'o02', 'o03', 'o04'];
+  const requiredOrdering = ['o01', 'o02', 'o03', 'o04', 'o05'];
   const missingFailover = requiredFailover.filter((tag) => !failoverFiles.some((f) => f.includes(tag)));
   const missingOrdering = requiredOrdering.filter((tag) => !orderingFiles.some((f) => f.includes(tag)));
   assert.deepEqual(missingFailover, [], `missing failover scenarios: ${missingFailover.join(', ')}`);

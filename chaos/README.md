@@ -128,14 +128,15 @@ Boot with `./start-chaos.sh --failover`. The SDK targets `[http (primary), secon
 
 ### Ordering suite (`scenarios-ordering/`, 2 upstreams at divergent generations)
 
-Boot with `./start-chaos.sh --ordering --primary-gen N --secondary-gen M`. The two upstreams serve different `Meta.generation`s; the SDK must hold the higher one and never regress.
+Boot with `./start-chaos.sh --ordering --primary-gen N --secondary-gen M`. The two upstreams serve different `Meta.generation`s; the SDK must converge on the correct generation and never regress (under the parallel-failover hedge a fast healthy primary wins even if a slower secondary is higher, because the secondary is never contacted).
 
 | File                            | Setup                                          | Expectation |
 | ------------------------------- | ---------------------------------------------- | ----------- |
-| `o01-secondary-newer.yaml`      | primary gen=41, secondary gen=42               | SDK holds 42 |
+| `o01-secondary-newer.yaml`      | primary gen=41 fast, secondary gen=42 fast     | fast primary wins; secondary never contacted (hedge cold standby) — SDK holds 41, resolvedFrom='primary', installCount==1 |
 | `o02-secondary-older.yaml`      | client holds 42 (primary), secondary serves 41 | SDK does **not** regress; stays 42 — **RED until reject-older guard (§5f)** |
-| `o03-late-primary-heals.yaml`   | older secondary wins the race, newer primary lands late | SDK heals forward to 42 |
+| `o03-late-primary-heals.yaml`   | primary gen=42 slow (3s latency, newer), secondary gen=41 fast (older) | hedge fires; SDK seeds off 41 then heals forward to 42 |
 | `o04-same-gen-noop.yaml`        | both serve gen=42                              | install is a no-op; no flap |
+| `o05-secondary-newer-heals.yaml` | primary gen=41 slow (3s latency, older), secondary gen=42 fast (newer) | hedge fires; secondary 42 wins; late older primary 41 does **not** regress; SDK holds 42 |
 
 Reference: `project/plans/sdk-failover-integration-tests.md` §§ D + Scenarios.
 

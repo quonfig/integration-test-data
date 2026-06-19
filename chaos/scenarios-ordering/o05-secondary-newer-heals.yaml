@@ -1,0 +1,36 @@
+function: ordering
+tests:
+  - name: "o05 secondary newer heals — slow older primary loses, late 41 does not regress"
+    description: |
+      Primary serves the OLDER gen=41 but sits behind a ~3s latency toxic; the
+      secondary serves the NEWER gen=42 and answers first. The hedge fires the
+      secondary once the hedge delay elapses (primary still slow), so the SDK seeds
+      and latches ready off the secondary's 42. When the slow primary's older 41
+      lands late it must NOT regress the client — reject-older blocks going backward.
+      Mirror image of o03: there the late primary was newer and healed forward; here
+      the late primary is older and must be dropped. The SDK converges on and holds 42.
+      Requires the per-leg hedge abort to exceed the 3s primary latency so the late
+      primary is delivered (not aborted) and the reject-older path is exercised; the
+      reference go rig inherits the 6s default hedge-abort, so no rig edit is needed.
+    setup:
+      sdk: any
+      topology: ordering
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 20
+      upstreams:
+        - role: primary
+          generation: 41
+        - role: secondary
+          generation: 42
+    chaos:
+      - at_ms: 0
+        inject:
+          name: primary_slow
+          primary_latency_ms: 3000
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.heldGeneration() == 42"
+      - within_ms: 12000
+        must_hold_for_ms: 4000
+        assert: "client.heldGeneration() == 42"
