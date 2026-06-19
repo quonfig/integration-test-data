@@ -739,7 +739,7 @@ function renderDeliveryBody(kase: YamlCase): string {
   const sdkKey = String(overrides.sdk_key);
 
   const opts: string[] = [
-    `quonfig.WithAPIKey(${goStringLiteral(sdkKey)})`,
+    `quonfig.WithSdkKey(${goStringLiteral(sdkKey)})`,
     `quonfig.WithAPIURLs([]string{server.URL})`,
     `quonfig.WithSSE(false)`,
     `quonfig.WithFallbackPoll(false, 0)`,
