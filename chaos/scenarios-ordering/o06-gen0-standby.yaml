@@ -1,0 +1,47 @@
+function: ordering
+tests:
+  - name: "o06 gen0 standby — an unversioned secondary can't flap an established client (gen0-oscillation guard)"
+    description: |
+      Regression guard for the gen0-oscillation flap (WS3.4, release-runbook step
+      3 — never written; only a motivating comment lived in
+      sdk-javascript/test/ordering-guard.test.js). The reject-older guard carves
+      out generation <= 0: an unversioned / pre-watermark / rev-count-failed
+      payload (a server "regressed to gen0", e.g. qfg-t5k7) installs anyway,
+      because it carries no ordering information and rejecting it would freeze an
+      established client. The hazard is that this carve-out re-arms install-anyway
+      on EVERY contact, so a gen0 leg reachable alongside a healthy gen>0 peer can
+      build a flag-flapping machine. Today nothing tests it; it is prevented only
+      by deployment state (in prod no leg serves gen0 while a peer serves gen>0).
+
+      This scenario pins the healthy deployment state that MUST hold: the primary
+      serves an honest gen=42 and the secondary is the unversioned gen=0 leg. A
+      fast healthy primary wins the parallel-failover hedge under the hedge delay,
+      so the hedge timer is cancelled and the SECONDARY IS NEVER CONTACTED (cold
+      standby, exactly like o01) — the gen=0 carve-out never fires, the client
+      latches gen=42 off the primary, and holds steady. resolvedFrom stays
+      'primary', the held generation stays 42 (the gen=0 leg never pulls it to 0),
+      and configInstallCount stays 1 across the whole hold window: no re-install,
+      no oscillation, no spurious change notifications. install-count==1 in the
+      hold assertion is the teeth — if the gen=0 leg's payload ever reached and
+      re-armed the carve-out on an established client (the flap), the count would
+      climb and the held generation would drop toward 0. Mirror of o01, with the
+      standby leg pinned to the unversioned gen=0 that the carve-out treats
+      specially, so a future change that lets a gen0 leg destabilize an
+      established client turns this red.
+    setup:
+      sdk: any
+      topology: ordering
+      sse_endpoint: disabled
+      http_endpoint: failover
+      wall_clock_seconds: 15
+      upstreams:
+        - role: primary
+          generation: 42
+        - role: secondary
+          generation: 0
+    expectations:
+      - within_ms: 4000
+        assert: "client.ready() == true AND client.heldGeneration() == 42 AND client.resolvedFrom() == 'primary'"
+      - within_ms: 15000
+        must_hold_for_ms: 8000
+        assert: "client.heldGeneration() == 42 AND client.resolvedFrom() == 'primary' AND client.configInstallCount() == 1"
