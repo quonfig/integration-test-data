@@ -671,6 +671,13 @@ function renderDeliveryBody(kase: YamlCase): string {
   if ('environment' in overrides) {
     optionInits.push(`Environment = ${csStringLiteral(String(overrides.environment))}`);
   }
+  // Opt out of telemetry so sdk-net's now-live reporter (qfg-gxm6) does not POST
+  // to the default (production) telemetry endpoint — the WireMock server above only
+  // stubs /api/v2/configs. Mirrors sdk-go's WithAllTelemetryDisabled(), sdk-java's
+  // disableTelemetry(true), and node's collectEvaluationSummaries+contextUploadMode
+  // pair. A full opt-out (both) constructs no reporter, so nothing hits the wire.
+  optionInits.push('CollectEvaluationSummaries = false');
+  optionInits.push('ContextUploadMode = ContextUploadMode.None');
 
   let body = '';
   body += `${indent}using var server = WireMockServer.Start();\n`;
