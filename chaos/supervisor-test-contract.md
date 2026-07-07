@@ -57,7 +57,7 @@ but the meaning is fixed:
 | Capability | Meaning |
 |---|---|
 | `worker_restart_total` | Counter incremented every time the supervisor restarts a worker after abnormal exit. Reset to 0 at supervisor start. Exposed via the same Prometheus-style metric the SDK exports in production. |
-| `lastSuccessfulRefresh()` | Wall-clock timestamp (UTC) of the most recent config install — i.e. the last time the supervisor handed an envelope to the cache and the cache accepted it. Returns null / zero / None before the first install. |
+| `lastSuccessfulRefresh()` | Wall-clock timestamp (UTC) of the most recent successful refresh — the last time the SDK confirmed its config source reachable and its held config current. A LIVENESS signal, not an install counter (qfg-41nh.11): advanced by any envelope install AND by a config fetch that completed successfully without installing — a 304 Not Modified, a 200 the reject-older guard dropped as equal-or-older, or a received-and-processed SSE message that was a guard no-op. Transport errors never advance it. Returns null / zero / None before the first successful refresh. |
 | `connectionState()` | Returns one of: `initializing`, `connected`, `disconnected`, `falling_back`. Documented values are fixed; SDKs may not invent new strings. |
 | `client.close()` | Public shutdown method. Stops the supervisor, joins all workers, releases resources. Idempotent. |
 
@@ -341,9 +341,17 @@ emit a state value not in the documented set.**
 - After `client.close()`: the value is preserved (close does not zero out
   the timestamp).
 
-**Wall-clock semantics:** The timestamp reflects the time the envelope
-was *installed in the cache*, not the time it was *received over the
-wire*. For SDKs that buffer or batch installs, this distinction matters.
+**Wall-clock semantics:** The timestamp is a LIVENESS signal — the last
+moment the SDK confirmed its config source reachable and its held config
+current (qfg-41nh.11). An install always advances it (this test drives two
+installs and asserts the second stamp is `>` the first), but so does a
+config fetch that completed successfully *without* installing: a 304 Not
+Modified, a 200 the reject-older guard dropped as equal-or-older, or a
+received-and-processed SSE message that was a guard no-op. Transport
+errors never advance it. This is what lets a healthy long-lived client
+parked on 304s keep reporting liveness rather than freezing the stamp at
+its last install (chaos scenario 05 asserts the continuous-freshness hold
+across the Layer 2 fallback poll cycle).
 
 **Liveness-probe warning:** The doc comment / Javadoc / Rubydoc on this
 getter MUST include the warning from the plan ("don't wire this into a

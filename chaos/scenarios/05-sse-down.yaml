@@ -22,7 +22,19 @@ tests:
         assert: "client.connectionState() == 'connected'"
       - within_ms: 135000
         assert: "client.connectionState() == 'falling_back' AND client.fallbackPollerActive() == true"
-      - within_ms: 135000
+      # Recency + continuous-hold. Once Layer 2 fallback engages, EVERY poll must
+      # advance lastSuccessfulRefresh — including the polls answered 304 Not
+      # Modified or dropped by the reject-older guard, which are successful
+      # refreshes that install nothing (qfg-41nh.11). must_hold_for_ms forces the
+      # stamp to stay fresh continuously across a full fallback poll cycle, which
+      # is only provable now that answered-but-not-installed refreshes stamp:
+      # before the fix, node/python froze the stamp on 304 polls and this hold
+      # went red. The window stays ABOVE the chaos rig's 60s
+      # fallback_poll_interval_ms (test_chaos.py), so it is 70s (poll interval +
+      # 10s margin) — a smaller window (e.g. 40s) cannot hold continuously against
+      # a 60s poll cadence.
+      - within_ms: 200000
+        must_hold_for_ms: 60000
         assert: "client.lastSuccessfulRefresh() >= (now() - 70000)"
       - within_ms: 230000
         assert: "client.connectionState() == 'connected' AND client.fallbackPollerActive() == false"
