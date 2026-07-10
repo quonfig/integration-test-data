@@ -38,3 +38,110 @@ tests:
         flag: "feature-flag.weighted"
       expected:
         value: 3
+  - cases:
+    # Weight-scale contract (qfg-wis6.13): SDKs normalize by TOTAL weight,
+    # not a fixed 100000 scale. The all-equal form (1/1) is the canonical
+    # even-split encoding and serves 50/50. tracking_ids chosen mid-bucket
+    # (hash fractions ~0.21-0.26 for "a", ~0.73-0.74 for "b").
+    - name: even split ones serves first variant at low hash fraction
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "b7ff78c8"
+      input:
+        flag: "feature-flag.weighted.even-split-ones"
+      expected:
+        value: "a"
+    - name: even split ones serves first variant at low hash fraction 2
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "289f4748"
+      input:
+        flag: "feature-flag.weighted.even-split-ones"
+      expected:
+        value: "a"
+    - name: even split ones serves second variant at high hash fraction
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "d60b2cb6"
+      input:
+        flag: "feature-flag.weighted.even-split-ones"
+      expected:
+        value: "b"
+    - name: even split ones serves second variant at high hash fraction 2
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "21bcfd13"
+      input:
+        flag: "feature-flag.weighted.even-split-ones"
+      expected:
+        value: "b"
+  - cases:
+    # Resilience contract (qfg-wis6.13): the stored weights sum to 180000
+    # (deliberately non-conforming fixture — never round-trip it through qfg
+    # tooling). Evaluation normalizes by total: true wins for fractions
+    # <= 100000/180000 (~0.5556). tracking_ids chosen mid-bucket
+    # (~0.30 for true, ~0.76-0.83 for false).
+    - name: non-standard sum still serves normalized true bucket
+      client: config_client
+      function: get
+      type: BOOL
+      contexts:
+        local:
+          user:
+            tracking_id: "ff8adf17"
+      input:
+        flag: "feature-flag.weighted.non-standard"
+      expected:
+        value: true
+    - name: non-standard sum still serves normalized true bucket 2
+      client: config_client
+      function: get
+      type: BOOL
+      contexts:
+        local:
+          user:
+            tracking_id: "36ef1a7a"
+      input:
+        flag: "feature-flag.weighted.non-standard"
+      expected:
+        value: true
+    - name: non-standard sum still serves normalized false bucket
+      client: config_client
+      function: get
+      type: BOOL
+      contexts:
+        local:
+          user:
+            tracking_id: "f667c76a"
+      input:
+        flag: "feature-flag.weighted.non-standard"
+      expected:
+        value: false
+    - name: non-standard sum still serves normalized false bucket 2
+      client: config_client
+      function: get
+      type: BOOL
+      contexts:
+        local:
+          user:
+            tracking_id: "7467ca21"
+      input:
+        flag: "feature-flag.weighted.non-standard"
+      expected:
+        value: false

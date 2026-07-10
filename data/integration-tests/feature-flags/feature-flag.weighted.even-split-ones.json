@@ -1,0 +1,75 @@
+{
+  "id": "17890000000000001",
+  "projectId": "124",
+  "key": "feature-flag.weighted.even-split-ones",
+  "type": "feature_flag",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "none"
+        }
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "weighted_values",
+            "value": {
+              "weightedValues": [
+                {
+                  "weight": 1,
+                  "value": {
+                    "type": "string",
+                    "value": "a"
+                  }
+                },
+                {
+                  "weight": 1,
+                  "value": {
+                    "type": "string",
+                    "value": "b"
+                  }
+                }
+              ],
+              "hashByPropertyName": "user.tracking_id",
+              "splitEvenly": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "string",
+        "value": "a"
+      }
+    },
+    {
+      "value": {
+        "type": "string",
+        "value": "b"
+      }
+    }
+  ],
+  "description": "Canonical even-split encoding: all weights equal (1/1). SDKs normalize by total, so this serves 50/50."
+}

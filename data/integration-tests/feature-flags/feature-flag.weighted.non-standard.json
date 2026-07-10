@@ -1,0 +1,74 @@
+{
+  "id": "17890000000000002",
+  "projectId": "124",
+  "key": "feature-flag.weighted.non-standard",
+  "type": "feature_flag",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "weighted_values",
+            "value": {
+              "weightedValues": [
+                {
+                  "weight": 100000,
+                  "value": {
+                    "type": "bool",
+                    "value": true
+                  }
+                },
+                {
+                  "weight": 80000,
+                  "value": {
+                    "type": "bool",
+                    "value": false
+                  }
+                }
+              ],
+              "hashByPropertyName": "user.tracking_id"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "bool",
+        "value": false
+      }
+    },
+    {
+      "value": {
+        "type": "bool",
+        "value": true
+      }
+    }
+  ],
+  "description": "DELIBERATELY NON-CONFORMING weights (sum 180000): pins the SDK resilience contract — normalize by total, serving true 55.6% / false 44.4%. Hand-maintained; never round-trip through qfg tooling (validation rejects this shape by design)."
+}

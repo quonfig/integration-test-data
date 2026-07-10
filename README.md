@@ -31,6 +31,22 @@ integration-test-data/
         └── verify-sdks.md   # Skill to check all SDKs have generated tests
 ```
 
+## Weighted-rollout fixtures (qfg-wis6.13)
+
+Two fixtures pin the weight-scale contract:
+
+- `feature-flag.weighted.even-split-ones` — the CANONICAL even-split
+  encoding: all weights equal (1/1). Evaluation normalizes by total, so it
+  serves 50/50. This is valid data the editor writes for "Split evenly".
+- `feature-flag.weighted.non-standard` — DELIBERATELY NON-CONFORMING
+  weights (100000/80000, sum 180000). It pins the SDK resilience contract:
+  normalize by total, serving true 55.6% / false 44.4%. This fixture is
+  hand-maintained — never round-trip it through qfg tooling; `qfg verify`
+  and every write path reject this shape by design.
+
+There is intentionally no zero-total (0/0) case: SDKs diverge at zero total
+and the write layers make it unstorable (see qfg-wis6.19).
+
 ## Workflow
 
 ```
