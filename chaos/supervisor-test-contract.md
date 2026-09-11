@@ -331,6 +331,14 @@ the SDK supports it. SDKs without HTTP fallback (e.g. a fictional
 SSE-only minimal SDK) skip the `falling_back` assertion. **No SDK may
 emit a state value not in the documented set.**
 
+**Diagnostics must not lie:** after any transport teardown that is *not*
+`close()` — a fork hook dropping inherited state, a manual pre-fork call, a
+supervisor restart — `connectionState()` MUST NOT return `connected` until a
+fresh connection or refresh has actually succeeded *in this process*. A stored
+state flag must never outlive the component it describes. (sdk-ruby 1.3.0
+answered `:connected` for 13 days from a parent whose stream had been torn
+down by its own fork hook — qfg-lv4n.)
+
 **Assert — `lastSuccessfulRefresh()`:**
 
 - Before any envelope is delivered: returns null / zero / None.
@@ -379,6 +387,49 @@ the test instead checks a lint rule or a separate `README_check`.
   `connectionState(): 'initializing' | 'connected' | 'disconnected' | 'falling_back'`
   using a TypeScript string-literal union for compile-time checking.
 
+## Test 7 — Fork transparency (sdk-ruby, sdk-python; others N/A)
+
+**Applies to:** SDKs whose runtime exposes `fork(2)` and that install an
+automatic fork hook: sdk-ruby (`Process._fork`, Ruby 3.1+) and sdk-python
+(`os.register_at_fork`). Go, Java, .NET and Node mark this test N/A.
+
+**Goal:** A fork is invisible to the parent, and the child becomes a fully
+independent client on its first use. Neither process can go silently stale.
+This is the Reforge model (parent never touched; child drops inherited state
+in the hook and re-initializes lazily with a fresh empty store, its own fetch,
+its own stream, its own telemetry reporter). See epic qfg-lv4n.
+
+**Setup:**
+
+- A connected client (fake SSE server, or poll-as-primary) that has installed
+  at least one envelope.
+- Fork a child. Parent and child both keep running. The child uses the client
+  (evaluates at least once) after the fork.
+
+**Assert:**
+
+- A NEW envelope published after the fork is received by BOTH the parent and
+  the child within 5s, and `get(key)` in both processes reflects it.
+- The parent's transport worker (thread / object identity) is unchanged across
+  the fork. The parent performs no teardown, reconnect, or re-fetch because of
+  the fork.
+- `connectionState()` in both processes reflects reality at every point: never
+  `connected` while no transport component is alive in that process. A child
+  that has not yet re-initialized reports `initializing` until its first use.
+- Telemetry: the parent keeps reporting; the child reports only data generated
+  after the fork, under its own instance hash (no re-send of inherited
+  buffers).
+- `close()` returns within 5s in the child, whether or not it ever used the
+  client.
+
+**Anti-vacuity rule:** the parent-side assertion MUST be made through a
+delivered envelope, never through `connectionState()` alone. sdk-ruby's
+pre-1.4.0 fork test asserted the parent via `connectionState()` and passed for
+four months while the parent was dark.
+
+**Reference implementations:** `sdk-ruby/test/test_fork_safety.rb` (1.4.0)
+and `sdk-python/tests/unit/test_forking.py` (1.4.0).
+
 ## Test runner conventions
 
 Each SDK places these tests in its own test directory, run by its own
@@ -400,7 +451,7 @@ Each test should be named after its number above, e.g.
 
 A Tier 1 implementation is accepted when:
 
-1. All six tests run green in the SDK's CI.
+1. All six tests run green in the SDK's CI (plus Test 7 where applicable).
 2. The SDK exposes `worker_restart_total`, `lastSuccessfulRefresh()`,
    `connectionState()` per the contract.
 3. The SDK's `connectionState()` only returns documented values.
