@@ -41,7 +41,7 @@ Summarized from the plan. Tests reference these item numbers.
 | P2  | One POST in flight   | At most one telemetry POST in flight per SDK instance. A tick that fires while a POST is out is skipped; the live window keeps aggregating.                                                                                                                                                                                                                                                                                                                                                                         |
 | P3  | Retryable classes    | Retryable = network error, timeout, 408, 429, 5xx. Never other 4xx. On **401/403/404**: one ERROR line, drop the retained queue, disable telemetry for the process. On **any other 4xx** (400, 413, 422, ...): drop that batch, one ERROR, never retain, keep ticking.                                                                                                                                                                                                                                              |
 | P4  | Resend schedule      | No immediate retry, no attempt counter, no exponential backoff. Carry the failed batch forward. On a tick that is allowed to send, drain retained batches **oldest-first**, then the live window, sequentially with one POST in flight at a time; stop the tick at the first failure. A tick is allowed to send when at least **30s** have passed since the last failure AND any `Retry-After` (honored up to **600s**, larger values clamped to 600s) has elapsed. Eviction is by queue cap and max age only (P5). |
-| P5  | Byte-exact retention | Store the serialized bytes of a failed batch; never merge; never re-serialize. Queue cap: **5 batches or 512KB**, drop **oldest**. A single batch larger than the byte cap is dropped, not retained, and counts as a drop for P7. A queued batch older than **5 min** is discarded. 512KB is provisional: the sdk-node bead measures prod batch sizes and raises the default to **2MB** if the p99 batch does not fit.                                                                                              |
+| P5  | Byte-exact retention | Store the serialized bytes of a failed batch; never merge; never re-serialize. Queue cap: **5 batches or 2MB** for server SDKs, **512KB** for browser and mobile; drop **oldest**. A single batch larger than the byte cap is dropped, not retained, and counts as a drop for P7. A queued batch older than **5 min** is discarded. The server-SDK cap is 2MB per the 2026-09-25 prod measurement (see "Server-SDK byte cap" below).                                                                                |
 | P6  | Memory caps          | Every aggregator bounded (summaries, context shapes, example contexts); uniform cap per SDK class; **drop newest** when full (existing keys keep incrementing); caps documented as options. Nothing grows with traffic.                                                                                                                                                                                                                                                                                             |
 | P7  | Logging              | Only on data loss and on state change. Failed POST (timeout, 5xx, network) -> **DEBUG**. First batch DROPPED (cap, age, oversize or non-retryable) -> one **WARN** with status, queue depth, dropped count. Further drops -> DEBUG, with at most one WARN summary per **10 min** while dropping continues. Recovery (first 200 after a failure) -> one **INFO**. Auth failure -> one **ERROR** then silence. A timeout whose batch is later resent successfully never logs above DEBUG.                             |
 | P8  | Shutdown             | `close()` does one final flush of the live window with a **5s** deadline (browser: keepalive/beacon on pagehide, **2s**; iOS: background task, ~**5s**). Does not drain the retry queue. Exit is never blocked.                                                                                                                                                                                                                                                                                                     |
@@ -57,7 +57,7 @@ Summarized from the plan. Tests reference these item numbers.
 | Flush interval (tick)                | 60s                                             | 30s                            | 60s                        |
 | Resend floor after a failure         | 30s                                             | 30s                            | 30s                        |
 | `Retry-After` honored up to          | 600s                                            | 600s                           | 600s                       |
-| Retained queue cap                   | 5 batches / 512KB (2MB fallback)                | 5 batches / 512KB              | 5 batches / 512KB, on disk |
+| Retained queue cap                   | 5 batches / 2MB                                 | 5 batches / 512KB              | 5 batches / 512KB, on disk |
 | Retained batch max age               | 5 min                                           | 5 min                          | 5 min                      |
 | WARN summary interval while dropping | 10 min                                          | 10 min                         | 10 min                     |
 | Shutdown final flush deadline        | 5s                                              | 2s (pagehide keepalive/beacon) | ~5s (background task)      |
@@ -66,6 +66,18 @@ Summarized from the plan. Tests reference these item numbers.
 The flush interval and `contextUploadMode` rows come from the plan's decided
 "uniform defaults" (node drops from 8s to 60s; the adaptive up-to-600s
 intervals in node and java are removed in favor of P4).
+
+### Server-SDK byte cap: 2MB (decided 2026-09-25)
+
+The sdk-node bead measured prod batch sizes (ClickHouse Cloud `telemetry_raw`,
+trailing 24h, 121,414 server-SDK POSTs): p99 471KB (92% of 512KB), p99.5
+914KB, p99.9 1.69MB, max 5.2MB; 1.07% of POSTs over 512KB, 0.07% over 2MB, all
+sdk-ruby `example_context` events. A 512KB cap would turn ordinary batches from
+the largest customers into oversize drops on a single 503, so the server-SDK
+default is **2,097,152 bytes (2MB)**. Browser and mobile keep 512KB (browser
+p99 is 8.6KB). Full numbers:
+`project/plans/2026-09-25-sdk-node-transport-implementation.md` section 1 (in
+the monorepo `project/` repo).
 
 ### The tick model the tests assume
 
@@ -150,7 +162,7 @@ Units: `KB` means 1024 bytes, so 512KB is 524,288 bytes.
 Every test records evaluations through the SDK's normal public API (for
 example `get(...)` on a flag with distinct context keys), so the batches the
 SDK builds are real payloads. Unless a test says otherwise it uses the server
-defaults: 60s flush interval, 15s timeout, 5 batches / 512KB, 5 min max age.
+defaults: 60s flush interval, 15s timeout, 5 batches / 2MB (server; 512KB browser/mobile), 5 min max age.
 "Tick k" means the k-th tick after the client starts, at `k * interval`.
 
 ## T1 - Timeout aborts and retains (P1, P5, P7)
@@ -290,7 +302,7 @@ floor does not shorten the floor.
 **Queue caps.** Script sustained 503. For each of 8 ticks, record a distinct
 set of evaluations E1..E8, then `advance(60000)`.
 
-- `retained_count <= 5` and `retained_bytes <= 524288` after every tick.
+- `retained_count <= 5` and `retained_bytes <=` the byte cap (2097152 server, 524288 browser/mobile) after every tick.
 - After tick 8, `retained_count == 5`.
 - Script 200 and `advance(60000)` (tick 9, record nothing new). The drain
   sends exactly 5 POSTs, oldest-first, carrying E4, E5, E6, E7, E8 in that
@@ -314,8 +326,8 @@ window is larger than the cap, and script 503.
   and is dropped, not retained: `retained_count == 0`,
   `retained_bytes == 0`.
 - The drop counts for P7: `log_count(WARN, /.*/) == 1`.
-- Separately, assert the shipped default byte cap is 524288 (or 2097152 if
-  the sdk-node measurement raised it; see P5).
+- Separately, assert the shipped default byte cap: 2097152 for server SDKs,
+  524288 for browser and mobile (P5).
 
 **Aggregator caps.** For each aggregator the SDK has (evaluation summaries,
 context shapes, example contexts, and the failover aggregator where present),
@@ -491,16 +503,16 @@ An SDK's implementation is accepted when:
 sdk-node is the reference implementation and goes first; the other backend
 SDKs copy its shape.
 
-| SDK                        | Bead          | T1  | T2  | T3  | T4  | T5  | T6  | T7  | T8         | Notes                                                                                                       |
-| -------------------------- | ------------- | --- | --- | --- | --- | --- | --- | --- | ---------- | ----------------------------------------------------------------------------------------------------------- |
-| sdk-node (reference)       | `qfg-mol-9u0` | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Also runs the prod batch-size check that settles 512KB vs 2MB (P5).                                         |
-| sdk-go                     | `qfg-y8je.6`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Needs a telemetry logger; aggregators are uncapped today.                                                   |
-| sdk-python                 | `qfg-y8je.7`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Needs an HTTP stub, an atexit flush (T8) and a shapes cap (T5).                                             |
-| sdk-ruby                   | `qfg-y8je.8`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Needs a real HTTP stub; explicit timeouts (Faraday defaults are 60s+60s).                                   |
-| sdk-java                   | `qfg-y8je.9`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Audit `TelemetryReporterTest` first.                                                                        |
-| sdk-net                    | `qfg-y8je.10` | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | T1 pins the timeout-kills-loop fix (`qfg-y8je.1`); `contextUploadMode` default moves to `periodic_example`. |
-| sdk-javascript + sdk-react | `qfg-y8je.11` | [ ] | [ ] | [ ] | n/a | n/a | n/a | [ ] | beacon [ ] | Subset; T7 pins the shared-abort-timer fix.                                                                 |
-| sdk-swift                  | `qfg-y8je.12` | n/a | [ ] | [ ] | n/a | [ ] | n/a | n/a | n/a        | Subset, against the disk queue.                                                                             |
+| SDK                        | Bead          | T1  | T2  | T3  | T4  | T5  | T6  | T7  | T8         | Notes                                                                                                                                                                                                                                                                                                    |
+| -------------------------- | ------------- | --- | --- | --- | --- | --- | --- | --- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| sdk-node (reference)       | `qfg-mol-9u0` | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x]        | [quonfig/sdk-node@3c1ba0c](https://github.com/quonfig/sdk-node/commit/3c1ba0c) (`test/telemetry-transport.test.ts`). Byte cap measured: 2MB (P5). Uses global `fetch`, which has no connect-timeout knob, so the 15s overall deadline also bounds connect/TLS and T1 asserts no separate connect option. |
+| sdk-go                     | `qfg-y8je.6`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Needs a telemetry logger; aggregators are uncapped today.                                                                                                                                                                                                                                                |
+| sdk-python                 | `qfg-y8je.7`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Needs an HTTP stub, an atexit flush (T8) and a shapes cap (T5).                                                                                                                                                                                                                                          |
+| sdk-ruby                   | `qfg-y8je.8`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Needs a real HTTP stub; explicit timeouts (Faraday defaults are 60s+60s).                                                                                                                                                                                                                                |
+| sdk-java                   | `qfg-y8je.9`  | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | Audit `TelemetryReporterTest` first.                                                                                                                                                                                                                                                                     |
+| sdk-net                    | `qfg-y8je.10` | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ]        | T1 pins the timeout-kills-loop fix (`qfg-y8je.1`); `contextUploadMode` default moves to `periodic_example`.                                                                                                                                                                                              |
+| sdk-javascript + sdk-react | `qfg-y8je.11` | [ ] | [ ] | [ ] | n/a | n/a | n/a | [ ] | beacon [ ] | Subset; T7 pins the shared-abort-timer fix.                                                                                                                                                                                                                                                              |
+| sdk-swift                  | `qfg-y8je.12` | n/a | [ ] | [ ] | n/a | [ ] | n/a | n/a | n/a        | Subset, against the disk queue.                                                                                                                                                                                                                                                                          |
 
 ## Not doing
 
