@@ -11,6 +11,8 @@ Plan: `project/plans/sdk-hardening-and-verification.md` (sections "Test strategy
 ```
 chaos/
   README.md                  this file
+  supervisor-test-contract.md      native per-SDK supervisor test contract (Tier 1)
+  telemetry-transport-contract.md  native per-SDK telemetry transport test contract (T1-T8)
   docker-compose.yml         shared launcher (toxiproxy + optional api-delivery)
   start-chaos.sh             boot wrapper; seeds named proxies via the toxiproxy API
   stop-chaos.sh              teardown
@@ -201,6 +203,8 @@ chaos:
 ```
 
 The assertion expressions (`client.connectionState()`, `server_metric(...)`, etc.) are interpreted by each per-SDK test runner — the schema only enforces presence and shape. The expression vocabulary is part of the per-SDK supervisor unit-test contract: see [`supervisor-test-contract.md`](./supervisor-test-contract.md) (plan reference: `project/plans/sdk-hardening-and-verification.md`, Tier 1).
+
+SDK telemetry transport (timeouts, retention, caps, logging) is NOT covered by this rig: toxiproxy cannot script HTTP statuses and the runners disable telemetry. It has its own native per-SDK test contract: see [`telemetry-transport-contract.md`](./telemetry-transport-contract.md) (plan reference: `project/plans/2026-09-24-sdk-telemetry-transport-policy.md`).
 
 ### Failover + ordering assertion vocabulary
 
