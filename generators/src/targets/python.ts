@@ -28,6 +28,7 @@ import { loadYamlFile } from '../yaml-loader.js';
 import { pythonTestFunctionName, uniqueSuffix } from '../shared/case-id.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -251,6 +252,30 @@ function renderCase(
     'initialization_timeout_sec' in overrides ||
     func === 'get_or_raise' ||
     isRaise;
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times on the shared
+  // fixture client, assert the SET of values seen equals values_seen
+  // exactly (order-free).
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    if (needsFreshClient) {
+      throw new Error('`repeat` / `values_seen` is only supported on fixture-client cases');
+    }
+    repeatValueType(kase, rspec);
+    const key = (input.key ?? input.flag) as string | undefined;
+    if (!key || key.toString().length === 0) {
+      throw new Error('repeat case has no input.key/flag');
+    }
+    const getterCall = makeGetterCall(kase, key, mergeContexts(kase.contexts));
+    let body = '';
+    body += `    c = config_client\n`;
+    body += `    seen = {${getterCall} for _ in range(${rspec.repeat})}\n`;
+    body += `    assert seen == {${rspec.valuesSeen.map((v) => pyLiteral(v)).join(', ')}}, f"values seen over ${rspec.repeat} evaluations: {seen}"\n`;
+    return {
+      source: header + `def ${fnName}(config_client) -> None:\n${body}`,
+      usesFixture: true,
+    };
+  }
 
   if (needsFreshClient) {
     const body = renderFreshClientBody(kase, exceptions);

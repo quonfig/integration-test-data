@@ -20,6 +20,7 @@ import { loadYamlFile } from '../yaml-loader.js';
 import { rubyMethodSuffix, uniqueSuffix } from '../shared/case-id.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -268,6 +269,25 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   // the SDK team rather than silently omitting the case.
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
     return renderPostBody(kase);
+  }
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times, assert the SET of
+  // values seen equals values_seen exactly (order-free). Compared as
+  // inspect-sorted, de-duplicated arrays so no `set` require is needed.
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    repeatValueType(kase, rspec);
+    const key = (input.key ?? input.flag) as string | undefined;
+    if (!key || key.toString().length === 0) {
+      throw new Error('repeat case has no input.key/flag');
+    }
+    let body = '';
+    body += `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
+    body += `    ctx = Quonfig::Context.new(${rubyLiteral(merged)})\n`;
+    body += `    seen = Array.new(${rspec.repeat}) { resolver.get(${rubyLiteral(key)}, ctx)&.unwrapped_value }.uniq\n`;
+    body += `    assert_equal ${rubyLiteral(rspec.valuesSeen)}.sort_by(&:inspect), seen.sort_by(&:inspect),\n`;
+    body += `                 ${rubyLiteral(`expected values seen over ${rspec.repeat} evaluations`)}\n`;
+    return body;
   }
 
   // raise expectation
@@ -630,6 +650,11 @@ function renderDeliveryBody(kase: YamlCase): string {
     // WARNs about it. The ruby test harness teardown rejects any unhandled log
     // line, so acknowledge the expected WARN here.
     body += `${indent}assert_logged([/was set but the client is in delivery \\(SDK-key\\) mode/])\n`;
+  } else {
+    // A single explicit api_url disables failover (qfg-41nh.26); the SDK
+    // WARNs once. Acknowledge it for the same teardown reason.
+    body += `${indent}# A single explicit api_url disables failover (qfg-41nh.26); the SDK warns once.\n`;
+    body += `${indent}assert_logged([/explicit api_urls disables automatic failover/])\n`;
   }
   body += `  ensure\n`;
   body += `${indent}client&.stop\n`;

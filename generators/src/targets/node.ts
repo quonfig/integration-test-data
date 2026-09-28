@@ -18,6 +18,7 @@ import { resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -255,6 +256,26 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
   // so the SDK's init/timeout path actually runs.
   if (hasClientConstructionOverrides(kase.client_overrides)) {
     return renderClientConstructionBody(kase, expected);
+  }
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times, assert the SET of
+  // values seen equals values_seen exactly (order-free).
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    repeatValueType(kase, rspec);
+    const key = (input.key ?? input.flag) as string | undefined;
+    if (!key || key.toString().length === 0) {
+      throw new Error('repeat case has no input.key/flag');
+    }
+    const usesContextsType = hasMergedContexts(merged);
+    const ctxLit = renderContextsLiteral(merged);
+    let body = '';
+    body += `    const __seen = new Set<unknown>();\n`;
+    body += `    for (let __i = 0; __i < ${rspec.repeat}; __i++) {\n`;
+    body += `      __seen.add(resolveCase(${tsStringLiteral(key)}, ${ctxLit}));\n`;
+    body += `    }\n`;
+    body += `    expect(__seen).toEqual(new Set(${tsLiteral(rspec.valuesSeen)}));\n`;
+    return { body, usesMergeContexts: usesContextsType, usesContextsType };
   }
 
   // raise expectation

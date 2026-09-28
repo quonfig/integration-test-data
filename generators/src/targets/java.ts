@@ -30,6 +30,7 @@ import {
 } from '../shared/case-id.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -277,6 +278,25 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
   }
   const keyLit = javaStringLiteral(key);
   const ctxLit = renderContextsLiteral(merged);
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times through the resolver
+  // path, assert the SET of values seen equals values_seen exactly.
+  // Fully-qualified java.util types so no import bookkeeping is needed.
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    if (hasEnv || hasClientOverrides || fn !== 'get') {
+      throw new Error('`repeat` / `values_seen` is only supported on plain `get` cases');
+    }
+    repeatValueType(kase, rspec);
+    const want = rspec.valuesSeen.map((v) => javaLiteral(v)).join(', ');
+    let rb = '';
+    rb += `${indent}java.util.Set<Object> seen = new java.util.HashSet<>();\n`;
+    rb += `${indent}for (int i = 0; i < ${rspec.repeat}; i++) {\n`;
+    rb += `${indent}  seen.add(TestSetup.resolveCase(${keyLit}, ${ctxLit}));\n`;
+    rb += `${indent}}\n`;
+    rb += `${indent}assertEquals(java.util.Set.of(${want}), seen, "values seen over ${rspec.repeat} evaluations");\n`;
+    return rb;
+  }
 
   let body = '';
   if (hasEnv) {

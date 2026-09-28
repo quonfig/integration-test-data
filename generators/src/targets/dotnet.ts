@@ -31,6 +31,7 @@ import {
 } from '../shared/case-id.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -281,6 +282,27 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
     throw new Error('case has no input.key/flag and no raise expectation');
   }
   const ctxLit = renderContextsLiteral(merged);
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times through the resolver
+  // path, assert the SET of values seen equals values_seen exactly.
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    if (hasEnv || hasClientOverrides || fn !== 'get') {
+      throw new Error('`repeat` / `values_seen` is only supported on plain `get` cases');
+    }
+    repeatValueType(kase, rspec);
+    const want = rspec.valuesSeen.map((v) => csLiteral(v)).join(', ');
+    let rb = '';
+    rb += `${indent}var seen = new System.Collections.Generic.HashSet<object?>();\n`;
+    rb += `${indent}for (var i = 0; i < ${rspec.repeat}; i++)\n`;
+    rb += `${indent}{\n`;
+    rb += `${indent}    seen.Add(TestSetup.ResolveCase(${csStringLiteral(key)}, ${ctxLit}));\n`;
+    rb += `${indent}}\n`;
+    rb += `${indent}Assert.True(\n`;
+    rb += `${indent}    seen.SetEquals(new object?[] { ${want} }),\n`;
+    rb += `${indent}    $"values seen over ${rspec.repeat} evaluations: {string.Join(", ", seen)}");\n`;
+    return rb;
+  }
 
   let body = '';
   if (hasEnv) {

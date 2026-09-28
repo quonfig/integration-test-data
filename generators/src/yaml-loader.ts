@@ -22,10 +22,14 @@ export function loadYamlFile(filePath: string, yamlBasename: string): Normalized
     const groupName = typeof group.name === 'string' ? group.name : undefined;
     for (const c of group.cases ?? []) {
       if (!c || typeof c !== 'object') continue;
+      // `type: BOOL` (get_weighted_values.yaml, qfg-wis6.13) is an alias for
+      // the canonical `BOOLEAN` every target switches on. Normalize here so
+      // no target needs its own alias handling.
+      const raw = c.type === 'BOOL' ? { ...c, type: 'BOOLEAN' } : c;
       out.push({
         yamlBasename,
         ...(groupName !== undefined ? { groupName } : {}),
-        raw: c,
+        raw,
       });
     }
   }

@@ -23,6 +23,7 @@ import {
 } from '../shared/case-id.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { repeatSpec, repeatValueType, type RepeatSpec } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -292,6 +293,11 @@ function renderBody(
   const input = kase.input ?? {};
   const envVars = kase.env_vars;
 
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    return renderRepeatBody(kase, rspec);
+  }
+
   if (expected.status === 'raise') {
     return renderRaiseBody(kase, features);
   }
@@ -427,6 +433,51 @@ function renderBody(
     default:
       throw new Error(`unsupported YAML type: ${yamlType}`);
   }
+}
+
+/**
+ * `repeat` + `expected.values_seen` (qfg-t9wo): evaluate `repeat` times with
+ * the same context and assert the set of values seen equals `values_seen`.
+ * Set equality = same size + every expected value present (values_seen is
+ * validated duplicate-free), so no extra imports are needed.
+ */
+function renderRepeatBody(kase: YamlCase, spec: RepeatSpec): string {
+  const key = ((kase.input ?? {}).key ?? (kase.input ?? {}).flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('repeat case has no input.key/flag');
+  }
+  const vt = repeatValueType(kase, spec);
+  const goType = vt === 'INT' ? 'int64' : 'string';
+  const getter = vt === 'INT' ? 'IntValue' : 'StringValue';
+  const lits = spec.valuesSeen
+    .map((v) => (vt === 'INT' ? String(v) : goStringLiteral(v as string)))
+    .join(', ');
+  const i = '\t';
+  let b = '';
+  b += `${i}cfg := mustLookupConfig(t, ${goStringLiteral(key)})\n`;
+  b += `${i}ctx := ${buildContextCall(kase)}\n`;
+  b += `${i}seen := map[${goType}]bool{}\n`;
+  b += `${i}for i := 0; i < ${spec.repeat}; i++ {\n`;
+  b += `${i}\tmatch, err := evaluateAndResolve(t, cfg, ctx)\n`;
+  b += `${i}\tif err != nil {\n`;
+  b += `${i}\t\tt.Fatalf("resolver error: %v", err)\n`;
+  b += `${i}\t}\n`;
+  b += `${i}\tif !match.IsMatch {\n`;
+  b += `${i}\t\tt.Fatalf("evaluation %d: expected a value but got no match", i)\n`;
+  b += `${i}\t}\n`;
+  b += `${i}\tseen[match.Value.${getter}()] = true\n`;
+  b += `${i}}\n`;
+  b += `${i}want := []${goType}{${lits}}\n`;
+  b += `${i}ok := len(seen) == len(want)\n`;
+  b += `${i}for _, w := range want {\n`;
+  b += `${i}\tif !seen[w] {\n`;
+  b += `${i}\t\tok = false\n`;
+  b += `${i}\t}\n`;
+  b += `${i}}\n`;
+  b += `${i}if !ok {\n`;
+  b += `${i}\tt.Errorf("after ${spec.repeat} evaluations expected values seen %v, got %v", want, seen)\n`;
+  b += `${i}}\n`;
+  return b;
 }
 
 /**

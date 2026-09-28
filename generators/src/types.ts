@@ -32,6 +32,12 @@ export interface CaseExpected {
   // real number, not a string. Honored ONLY inside the datadir render
   // branch; a server-mode case carrying it is a generator error.
   raw_value_type?: string;
+  // values_seen: get_weighted_values.yaml (qfg-t9wo). Paired with the case's
+  // top-level `repeat: N`: the generated test evaluates the flag N times
+  // (same contexts) and asserts the SET of values returned equals
+  // `values_seen` exactly (order-free, duplicates in the results collapse).
+  // Mutually exclusive with `value`. See shared/repeat.ts.
+  values_seen?: unknown[];
   [k: string]: unknown;
 }
 
@@ -73,6 +79,8 @@ export interface YamlCase {
   expected?: CaseExpected;
   client_overrides?: ClientOverrides;
   env_vars?: Record<string, string>;
+  // repeat: evaluate the case N times; only valid with expected.values_seen.
+  repeat?: number;
 
   // post.yaml / telemetry.yaml use a different shape:
   aggregator?: string;
