@@ -119,6 +119,36 @@ tests:
               conditional_value_index: 0
               weighted_value_index: 2
 
+      # Bucket 0 regression (qfg-stbb): weighted_value_index is 0-based, so a
+      # `weightedValueIndex > 0` SPLIT check misreports bucket 0 as STATIC.
+      # murmur3("feature-flag.weighted" + "3e9459d6") / MaxUint32 = 0.0051,
+      # mid-way through bucket 0 ([0, 0.01), weight 1000 of 100000) -> value 1.
+      - name: reason is SPLIT for weighted value landing in bucket 0
+        client: client
+        function: post
+        aggregator: evaluation_summary
+        endpoint: "/api/v1/telemetry"
+        contexts:
+          block:
+            user:
+              tracking_id: "3e9459d6"
+        data:
+          keys:
+            - "feature-flag.weighted"
+        expected_data:
+          - key: "feature-flag.weighted"
+            type: FEATURE_FLAG
+            value: 1
+            value_type: int
+            count: 1
+            reason: 3
+            selected_value:
+              int: 1
+            summary:
+              config_row_index: 0
+              conditional_value_index: 0
+              weighted_value_index: 0
+
       - name: reason is TARGETING_MATCH for feature flag fallthrough with targeting rules
         client: client
         function: post
