@@ -1,0 +1,87 @@
+{
+  "id": "17890000000000004",
+  "projectId": "124",
+  "key": "feature-flag.weighted.missing-hash",
+  "type": "feature_flag",
+  "valueType": "int",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "0"
+        }
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "weighted_values",
+            "value": {
+              "weightedValues": [
+                {
+                  "weight": 69000,
+                  "value": {
+                    "type": "int",
+                    "value": "1"
+                  }
+                },
+                {
+                  "weight": 1000,
+                  "value": {
+                    "type": "int",
+                    "value": "2"
+                  }
+                },
+                {
+                  "weight": 30000,
+                  "value": {
+                    "type": "int",
+                    "value": "3"
+                  }
+                }
+              ],
+              "hashByPropertyName": "user.tracking_id"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "int",
+        "value": "1"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "2"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "3"
+      }
+    }
+  ],
+  "description": "Missing/empty hash property hashes configKey+\"\" (qfg-9dxb.8). murmur3(\"feature-flag.weighted.missing-hash\")/MaxUint32 = 0.6947 -> 69474, inside the 1% variant (value 2, 69000-70000]. A first-variant or random fallback serves 1 or 3."
+}

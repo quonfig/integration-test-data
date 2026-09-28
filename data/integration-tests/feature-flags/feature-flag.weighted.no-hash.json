@@ -1,0 +1,73 @@
+{
+  "id": "17890000000000005",
+  "projectId": "124",
+  "key": "feature-flag.weighted.no-hash",
+  "type": "feature_flag",
+  "valueType": "int",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "0"
+        }
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "weighted_values",
+            "value": {
+              "weightedValues": [
+                {
+                  "weight": 50000,
+                  "value": {
+                    "type": "int",
+                    "value": "1"
+                  }
+                },
+                {
+                  "weight": 50000,
+                  "value": {
+                    "type": "int",
+                    "value": "2"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "int",
+        "value": "1"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "2"
+      }
+    }
+  ],
+  "description": "No hashByPropertyName: each evaluation picks a random variant by weight (qfg-t9wo). 50/50 so repeated evaluations must see both values."
+}

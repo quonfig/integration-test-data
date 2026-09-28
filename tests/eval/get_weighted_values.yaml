@@ -150,9 +150,11 @@ tests:
     # Statsig-style): when hashByPropertyName (user.tracking_id) is MISSING
     # from the context (property absent, named context absent, or no context)
     # or present as an EMPTY STRING, SDKs hash configKey + "" and walk the
-    # weights normally. murmur3("feature-flag.weighted") / MaxUint32 =
-    # 0.918 -> 91798 of 100000 -> value 2. Missing and empty resolve to the
-    # same variant. Reason stays SPLIT; hashPropertyMissing metadata is
+    # weights normally. Fixture feature-flag.weighted.missing-hash puts a 1%
+    # variant (value 2, cumulative 69000-70000] exactly where
+    # murmur3("feature-flag.weighted.missing-hash") / MaxUint32 = 0.6947 ->
+    # 69474 lands, so a first-variant fallback (1) or a random fallback (2 only
+    # 1% of the time) fails. Missing and empty resolve to the same variant. Reason stays SPLIT; hashPropertyMissing metadata is
     # asserted in native per-SDK tests (the YAML schema has no metadata
     # assertion). Supersedes the "first variant" expectations of cc1177a.
     - name: weighted value with hash property missing from context hashes empty string
@@ -164,7 +166,7 @@ tests:
           user:
             key: "no-tracking-id-user"
       input:
-        flag: "feature-flag.weighted"
+        flag: "feature-flag.weighted.missing-hash"
       expected:
         value: 2
     - name: weighted value with no context hashes empty string
@@ -172,7 +174,7 @@ tests:
       function: get
       type: INT
       input:
-        flag: "feature-flag.weighted"
+        flag: "feature-flag.weighted.missing-hash"
       expected:
         value: 2
     - name: weighted value with hash property empty string hashes empty string
@@ -185,7 +187,7 @@ tests:
             key: "empty-tracking-id-user"
             tracking_id: ""
       input:
-        flag: "feature-flag.weighted"
+        flag: "feature-flag.weighted.missing-hash"
       expected:
         value: 2
     # feature-flag.weighted.zero-first: first variant (1) has weight 0, second
@@ -205,3 +207,33 @@ tests:
         flag: "feature-flag.weighted.zero-first"
       expected:
         value: 2
+  - cases:
+    # No hashByPropertyName (qfg-t9wo): every evaluation picks a random variant
+    # by weight. feature-flag.weighted.no-hash is 50/50 (1 / 2). The case
+    # evaluates the flag `repeat` times and asserts the set of values seen is
+    # exactly `values_seen` (order-free). P(false failure) = 2 * 0.5^200.
+    # A first-variant fallback (always 1) or a hashed fallback (always one
+    # value) fails.
+    - name: weighted value with no hash property is random on every evaluation
+      client: config_client
+      function: get
+      type: INT
+      repeat: 200
+      input:
+        flag: "feature-flag.weighted.no-hash"
+      expected:
+        values_seen: [1, 2]
+    - name: weighted value with no hash property is random on every evaluation with context
+      client: config_client
+      function: get
+      type: INT
+      repeat: 200
+      contexts:
+        local:
+          user:
+            key: "same-user-every-time"
+            tracking_id: "same-tracking-id"
+      input:
+        flag: "feature-flag.weighted.no-hash"
+      expected:
+        values_seen: [1, 2]

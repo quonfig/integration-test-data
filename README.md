@@ -46,6 +46,11 @@ Two fixtures pin the weight-scale contract:
 - `feature-flag.weighted.zero-first` — first variant at weight 0 (0/100000),
   hashing on `user.tracking_id`. Pins that a 0% variant is never served,
   including when the hash property is missing (qfg-9dxb.8).
+- `feature-flag.weighted.missing-hash` — weights 69000/1000/30000 with the
+  1% variant placed where `configKey + ""` hashes (0.6947). Pins that a
+  missing or empty hash property hashes the empty string (qfg-9dxb.8).
+- `feature-flag.weighted.no-hash` — 50/50 with no `hashByPropertyName`. Pins
+  random-per-evaluation via `repeat` + `expected.values_seen` (qfg-t9wo).
 
 There is intentionally no zero-total (0/0) case: SDKs diverge at zero total
 and the write layers make it unstorable (see qfg-wis6.19).
