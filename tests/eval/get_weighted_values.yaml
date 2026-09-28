@@ -145,3 +145,30 @@ tests:
         flag: "feature-flag.weighted.non-standard"
       expected:
         value: false
+  - cases:
+    # Missing-hash-property contract (qfg-9dxb.8, decided 2026-09-28): when
+    # hashByPropertyName (user.tracking_id) is absent from the context, SDKs
+    # use fraction 0.0 -> the FIRST weighted variant (value 1, weight
+    # 1000/100000). Reason stays SPLIT; metadata gains hashPropertyMissing:
+    # true (asserted in native per-SDK tests, not here). A random-bucket SDK
+    # passes each case only ~1% of the time.
+    - name: weighted value with hash property missing from context serves first variant
+      client: config_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            key: "no-tracking-id-user"
+      input:
+        flag: "feature-flag.weighted"
+      expected:
+        value: 1
+    - name: weighted value with no context serves first variant
+      client: config_client
+      function: get
+      type: INT
+      input:
+        flag: "feature-flag.weighted"
+      expected:
+        value: 1
