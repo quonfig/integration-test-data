@@ -146,13 +146,16 @@ tests:
       expected:
         value: false
   - cases:
-    # Missing-hash-property contract (qfg-9dxb.8, decided 2026-09-28): when
-    # hashByPropertyName (user.tracking_id) is absent from the context, SDKs
-    # use fraction 0.0 -> the FIRST weighted variant (value 1, weight
-    # 1000/100000). Reason stays SPLIT; metadata gains hashPropertyMissing:
-    # true (asserted in native per-SDK tests, not here). A random-bucket SDK
-    # passes each case only ~1% of the time.
-    - name: weighted value with hash property missing from context serves first variant
+    # Missing/empty hash-property contract (qfg-9dxb.8, revised 2026-09-28,
+    # Statsig-style): when hashByPropertyName (user.tracking_id) is MISSING
+    # from the context (property absent, named context absent, or no context)
+    # or present as an EMPTY STRING, SDKs hash configKey + "" and walk the
+    # weights normally. murmur3("feature-flag.weighted") / MaxUint32 =
+    # 0.918 -> 91798 of 100000 -> value 2. Missing and empty resolve to the
+    # same variant. Reason stays SPLIT; hashPropertyMissing metadata is
+    # asserted in native per-SDK tests (the YAML schema has no metadata
+    # assertion). Supersedes the "first variant" expectations of cc1177a.
+    - name: weighted value with hash property missing from context hashes empty string
       client: config_client
       function: get
       type: INT
@@ -163,12 +166,42 @@ tests:
       input:
         flag: "feature-flag.weighted"
       expected:
-        value: 1
-    - name: weighted value with no context serves first variant
+        value: 2
+    - name: weighted value with no context hashes empty string
       client: config_client
       function: get
       type: INT
       input:
         flag: "feature-flag.weighted"
       expected:
-        value: 1
+        value: 2
+    - name: weighted value with hash property empty string hashes empty string
+      client: config_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            key: "empty-tracking-id-user"
+            tracking_id: ""
+      input:
+        flag: "feature-flag.weighted"
+      expected:
+        value: 2
+    # feature-flag.weighted.zero-first: first variant (1) has weight 0, second
+    # (2) has 100000. A 0% variant must never be served, even when the hash
+    # property is missing (a literal "bucket 0 / first variant" fallback
+    # would wrongly serve 1). murmur3("feature-flag.weighted.zero-first") /
+    # MaxUint32 = 0.164 -> value 2.
+    - name: weighted value with zero-weight first variant and hash property missing never serves zero-weight variant
+      client: config_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            key: "no-tracking-id-user"
+      input:
+        flag: "feature-flag.weighted.zero-first"
+      expected:
+        value: 2

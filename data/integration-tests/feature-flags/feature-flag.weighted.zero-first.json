@@ -1,0 +1,74 @@
+{
+  "id": "17890000000000003",
+  "projectId": "124",
+  "key": "feature-flag.weighted.zero-first",
+  "type": "feature_flag",
+  "valueType": "int",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "int",
+          "value": "0"
+        }
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "Production",
+      "rules": [
+        {
+          "criteria": [
+            {
+              "operator": "ALWAYS_TRUE"
+            }
+          ],
+          "value": {
+            "type": "weighted_values",
+            "value": {
+              "weightedValues": [
+                {
+                  "weight": 0,
+                  "value": {
+                    "type": "int",
+                    "value": "1"
+                  }
+                },
+                {
+                  "weight": 100000,
+                  "value": {
+                    "type": "int",
+                    "value": "2"
+                  }
+                }
+              ],
+              "hashByPropertyName": "user.tracking_id"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "value": {
+        "type": "int",
+        "value": "1"
+      }
+    },
+    {
+      "value": {
+        "type": "int",
+        "value": "2"
+      }
+    }
+  ],
+  "description": "First variant has weight 0 (0/100000). A 0% variant must never be served, including when the hash property is missing (qfg-9dxb.8)."
+}

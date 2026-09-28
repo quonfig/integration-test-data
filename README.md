@@ -43,6 +43,9 @@ Two fixtures pin the weight-scale contract:
   normalize by total, serving true 55.6% / false 44.4%. This fixture is
   hand-maintained — never round-trip it through qfg tooling; `qfg verify`
   and every write path reject this shape by design.
+- `feature-flag.weighted.zero-first` — first variant at weight 0 (0/100000),
+  hashing on `user.tracking_id`. Pins that a 0% variant is never served,
+  including when the hash property is missing (qfg-9dxb.8).
 
 There is intentionally no zero-total (0/0) case: SDKs diverge at zero total
 and the write layers make it unstorable (see qfg-wis6.19).
