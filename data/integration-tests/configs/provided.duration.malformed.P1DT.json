@@ -1,0 +1,27 @@
+{
+  "id": "17990000000000009",
+  "projectId": "124",
+  "key": "provided.duration.malformed.P1DT",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "draftId": "9009",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "provided",
+          "value": {
+            "source": "ENV_VAR",
+            "lookup": "QUONFIG_ITD_DURATION_P1DT"
+          }
+        }
+      }
+    ]
+  }
+}

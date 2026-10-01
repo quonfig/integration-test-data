@@ -1,0 +1,27 @@
+{
+  "id": "17990000000000010",
+  "projectId": "124",
+  "key": "provided.duration.malformed.garbage",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "draftId": "9010",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "provided",
+          "value": {
+            "source": "ENV_VAR",
+            "lookup": "QUONFIG_ITD_DURATION_GARBAGE"
+          }
+        }
+      }
+    ]
+  }
+}

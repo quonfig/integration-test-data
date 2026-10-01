@@ -1,0 +1,24 @@
+{
+  "id": "17990000000000004",
+  "projectId": "124",
+  "key": "test.duration.malformed.garbage",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "draftId": "9004",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "duration",
+          "value": "garbage"
+        }
+      }
+    ]
+  }
+}

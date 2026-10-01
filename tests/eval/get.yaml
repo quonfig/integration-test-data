@@ -352,3 +352,239 @@ tests:
           value: "correct"
 
 
+
+      ##########################################################################
+      ## Malformed durations, stored and ENV_VAR-provided (qfg-2agi.6, .7).
+      ##
+      ## One contract for both sources (Jeff, 2026-10-01; plan
+      ## project/plans/2026-10-01-duration-validity.md, decision 3):
+      ##   - typed getter WITH a default -> the caller's default. Never 0, the
+      ##     raw string, or an exception. The SDK also logs a warning once per
+      ##     key; ITD cannot assert logging, so that half is unchecked here.
+      ##   - typed getter with NO default -> the SDK's absent value
+      ##     (null/None/nil, or zero with ok=false in Go). Mirrors "get returns
+      ##     nil if value not found" (on_no_default: 2).
+      ##   - get_or_raise -> raises (see get_or_raise.yaml).
+      ## input.default on a DURATION case is integer MILLISECONDS, the same unit
+      ## as expected.millis; each generator converts it to its SDK's unit
+      ## (e.g. seconds in sdk-python).
+      ## Malformed inputs come from tests/duration/grammar.yaml `invalid`.
+      ## ENV_VAR cases set their variable via env_vars; the empty string is
+      ## stored-only because .NET's Environment.SetEnvironmentVariable(k, "")
+      ## deletes the variable, so an empty env var reads as missing_env_var.
+      ##########################################################################
+      - name: env-var-provided duration PT1.5S via get
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.PT1.5S"
+        env_vars:
+          QUONFIG_ITD_DURATION_PT1_5S: "PT1.5S"
+        expected:
+          millis: 1500
+
+      - name: stored malformed duration 30s returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.30s"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: stored malformed duration 30s with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.30s"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: stored malformed duration PT0.5H returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.PT0.5H"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: stored malformed duration PT0.5H with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.PT0.5H"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: stored malformed duration P1DT returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.P1DT"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: stored malformed duration P1DT with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.P1DT"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: stored malformed duration garbage returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.garbage"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: stored malformed duration garbage with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.garbage"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: stored malformed duration empty returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.empty"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: stored malformed duration empty with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.malformed.empty"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: env-var-provided malformed duration 30s returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.30s"
+          default: 7000
+        env_vars:
+          QUONFIG_ITD_DURATION_30S: "30s"
+        expected:
+          millis: 7000
+
+      - name: env-var-provided malformed duration 30s with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.30s"
+        env_vars:
+          QUONFIG_ITD_DURATION_30S: "30s"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: env-var-provided malformed duration PT0.5H returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.PT0.5H"
+          default: 7000
+        env_vars:
+          QUONFIG_ITD_DURATION_PT0_5H: "PT0.5H"
+        expected:
+          millis: 7000
+
+      - name: env-var-provided malformed duration PT0.5H with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.PT0.5H"
+        env_vars:
+          QUONFIG_ITD_DURATION_PT0_5H: "PT0.5H"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: env-var-provided malformed duration P1DT returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.P1DT"
+          default: 7000
+        env_vars:
+          QUONFIG_ITD_DURATION_P1DT: "P1DT"
+        expected:
+          millis: 7000
+
+      - name: env-var-provided malformed duration P1DT with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.P1DT"
+        env_vars:
+          QUONFIG_ITD_DURATION_P1DT: "P1DT"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: env-var-provided malformed duration garbage returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.garbage"
+          default: 7000
+        env_vars:
+          QUONFIG_ITD_DURATION_GARBAGE: "garbage"
+        expected:
+          millis: 7000
+
+      - name: env-var-provided malformed duration garbage with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "provided.duration.malformed.garbage"
+        env_vars:
+          QUONFIG_ITD_DURATION_GARBAGE: "garbage"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2

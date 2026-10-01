@@ -83,3 +83,106 @@ tests:
       expected:
         status: raise
         error: unable_to_decrypt
+
+    # Malformed durations (qfg-2agi.6, .7): get_or_raise raises the SDK's
+    # coercion error for BOTH sources. Jeff's decision: a stored malformed
+    # value raises the same coercion error class as an ENV_VAR one, so both
+    # use the unable_to_coerce_env_var key. Fixtures and the rest of the
+    # contract: see the "Malformed durations" block in get.yaml.
+    - name: raises an error if an env-var-provided duration 30s cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "provided.duration.malformed.30s"
+      env_vars:
+        QUONFIG_ITD_DURATION_30S: "30s"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if an env-var-provided duration PT0.5H cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "provided.duration.malformed.PT0.5H"
+      env_vars:
+        QUONFIG_ITD_DURATION_PT0_5H: "PT0.5H"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if an env-var-provided duration P1DT cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "provided.duration.malformed.P1DT"
+      env_vars:
+        QUONFIG_ITD_DURATION_P1DT: "P1DT"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if an env-var-provided duration garbage cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "provided.duration.malformed.garbage"
+      env_vars:
+        QUONFIG_ITD_DURATION_GARBAGE: "garbage"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if a stored duration 30s cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "test.duration.malformed.30s"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if a stored duration PT0.5H cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "test.duration.malformed.PT0.5H"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if a stored duration P1DT cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "test.duration.malformed.P1DT"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if a stored duration garbage cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "test.duration.malformed.garbage"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+
+    - name: raises an error if a stored duration empty cannot be coerced
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "test.duration.malformed.empty"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var

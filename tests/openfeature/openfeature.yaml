@@ -21,6 +21,7 @@
 #   my-string-list-key (existing)   -- string_list ["a","b","c"]
 #   test.duration.PT90S (existing)  -- duration PT90S (90000 ms)
 #   test.duration.P1DT6H2M1.5S (existing) -- duration P1DT6H2M1.5S (108121500 ms)
+#   test.duration.malformed.30s (existing) -- duration with malformed value "30s"
 #   of.targeting (new)              -- bool config with user.plan == "pro" rule
 #   of.weighted (new)               -- string config, weighted 50/50 on user.id
 
@@ -84,6 +85,22 @@ tests:
         expected:
           value: "P1DT6H2M1.5S"
           reason: STATIC
+
+      # Malformed stored duration (qfg-2agi.7): the provider must not pass the
+      # raw malformed string through; it returns the OF default with reason
+      # ERROR (the Details half of the malformed-duration contract, see the
+      # "Malformed durations" block in tests/eval/get.yaml).
+      - name: "malformed stored duration via resolveStringValue returns default with ERROR"
+        sdk: openfeature
+        client: config_client
+        function: resolveStringValue
+        type: DURATION
+        input:
+          key: "test.duration.malformed.30s"
+          default: "PT0S"
+        expected:
+          value: "PT0S"
+          reason: ERROR
 
   ##############################################################################
   ## Case 3: Missing key with OF default returns default, not error

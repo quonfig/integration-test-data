@@ -1,0 +1,27 @@
+{
+  "id": "17990000000000006",
+  "projectId": "124",
+  "key": "provided.duration.PT1.5S",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "draftId": "9006",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "provided",
+          "value": {
+            "source": "ENV_VAR",
+            "lookup": "QUONFIG_ITD_DURATION_PT1_5S"
+          }
+        }
+      }
+    ]
+  }
+}

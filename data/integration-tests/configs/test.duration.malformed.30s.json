@@ -1,0 +1,24 @@
+{
+  "id": "17990000000000001",
+  "projectId": "124",
+  "key": "test.duration.malformed.30s",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "draftId": "9001",
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "duration",
+          "value": "30s"
+        }
+      }
+    ]
+  }
+}
