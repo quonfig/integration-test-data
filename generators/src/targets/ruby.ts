@@ -1,27 +1,30 @@
 // Ruby target — generates Minitest files under sdk-ruby/test/integration/.
 //
-// Ports the previous Ruby-in-Ruby generator (sdk-ruby/scripts/generate_integration_tests.rb)
-// with two important behavioral changes:
+// Rules:
 //
 //   1. NO auto-skips, no omissions, no wrap-and-rescue. Every YAML case
-//      becomes a runnable test method. Cases whose YAML shape doesn't have
-//      a matching helper today (post.yaml / telemetry.yaml — aggregator /
-//      data / expected_data) are still emitted, calling consistently named
-//      helper methods that may not yet exist. At runtime those raise
-//      NoMethodError, which is the *desired* outcome — it surfaces the gap
-//      rather than hiding it.
+//      becomes a runnable test method.
 //
-//   2. Unmapped raise errors and missing input keys FAIL the generator
-//      (rather than silently skipping the case at runtime).
+//   2. Unmapped raise errors, unknown types/functions and missing input keys
+//      FAIL the generator (rather than silently skipping the case at runtime).
+//
+//   3. PUBLIC API only (qfg-2agi.33). Every case drives Quonfig::Client the way
+//      a customer does: a datadir client over the shared corpus; the typed
+//      getter named by the YAML `type:` (get_string / get_int / get_float /
+//      get_bool / get_string_list / get_json / get_duration), `enabled?`, or
+//      `get_or_raise`; context tiers through global_context: /
+//      with_context / in_context (the SDK merges them, the generator does
+//      not); telemetry through the client's real reporter flushed to a local
+//      HTTP sink. No Resolver calls, no harness-side exception mapping, no
+//      harness-side redaction.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
 import { rubyMethodSuffix, uniqueSuffix } from '../shared/case-id.js';
-import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
-import type { NormalizedCase, YamlCase } from '../types.js';
+import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
   yaml: string;
@@ -219,26 +222,101 @@ class GeneratorError extends Error {
 }
 
 /**
+ * YAML `type:` -> the PUBLIC typed getter on Quonfig::Client / BoundClient.
+ * An unknown type is a generator error, never a silent fallback to `get`.
+ */
+const TYPED_GETTERS: Record<string, string> = {
+  STRING: 'get_string',
+  INT: 'get_int',
+  DOUBLE: 'get_float',
+  BOOL: 'get_bool',
+  BOOLEAN: 'get_bool',
+  STRING_LIST: 'get_string_list',
+  JSON: 'get_json',
+  DURATION: 'get_duration',
+};
+
+function typedGetter(kase: YamlCase): string {
+  const t = (kase.type ?? '').toString().toUpperCase();
+  const m = TYPED_GETTERS[t];
+  if (!m) {
+    throw new Error(`no Ruby typed getter for type ${JSON.stringify(kase.type)} (function ${kase.function ?? 'get'})`);
+  }
+  return m;
+}
+
+function caseKey(kase: YamlCase): string {
+  const input = kase.input ?? {};
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('case has no input.key/flag');
+  }
+  return key.toString();
+}
+
+function hasOwn(obj: unknown, prop: string): boolean {
+  return !!obj && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, prop);
+}
+
+/** Non-empty context tier, or null. */
+function tier(kase: YamlCase, name: 'global' | 'block' | 'local'): ContextTypes | null {
+  const t = kase.contexts?.[name];
+  if (!t || typeof t !== 'object' || Object.keys(t).length === 0) return null;
+  return t;
+}
+
+/** Map the cross-SDK `on_no_default` integer to the Ruby option symbol. */
+function onNoDefaultSymbol(val: unknown): string {
+  if (val === 1) return ':raise';
+  if (val === 2) return ':return_nil';
+  throw new Error(`unsupported client_overrides.on_no_default=${JSON.stringify(val)} (1 = raise, 2 = return nil)`);
+}
+
+/** YAML context_upload_mode (`:shape_only`, `:none`, ...) -> Ruby option symbol. */
+function contextUploadModeSymbol(val: unknown): string {
+  const v = String(val).replace(/^:/, '');
+  switch (v) {
+    case 'none':
+      return ':none';
+    case 'shape_only':
+    case 'shapes_only':
+      return ':shapes_only';
+    case 'periodic_example':
+      return ':periodic_example';
+    default:
+      throw new Error(`unsupported client_overrides.context_upload_mode=${JSON.stringify(val)}`);
+  }
+}
+
+function raiseClass(kase: YamlCase): string {
+  const errKey = (kase.expected ?? {}).error;
+  if (typeof errKey !== 'string' || errKey.length === 0) {
+    throw new Error('expected.status: raise but no expected.error provided');
+  }
+  const errClass = lookupErrorClass('ruby', errKey);
+  if (!errClass) {
+    throw new Error(
+      `no Quonfig::Errors mapping for expected.error="${errKey}". ` +
+        `Add it to src/shared/error-mapping.ts (RUBY_ERRORS) or remove the case from YAML.`,
+    );
+  }
+  return errClass;
+}
+
+/**
  * Render the body of a single test method (everything between the
  * `def test_*` line and the matching `end`). Always returns a string with
- * a trailing newline; callers concatenate. The 4-space lead matches the
- * Ruby reference output.
+ * a trailing newline; callers concatenate.
  */
 function renderBody(yamlBasename: string, kase: YamlCase): string {
   const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
-  const merged = mergeContexts(kase.contexts);
-  const envVars = kase.env_vars;
 
-  // datadir suite drives `Quonfig::Client.new(...)` directly.
   if (yamlBasename === 'datadir_environment.yaml') {
     return renderDatadirBody(kase);
   }
-
   if (yamlBasename === 'datadir_value_type.yaml') {
     return renderDatadirValueTypeBody(kase);
   }
-
   if (yamlBasename === 'delivery_environment.yaml') {
     return renderDeliveryBody(kase);
   }
@@ -246,163 +324,165 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
   // server-mode case carrying it would silently lose the raw-Value assertion,
   // so fail the generator loudly instead.
-  if (Object.prototype.hasOwnProperty.call(expected, 'raw_value_type')) {
+  if (hasOwn(expected, 'raw_value_type')) {
     throw new Error(
       `expected.raw_value_type is only valid in datadir_value_type.yaml, not ${yamlBasename}`,
     );
   }
 
   // Cases that override real-client-construction params (init timeout, fake
-  // api URL, init-failure policy) need a real Quonfig::Client.new(...) so the
-  // SDK's init/timeout/error path actually runs. The resolver-only path
-  // can't observe init-timeout because the resolver is built off a fully
-  // loaded store. Mirror the datadir suite shape.
+  // api URL, init-failure policy) need a network-mode client so the SDK's
+  // init/timeout/error path actually runs.
   if (hasClientConstructionOverrides(kase.client_overrides)) {
     return renderClientConstructionBody(kase);
   }
 
-  // post.yaml / telemetry.yaml — aggregator / data / expected_data shape.
-  // Every case becomes a real test method calling consistent helpers
-  // (build_aggregator / feed_aggregator / assert_aggregator_post). Some
-  // helpers don't exist in IntegrationTestHelpers yet; that's intentional —
-  // they fail at runtime with NoMethodError, which surfaces the gap to
-  // the SDK team rather than silently omitting the case.
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
-    return renderPostBody(kase);
+    return renderTelemetryBody(kase);
   }
 
-  // repeat + values_seen (qfg-t9wo): evaluate N times, assert the SET of
-  // values seen equals values_seen exactly (order-free). Compared as
-  // inspect-sorted, de-duplicated arrays so no `set` require is needed.
+  return renderEvalBody(kase);
+}
+
+/**
+ * The receiver + call for an eval case, driven through the PUBLIC API:
+ *
+ *   global tier -> Quonfig::Client.new(global_context: ...)
+ *   block tier  -> client.with_context(block)          (a BoundClient)
+ *   local tier  -> bound.in_context(local), or the getter's `context:` /
+ *                  enabled?'s jit-context argument when there is no block
+ *
+ * The SDK does the merging; the harness never pre-merges tiers.
+ */
+interface CallPlan {
+  setup: string[]; // lines before the call (without indent)
+  call: string; // Ruby expression
+}
+
+function planCall(kase: YamlCase): CallPlan {
+  const fn = (kase.function ?? 'get').toString();
+  const input = kase.input ?? {};
+  const key = caseKey(kase);
+  const keyLit = rubyLiteral(key);
+  const block = tier(kase, 'block');
+  const local = tier(kase, 'local');
+  const setup: string[] = [];
+
+  let receiver = 'client';
+  let jitLocal: ContextTypes | null = null;
+  if (block) {
+    setup.push(`scope = client.with_context(${rubyLiteral(block)})`);
+    if (local) setup.push(`scope = scope.in_context(${rubyLiteral(local)})`);
+    receiver = 'scope';
+  } else if (local) {
+    jitLocal = local;
+  }
+
+  const hasDefault = hasOwn(input, 'default');
+  const defLit = hasDefault ? rubyLiteral((input as { default?: unknown }).default) : '';
+
+  if (fn === 'enabled') {
+    if (hasDefault) throw new Error('function: enabled does not take input.default');
+    const args = [keyLit];
+    if (jitLocal) args.push(rubyLiteral(jitLocal));
+    return { setup, call: `${receiver}.enabled?(${args.join(', ')})` };
+  }
+
+  let method: string;
+  if (fn === 'get') {
+    method = typedGetter(kase);
+  } else if (fn === 'get_or_raise') {
+    method = 'get_or_raise';
+  } else {
+    throw new Error(`unsupported function ${JSON.stringify(fn)}`);
+  }
+  const args = [keyLit];
+  if (hasDefault) args.push(`default: ${defLit}`);
+  if (jitLocal) args.push(`context: ${rubyLiteral(jitLocal)}`);
+  return { setup, call: `${receiver}.${method}(${args.join(', ')})` };
+}
+
+function clientOptions(kase: YamlCase): string[] {
+  const opts: string[] = [];
+  const global = tier(kase, 'global');
+  if (global) opts.push(`global_context: ${rubyLiteral(global)}`);
+  const overrides = kase.client_overrides ?? {};
+  for (const k of Object.keys(overrides)) {
+    if (k === 'on_no_default') {
+      opts.push(`on_no_default: ${onNoDefaultSymbol(overrides.on_no_default)}`);
+    } else {
+      throw new Error(`unsupported client_overrides.${k} on an eval case`);
+    }
+  }
+  return opts;
+}
+
+/** Assertion lines for a non-raise eval case (no indent, no newline). */
+function valueAssertion(kase: YamlCase, call: string): string[] {
+  const expected = kase.expected ?? {};
+  // Failure message: the public call, without quotes (keeps the literal simple).
+  const msg = rubyLiteral(call.replace(/'/g, ''));
+  const isDuration = (kase.type ?? '').toString().toUpperCase() === 'DURATION' && kase.function !== 'enabled';
+
+  if (hasOwn(expected, 'millis')) {
+    if (!isDuration) throw new Error('expected.millis is only valid on a DURATION case');
+    const millis = expected.millis;
+    if (!Number.isInteger(millis)) {
+      throw new Error(`DURATION case must set expected.millis to an integer, got ${JSON.stringify(millis)}`);
+    }
+    // Integer-exact milliseconds: no tolerance, no Float.
+    return [`assert_kind_of Integer, actual, ${msg}`, `assert_equal ${rubyLiteral(millis)}, actual, ${msg}`];
+  }
+  if (!hasOwn(expected, 'value')) {
+    throw new Error('case has no expected.value or expected.millis');
+  }
+  const v = expected.value;
+  if (v === null || v === undefined) return [`assert_nil actual, ${msg}`];
+  if (isDuration) {
+    throw new Error(`DURATION case must set expected.millis (or expected.value: ~), got value ${JSON.stringify(v)}`);
+  }
+  // A Hash literal right after `assert_equal ` would parse as a block.
+  if (typeof v === 'object' && !Array.isArray(v)) return [`assert_equal(${rubyLiteral(v)}, actual, ${msg})`];
+  return [`assert_equal ${rubyLiteral(v)}, actual, ${msg}`];
+}
+
+/** Body for get / enabled / get_or_raise cases against the shared datadir corpus. */
+function renderEvalBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const envVars = kase.env_vars;
+  const envWrap = !!envVars && typeof envVars === 'object' && Object.keys(envVars).length > 0;
+  const indent = envWrap ? '      ' : '    ';
+
+  const opts = clientOptions(kase);
+  const plan = planCall(kase);
+
+  const lines: string[] = [];
+  lines.push(`client = IntegrationTestHelpers.build_client(${opts.join(', ')})`.replace('build_client()', 'build_client'));
+  lines.push(...plan.setup);
+
   const rspec = repeatSpec(kase);
   if (rspec) {
     repeatValueType(kase, rspec);
-    const key = (input.key ?? input.flag) as string | undefined;
-    if (!key || key.toString().length === 0) {
-      throw new Error('repeat case has no input.key/flag');
-    }
-    let body = '';
-    body += `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
-    body += `    ctx = Quonfig::Context.new(${rubyLiteral(merged)})\n`;
-    body += `    seen = Array.new(${rspec.repeat}) { resolver.get(${rubyLiteral(key)}, ctx)&.unwrapped_value }.uniq\n`;
-    body += `    assert_equal ${rubyLiteral(rspec.valuesSeen)}.sort_by(&:inspect), seen.sort_by(&:inspect),\n`;
-    body += `                 ${rubyLiteral(`expected values seen over ${rspec.repeat} evaluations`)}\n`;
-    return body;
-  }
-
-  // raise expectation
-  if (expected.status === 'raise') {
-    const errKey = expected.error;
-    if (typeof errKey !== 'string' || errKey.length === 0) {
-      throw new Error(`expected.status: raise but no expected.error provided`);
-    }
-    const errClass = lookupErrorClass('ruby', errKey);
-    if (!errClass) {
-      throw new Error(
-        `no Quonfig::Errors mapping for expected.error="${errKey}". ` +
-          `Add it to src/shared/error-mapping.ts (RUBY_ERRORS) or remove the case from YAML.`,
-      );
-    }
-
-    const key = (input.key ?? input.flag) as string | undefined;
-    if (!key || key.toString().length === 0) {
-      throw new Error('raise case has no input.key/flag');
-    }
-
-    const ctxLit = rubyLiteral(merged);
-    const keyLit = rubyLiteral(key);
-    let body = '';
-    // type: DURATION (qfg-2agi.4): raise through the PUBLIC typed getter.
-    const call = isDurationCase(kase)
-      ? `client.get_duration(${keyLit}, context: ctx)`
-      : `resolver.get(${keyLit}, ctx)`;
-    body += isDurationCase(kase)
-      ? `    client = IntegrationTestHelpers.build_client(@store)\n`
-      : `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
-    body += `    ctx = Quonfig::Context.new(${ctxLit})\n`;
-    if (envVars && typeof envVars === 'object') {
-      body += `    IntegrationTestHelpers.with_env(${rubyLiteral(stringifyEnvVars(envVars))}) do\n`;
-      body += `      assert_raises(${errClass}) { ${call} }\n`;
-      body += `    end\n`;
-    } else {
-      body += `    assert_raises(${errClass}) { ${call} }\n`;
-    }
-    return body;
-  }
-
-  // Happy path / non-raise expectation
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('case has no input.key/flag and no raise expectation');
-  }
-
-  let expectedValue: unknown;
-  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    expectedValue = expected.millis;
-  } else if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    expectedValue = expected.value;
-  } else {
-    throw new Error('case has no expected.value or expected.millis');
-  }
-
-  const ctxLit = rubyLiteral(merged);
-  const expLit = rubyLiteral(expectedValue);
-  const keyLit = rubyLiteral(key);
-  const fn = (kase.function ?? '').toString();
-  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
-  const def = (input as { default?: unknown }).default;
-
-  const isDuration = isDurationCase(kase) && fn !== 'enabled';
-  if (isDuration && !Number.isInteger(expectedValue)) {
-    throw new Error(
-      `DURATION case must set expected.millis to an integer, got ${JSON.stringify(expectedValue)}`,
+    lines.push(`seen = Array.new(${rspec.repeat}) { ${plan.call} }.uniq`);
+    lines.push(
+      `assert_equal ${rubyLiteral(rspec.valuesSeen)}.sort_by(&:inspect), seen.sort_by(&:inspect),`,
+      `             ${rubyLiteral(`expected values seen over ${rspec.repeat} evaluations`)}`,
     );
-  }
-
-  // The `assert_get_with_default` / `assert_duration` branches take `@store`
-  // directly and never touch `resolver`, so building one would trip
-  // Lint/UselessAssignment. Only emit the resolver setup line for branches
-  // that actually use it.
-  const needsResolver = !isDuration && (fn === 'enabled' || !hasDefault);
-
-  let inner = '';
-  if (needsResolver) {
-    inner += `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
-  }
-  const envWrap = envVars && typeof envVars === 'object';
-  if (envWrap) {
-    inner += `    IntegrationTestHelpers.with_env(${rubyLiteral(stringifyEnvVars(envVars))}) do\n`;
-  }
-  const indent = envWrap ? '      ' : '    ';
-
-  if (fn === 'enabled') {
-    // function: enabled — coerce non-bool to false. Use a dedicated helper
-    // so the bool-coercion semantics live in the helper, not inferred from
-    // the expected literal.
-    inner += `${indent}IntegrationTestHelpers.assert_enabled(self, resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
-  } else if (isDuration) {
-    // type: DURATION (qfg-2agi.4): assert through the PUBLIC
-    // Client#get_duration with an integer-exact millisecond comparison, so a
-    // green corpus says something about the getter a customer calls.
-    const defArg = hasDefault ? `, default: ${rubyLiteral(def)}` : '';
-    inner += `${indent}IntegrationTestHelpers.assert_duration(self, @store, ${keyLit}, ${ctxLit}, ${expLit}${defArg})\n`;
-  } else if (hasDefault) {
-    // input.default: thread through the SDK's get-with-default API. Build
-    // a real client over the loaded store so we observe what the SDK
-    // actually returns, not what a stubbed test helper returns.
-    inner += `${indent}IntegrationTestHelpers.assert_get_with_default(self, @store, ${keyLit}, ${ctxLit}, ${rubyLiteral(def)}, ${expLit})\n`;
+  } else if (expected.status === 'raise') {
+    lines.push(`assert_raises(${raiseClass(kase)}) { ${plan.call} }`);
   } else {
-    inner += `${indent}IntegrationTestHelpers.assert_resolved(self, resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
+    lines.push(`actual = ${plan.call}`);
+    lines.push(...valueAssertion(kase, plan.call));
   }
-  if (envWrap) {
-    inner += `    end\n`;
-  }
-  return inner;
-}
+  lines.push('IntegrationTestHelpers.acknowledge_expected_warnings');
 
-/** True iff the case is typed DURATION (asserted via Client#get_duration). */
-function isDurationCase(kase: YamlCase): boolean {
-  return typeof kase.type === 'string' && kase.type.toUpperCase() === 'DURATION';
+  let body = '';
+  if (envWrap) {
+    body += `    IntegrationTestHelpers.with_env(${rubyLiteral(stringifyEnvVars(envVars!))}) do\n`;
+  }
+  for (const l of lines) body += `${indent}${l}\n`;
+  if (envWrap) body += `    end\n`;
+  return body;
 }
 
 /** True iff client_overrides contains keys that drive Client construction. */
@@ -417,24 +497,16 @@ function hasClientConstructionOverrides(overrides: unknown): boolean {
 }
 
 /**
- * Render a body for a case that constructs a real Quonfig::Client (init
- * timeout, fake api url, init-failure policy). Supports both the raise path
- * (init timeout fires) and the recover path (on_init_failure: :return).
+ * Render a body for a case that constructs a network-mode Quonfig::Client
+ * (init timeout, fake api url, init-failure policy) and calls the YAML's
+ * function on it. With on_init_failure: :raise the constructor itself may
+ * raise the expected error, so construction sits inside the assert_raises.
  */
 function renderClientConstructionBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
   const overrides = kase.client_overrides ?? {};
-  const fn = (kase.function ?? 'get').toString();
   const indent = '    ';
 
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('client-construction case has no input.key/flag');
-  }
-  const keyLit = rubyLiteral(key);
-
-  const errKey = (expected.error ?? '').toString();
   const onInitFailure = (() => {
     const v = overrides.on_init_failure;
     if (typeof v !== 'string') return 'raise';
@@ -444,46 +516,53 @@ function renderClientConstructionBody(kase: YamlCase): string {
     typeof overrides.initialization_timeout_sec === 'number'
       ? overrides.initialization_timeout_sec
       : 0.01;
-  const apiURL =
-    typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
+  const apiURL = typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
+  if (tier(kase, 'global') || tier(kase, 'block') || tier(kase, 'local')) {
+    throw new Error('client-construction cases do not support contexts');
+  }
 
-  const isRaise = expected.status === 'raise';
-  if (isRaise && errKey === 'initialization_timeout') {
-    return (
-      `${indent}IntegrationTestHelpers.assert_initialization_timeout_error(self, ${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)})\n`
-    );
+  const build =
+    `IntegrationTestHelpers.build_network_client(api_url: ${rubyLiteral(apiURL)}, ` +
+    `timeout_sec: ${timeout}, on_init_failure: :${onInitFailure})`;
+  const plan = planCall(kase);
+
+  let body = '';
+  if (expected.status === 'raise') {
+    body += `${indent}client = nil\n`;
+    body += `${indent}assert_raises(${raiseClass(kase)}) do\n`;
+    body += `${indent}  client = ${build}\n`;
+    body += `${indent}  ${plan.call}\n`;
+    body += `${indent}end\n`;
+  } else {
+    body += `${indent}client = ${build}\n`;
+    body += `${indent}actual = ${plan.call}\n`;
+    for (const l of valueAssertion(kase, plan.call)) body += `${indent}${l}\n`;
   }
-  if (isRaise) {
-    // Other raise types via real-client path (e.g. missing_default with
-    // init returning zero value, then get_or_raise still raising).
-    const errClass = lookupErrorClass('ruby', errKey);
-    if (!errClass) {
-      throw new Error(
-        `no Quonfig::Errors mapping for expected.error="${errKey}" in client-construction case.`,
-      );
-    }
-    return (
-      `${indent}IntegrationTestHelpers.assert_client_construction_raises(self, ${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${errClass})\n`
-    );
+  // on_init_failure: :return logs the init failure on purpose; that log line
+  // IS the behavior the case asks for.
+  body += `${indent}$logs = nil\n`;
+  body += `  ensure\n`;
+  body += `${indent}client&.stop\n`;
+  return body;
+}
+
+/**
+ * Typed getter for the datadir / delivery suites, which have no contexts.
+ */
+function datadirCall(kase: YamlCase): string {
+  if (tier(kase, 'global') || tier(kase, 'block') || tier(kase, 'local')) {
+    throw new Error('datadir/delivery cases do not support contexts');
   }
-  // Happy path through real-client construction is rare; fall back to
-  // resolver-style assert if expected.value is set.
-  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    return (
-      `${indent}IntegrationTestHelpers.assert_client_construction_value(self, ${keyLit}, ${timeout}, ${rubyLiteral(apiURL)}, ${rubyLiteral(onInitFailure)}, ${rubyLiteral(fn)}, ${rubyLiteral(expected.value)})\n`
-    );
-  }
-  throw new Error('client-construction case has no expected.value or expected.error');
+  return `client.${typedGetter(kase)}(${rubyLiteral(caseKey(kase))})`;
 }
 
 /**
  * Render a datadir_environment.yaml case body. Builds a Quonfig::Client
  * directly with `datadir:` + `environment:` overrides, then exercises it
- * (or asserts init raises). No rescue wrapper — failures surface.
+ * through the typed getter (or asserts init raises).
  */
 function renderDatadirBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
   const overrides = kase.client_overrides ?? {};
   const envVars = kase.env_vars;
   const func = (kase.function ?? 'get').toString();
@@ -506,28 +585,13 @@ function renderDatadirBody(kase: YamlCase): string {
   }
 
   if (func === 'init' && expected.status === 'raise') {
-    const errKey = expected.error;
-    if (typeof errKey !== 'string' || errKey.length === 0) {
-      throw new Error('init raise case missing expected.error');
-    }
-    const errClass = lookupErrorClass('ruby', errKey);
-    if (!errClass) {
-      throw new Error(
-        `no Quonfig::Errors mapping for expected.error="${errKey}" in datadir init case. ` +
-          `Add it to src/shared/error-mapping.ts (RUBY_ERRORS).`,
-      );
-    }
-    body += `${indent}assert_raises(${errClass}) { Quonfig::Client.new(${optsLit}) }\n`;
+    body += `${indent}assert_raises(${raiseClass(kase)}) { Quonfig::Client.new(${optsLit}) }\n`;
   } else {
-    const key = (input.key ?? input.flag) as string | undefined;
-    if (!key || key.toString().length === 0) {
-      throw new Error('datadir get-case has no input.key/flag');
-    }
-    if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    if (!hasOwn(expected, 'value')) {
       throw new Error('datadir get-case has no expected.value');
     }
     body += `${indent}client = Quonfig::Client.new(${optsLit})\n`;
-    body += `${indent}assert_equal ${rubyLiteral(expected.value)}, client.get(${rubyLiteral(key)})\n`;
+    body += `${indent}assert_equal ${rubyLiteral(expected.value)}, ${datadirCall(kase)}\n`;
   }
 
   if (useEnv) {
@@ -538,13 +602,12 @@ function renderDatadirBody(kase: YamlCase): string {
 
 /**
  * Render a datadir_value_type.yaml case body. Builds a real datadir-mode
- * Quonfig::Client, asserts the public getter's coerced value, and — when
+ * Quonfig::Client, asserts the public typed getter's coerced value, and — when
  * `expected.raw_value_type == "number"` — ALSO asserts the LOADED envelope's
  * raw Value is a Numeric, not a String. `client.store` is a public
  * attr_reader; `store.get(key)` returns the raw ConfigResponse hash, whose
  * raw Value for a simple single-rule ALWAYS_TRUE config lives at
- * `['default']['rules'][0]['value']['value']`. A datadir loader that left
- * int/double as on-disk strings fails the `is_a?(Numeric)` assertion.
+ * `['default']['rules'][0]['value']['value']`.
  */
 function renderDatadirValueTypeBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
@@ -555,7 +618,7 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
   if (!key || key.toString().length === 0) {
     throw new Error('datadir_value_type case has no input.key/flag');
   }
-  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+  if (!hasOwn(expected, 'value')) {
     throw new Error('datadir_value_type case has no expected.value');
   }
   const rawType = expected.raw_value_type;
@@ -579,7 +642,7 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
 
   let body = '';
   body += `${indent}client = Quonfig::Client.new(${optsLit})\n`;
-  body += `${indent}assert_equal ${rubyLiteral(expected.value)}, client.get(${keyLit})\n`;
+  body += `${indent}assert_equal ${rubyLiteral(expected.value)}, ${datadirCall(kase)}\n`;
   if (rawType === 'number') {
     body += `${indent}raw_config = client.store.get(${keyLit})\n`;
     body += `${indent}refute_nil raw_config, ${rubyLiteral(`store.get(${key}) should be loaded`)}\n`;
@@ -591,39 +654,14 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
 }
 
 /**
- * Render a post.yaml / telemetry.yaml case body.
- *
- * Every such case has:
- *   aggregator:    one of context_shape | evaluation_summary | example_contexts
- *   endpoint:      "/api/v1/context-shapes" | "/api/v1/telemetry"
- *   data:          aggregator input — either keys array, single context hash,
- *                  or array of context hashes (depends on aggregator)
- *   expected_data: aggregator output to assert against (may be nil/empty)
- *   contexts:      optional context block (merged via mergeContexts)
- *   client_overrides: optional config flags (e.g. context_upload_mode)
- *
- * Generated Ruby invokes a small uniform helper API:
- *   IntegrationTestHelpers.build_aggregator(type, overrides_hash)
- *   IntegrationTestHelpers.feed_aggregator(agg, type, data, contexts: ctx)
- *   IntegrationTestHelpers.assert_aggregator_post(self, agg, type, expected, endpoint:)
- *
- * Some of those helpers may not exist on IntegrationTestHelpers yet. That's
- * fine — at runtime they raise NoMethodError, which surfaces the missing
- * helper to whoever is implementing the SDK side. Hiding the case via a
- * generator-side omission is strictly worse.
- */
-/**
  * Render a delivery_environment.yaml case body. Cross-SDK DELIVERY-WIRE-SHAPE
  * gate (qfg-xpln): stands up a WEBrick server returning the literal `envelope`
  * JSON on /api/v2/configs (the shape api-delivery emits in SDK-key mode),
  * builds a real Quonfig::Client in SDK-key mode (NO environment pin unless
- * client_overrides.environment is set), then asserts the resolved boolean.
- * Exercises the wire parse + meta.environment selection path the datadir tests
- * never touch. Modeled on the hand-written test_client_network_mode.rb.
+ * client_overrides.environment is set), then asserts the typed getter.
  */
 function renderDeliveryBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
   const overrides = kase.client_overrides ?? {};
   const envelope = kase.envelope;
   const indent = '    ';
@@ -631,11 +669,8 @@ function renderDeliveryBody(kase: YamlCase): string {
   if (!envelope || typeof envelope !== 'object') {
     throw new Error('delivery case has no `envelope` wire shape');
   }
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('delivery case has no input.key/flag');
-  }
-  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+  const key = caseKey(kase);
+  if (!hasOwn(expected, 'value')) {
     throw new Error('delivery case has no expected.value');
   }
   const expVal = expected.value;
@@ -668,7 +703,7 @@ function renderDeliveryBody(kase: YamlCase): string {
   body += `${indent}client = Quonfig::Client.new(\n`;
   body += kwargs.map((kw) => `${indent}  ${kw}`).join(',\n') + '\n';
   body += `${indent})\n`;
-  body += `${indent}assert_equal ${expVal ? 'true' : 'false'}, client.get(${rubyStringLiteral(key)}, :missing),\n`;
+  body += `${indent}assert_equal ${expVal ? 'true' : 'false'}, ${datadirCall(kase)},\n`;
   body += `${indent}             ${rubyStringLiteral(`delivery-wire env override: expected ${expVal} for ${key}`)}\n`;
   if ('environment' in overrides) {
     // An explicit env pin in delivery (SDK-key) mode is ignored, and the SDK
@@ -688,34 +723,111 @@ function renderDeliveryBody(kase: YamlCase): string {
   return body;
 }
 
-function renderPostBody(kase: YamlCase): string {
+/**
+ * Key evaluated to feed a context into the client's telemetry. Contexts only
+ * reach telemetry through an evaluation (Client#get & co. record them), so
+ * the context_shape / example_contexts cases evaluate this static config
+ * under each `data` context. Its eval summary is not part of those
+ * projections.
+ */
+const CONTEXT_PROBE_KEY = 'brand.new.string';
+
+/**
+ * Render a post.yaml / telemetry.yaml case body (qfg-2agi.33).
+ *
+ * Every such case has:
+ *   aggregator:    one of context_shape | evaluation_summary | example_contexts
+ *   endpoint:      "/api/v1/context-shapes" | "/api/v1/telemetry" (diagnostic)
+ *   data:          evaluation_summary -> { keys:, keys_without_context: }
+ *                  context_shape / example_contexts -> a context hash or an
+ *                  array of context hashes
+ *   expected_data: projected POST body (nil = nothing sent)
+ *   contexts:      optional block tier for evaluation_summary keys
+ *   client_overrides: context_upload_mode / collect_evaluation_summaries
+ *
+ * The generated test builds a datadir client WITH telemetry on, pointed at a
+ * local sink; evaluates through the public client (get_or_raise, scoped with
+ * with_context); flushes the client's real reporter; and asserts on what was
+ * POSTed. No aggregator is built or fed by the harness.
+ */
+function renderTelemetryBody(kase: YamlCase): string {
   const aggregator = (kase.aggregator ?? '').toString();
-  if (aggregator.length === 0) {
-    throw new Error('post/telemetry case missing aggregator');
+  if (!['context_shape', 'evaluation_summary', 'example_contexts'].includes(aggregator)) {
+    throw new Error(`post/telemetry case has unsupported aggregator ${JSON.stringify(aggregator)}`);
   }
   const endpoint = (kase.endpoint ?? '').toString();
   if (endpoint.length === 0) {
     throw new Error('post/telemetry case missing endpoint');
   }
+  if (tier(kase, 'global') || tier(kase, 'local')) {
+    throw new Error('post/telemetry cases only support the block context tier');
+  }
+  const block = tier(kase, 'block');
 
-  const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
-  const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
-    ? kase.expected_data
-    : null;
+  const data = hasOwn(kase, 'data') ? kase.data : null;
+  const expectedData = hasOwn(kase, 'expected_data') ? kase.expected_data : null;
+
+  const opts: string[] = [];
   const overrides = kase.client_overrides ?? {};
-  const merged = mergeContexts(kase.contexts);
+  for (const [k, v] of Object.entries(overrides)) {
+    if (k === 'context_upload_mode') {
+      opts.push(`context_upload_mode: ${contextUploadModeSymbol(v)}`);
+    } else if (k === 'collect_evaluation_summaries') {
+      opts.push(`collect_evaluation_summaries: ${rubyLiteral(v)}`);
+    } else {
+      throw new Error(`unsupported client_overrides.${k} on a telemetry case`);
+    }
+  }
 
-  const aggLit = ':' + aggregator;
-  const overridesLit = rubyLiteral(overrides);
-  const dataLit = rubyLiteral(data);
-  const expectedLit = rubyLiteral(expectedData);
-  const endpointLit = rubyLiteral(endpoint);
-  const ctxLit = rubyLiteral(merged);
+  const indent = '    ';
+  const lines: string[] = [];
+  lines.push('sink = IntegrationTestHelpers::TelemetrySink.start');
+  lines.push(`client = IntegrationTestHelpers.build_telemetry_client(${['sink', ...opts].join(', ')})`);
+
+  let returnedArg = '';
+  if (aggregator === 'evaluation_summary') {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('evaluation_summary data must be { keys:, keys_without_context: }');
+    }
+    const d = data as Record<string, unknown>;
+    const keys = Array.isArray(d.keys) ? (d.keys as unknown[]) : [];
+    const keysNoCtx = Array.isArray(d.keys_without_context) ? (d.keys_without_context as unknown[]) : [];
+    if (keysNoCtx.length > 0 && !block) {
+      throw new Error('keys_without_context without a block context is meaningless');
+    }
+    lines.push('returned = Hash.new { |h, k| h[k] = [] }');
+    if (keys.length > 0) {
+      const receiver = block ? 'scope' : 'client';
+      if (block) lines.push(`scope = client.with_context(${rubyLiteral(block)})`);
+      for (const k of keys) {
+        lines.push(`returned[${rubyLiteral(k)}] << ${receiver}.get_or_raise(${rubyLiteral(k)})`);
+      }
+    }
+    for (const k of keysNoCtx) {
+      lines.push(`returned[${rubyLiteral(k)}] << client.get_or_raise(${rubyLiteral(k)})`);
+    }
+    returnedArg = ', returned: returned';
+  } else {
+    if (block) throw new Error(`${aggregator} cases take their contexts from data, not contexts`);
+    const records = Array.isArray(data) ? data : [data ?? {}];
+    for (const rec of records) {
+      if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
+        throw new Error(`${aggregator} data must be a context hash or an array of them`);
+      }
+      lines.push(`client.with_context(${rubyLiteral(rec)}).get_or_raise(${rubyLiteral(CONTEXT_PROBE_KEY)})`);
+    }
+  }
+
+  lines.push(
+    `IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :${aggregator}, ${rubyLiteral(expectedData)},`,
+    `                                             endpoint: ${rubyLiteral(endpoint)}${returnedArg})`,
+  );
 
   let body = '';
-  body += `    aggregator = IntegrationTestHelpers.build_aggregator(${aggLit}, ${overridesLit})\n`;
-  body += `    IntegrationTestHelpers.feed_aggregator(aggregator, ${aggLit}, ${dataLit}, contexts: ${ctxLit})\n`;
-  body += `    IntegrationTestHelpers.assert_aggregator_post(self, aggregator, ${aggLit}, ${expectedLit}, endpoint: ${endpointLit})\n`;
+  for (const l of lines) body += `${indent}${l}\n`;
+  body += `  ensure\n`;
+  body += `${indent}client&.stop\n`;
+  body += `${indent}sink&.stop\n`;
   return body;
 }
 
@@ -796,18 +908,12 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   out += `require 'integration/test_helpers'\n`;
   out += `\n`;
   out += `class ${suite.className} < Minitest::Test\n`;
-  out += `  def setup\n`;
-  out += `    @store = IntegrationTestHelpers.build_store(${rubyLiteral(stripExt(suite.yaml))})\n`;
-  out += `  end\n`;
-  for (const r of rendered) {
-    out += r.source;
-  }
+  rendered.forEach((r, i) => {
+    // Layout/EmptyLinesAroundClassBody: no blank line right after `class`.
+    out += i === 0 ? r.source.replace(/^\n/, '') : r.source;
+  });
   out += `end\n`;
   return out;
-}
-
-function stripExt(name: string): string {
-  return name.endsWith('.yaml') ? name.slice(0, -'.yaml'.length) : name;
 }
 
 export interface RubyRunResult {

@@ -1,17 +1,24 @@
 // Go target — generates *_generated_test.go files under
 // sdk-go/internal/fixtures/, one per YAML suite.
 //
+// Every case drives the PUBLIC quonfig.Client exactly as a customer would
+// (qfg-2agi.31): typed getters chosen by the YAML `type:`, FeatureIsOn for
+// `function: enabled`, the (value, ok, err) triple as both the no-default and
+// the get_or_raise form, context tiers fed through WithGlobalContext /
+// WithContext / the per-call ctx (never pre-merged here), and telemetry
+// asserted on the wire bytes the real client flushes on Close(). The
+// hand-written helpers in sdk-go/internal/fixtures/*_helpers_test.go only
+// build clients and decode payloads; they must never evaluate, resolve,
+// coerce or aggregate on the SDK's behalf.
+//
 // Hard rules (set by project owner):
 //
 //   1. NO auto-skips, NO omissions, NO defensive shortcuts. Every YAML case
-//      becomes a real, runnable Go test function. Cases the SDK can't yet
-//      satisfy emit code that calls a sensibly-named helper or sentinel —
-//      runtime/compile failure is the *desired* surfacing behavior, not a
-//      hidden gap.
+//      becomes a real, runnable Go test function against the public API.
 //
-//   2. Unmapped raise errors and missing input keys FAIL the generator
-//      (not the test). Better to stop here with a clear pointer than to
-//      silently emit broken code.
+//   2. Unmapped raise errors, unsupported shapes and missing input keys FAIL
+//      the generator (not the test). Better to stop here with a clear
+//      pointer than to silently emit broken code.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -21,9 +28,7 @@ import {
   goTestFunctionName,
   uniqueGoSuffix,
 } from '../shared/case-id.js';
-import { mergeContexts } from '../shared/contexts.js';
-import { lookupErrorClass } from '../shared/error-mapping.js';
-import { repeatSpec, repeatValueType, type RepeatSpec } from '../shared/repeat.js';
+import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -144,35 +149,6 @@ function goContextLiteral(ctx: ContextTypes): string {
   return 'map[string]map[string]interface{}{' + lines.join(', ') + '}';
 }
 
-/**
- * Build the three-arg `buildContextFromMaps(global, block, local)` call.
- * Uses `nil` for empty tiers to keep the call site readable.
- */
-function buildContextCall(kase: YamlCase): string {
-  const ctxBlock = kase.contexts ?? {};
-  const global = (ctxBlock.global ?? null) as ContextTypes | null;
-  const block = (ctxBlock.block ?? null) as ContextTypes | null;
-  const local = (ctxBlock.local ?? null) as ContextTypes | null;
-  const lit = (c: ContextTypes | null): string =>
-    c == null ? 'nil' : goContextLiteral(c);
-  return `buildContextFromMaps(${lit(global)}, ${lit(block)}, ${lit(local)})`;
-}
-
-/**
- * Build the three-arg `buildPublicContext(global, block, local)` call, which
- * returns a `*quonfig.ContextSet` for the public Client getters. Same tier
- * layout as {@link buildContextCall}.
- */
-function buildPublicContextCall(kase: YamlCase): string {
-  const ctxBlock = kase.contexts ?? {};
-  const global = (ctxBlock.global ?? null) as ContextTypes | null;
-  const block = (ctxBlock.block ?? null) as ContextTypes | null;
-  const local = (ctxBlock.local ?? null) as ContextTypes | null;
-  const lit = (c: ContextTypes | null): string =>
-    c == null ? 'nil' : goContextLiteral(c);
-  return `buildPublicContext(${lit(global)}, ${lit(block)}, ${lit(local)})`;
-}
-
 // ---------------------------------------------------------------------------
 // Per-suite rendering
 // ---------------------------------------------------------------------------
@@ -223,22 +199,198 @@ function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderResult {
   return { rendered, features };
 }
 
+/** Render one context tier as a `contextSet(...)` call (a `*quonfig.ContextSet`). */
+function goContextSetExpr(ctx: ContextTypes): string {
+  return `contextSet(${goContextLiteral(ctx)})`;
+}
+
+function nonEmptyTier(ctx: unknown): ContextTypes | null {
+  if (!ctx || typeof ctx !== 'object') return null;
+  if (Object.keys(ctx as object).length === 0) return null;
+  return ctx as ContextTypes;
+}
+
+interface Tiers {
+  global: ContextTypes | null;
+  block: ContextTypes | null;
+  local: ContextTypes | null;
+}
+
+function caseTiers(kase: YamlCase): Tiers {
+  const c = kase.contexts ?? {};
+  return {
+    global: nonEmptyTier(c.global),
+    block: nonEmptyTier(c.block),
+    local: nonEmptyTier(c.local),
+  };
+}
+
+/**
+ * Render a public getter call on client `c` with the case's context tiers
+ * fed through the SDK's own APIs (never pre-merged here):
+ *   global -> quonfig.WithGlobalContext at construction (see clientSetup)
+ *   block  -> c.WithContext(block)          (ContextBoundClient)
+ *   local  -> the per-call ctx argument, or .WithContext(local) on a bound client
+ */
+function getterCallExpr(method: string, keyLit: string, tiers: Tiers): string {
+  if (tiers.block) {
+    let recv = `c.WithContext(${goContextSetExpr(tiers.block)})`;
+    if (tiers.local) recv += `.WithContext(${goContextSetExpr(tiers.local)})`;
+    return `${recv}.${method}(${keyLit})`;
+  }
+  const local = tiers.local ? goContextSetExpr(tiers.local) : 'nil';
+  return `c.${method}(${keyLit}, ${local})`;
+}
+
+/**
+ * The `c := ...` line: the shared datadir client, a fresh one carrying the
+ * global tier via quonfig.WithGlobalContext, or an init-timeout client for
+ * the client-construction overrides.
+ */
+function clientSetup(kase: YamlCase, tiers: Tiers): string {
+  const overrides = kase.client_overrides ?? {};
+  if (hasClientConstructionOverridesGo(overrides)) {
+    if (tiers.global) {
+      throw new Error('global context with init-timeout client overrides is unsupported');
+    }
+    const timeoutSec =
+      typeof overrides.initialization_timeout_sec === 'number'
+        ? overrides.initialization_timeout_sec
+        : 0.01;
+    const apiURL = typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
+    if (apiURL.length === 0) {
+      throw new Error('init-timeout case needs client_overrides.prefab_api_url');
+    }
+    const onInit =
+      typeof overrides.on_init_failure === 'string'
+        ? overrides.on_init_failure.replace(/^:/, '')
+        : 'raise';
+    return `\tc := newInitTimeoutClient(t, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInit)})\n`;
+  }
+  for (const k of Object.keys(overrides)) {
+    // on_no_default only selects which YAML expectation applies (absent
+    // value vs raise); Go's (value, ok, err) getters carry both.
+    if (k !== 'on_no_default') {
+      throw new Error(`unsupported client_override for an eval case: ${k}`);
+    }
+  }
+  if (tiers.global) {
+    return `\tc := newPublicClient(t, quonfig.WithGlobalContext(${goContextSetExpr(tiers.global)}))\n`;
+  }
+  return `\tc := mustPublicClient(t)\n`;
+}
+
+function envVarLines(kase: YamlCase): string {
+  const envVars = kase.env_vars;
+  if (!envVars || typeof envVars !== 'object') return '';
+  let out = '';
+  for (const [k, v] of Object.entries(envVars)) {
+    const sval = v === null || v === undefined ? '' : String(v);
+    out += `\tt.Setenv(${goStringLiteral(k)}, ${goStringLiteral(sval)})\n`;
+  }
+  return out;
+}
+
+interface GoGetter {
+  method: string;
+  /** Render the expected value as a Go expression of the getter's type. */
+  lit: (v: unknown) => string;
+  /** JSON values compare through assertJSONValue, not assert.Equal. */
+  json?: boolean;
+}
+
+function intLit(v: unknown): string {
+  if (typeof v !== 'number' || !Number.isInteger(v)) {
+    throw new Error(`expected an integer, got ${JSON.stringify(v)}`);
+  }
+  return `int64(${v})`;
+}
+
+function millisLit(v: unknown): string {
+  if (typeof v !== 'number' || !Number.isInteger(v)) {
+    throw new Error(`duration milliseconds must be an integer, got ${JSON.stringify(v)}`);
+  }
+  return `time.Duration(${v}) * time.Millisecond`;
+}
+
+/** Pick the public typed getter for the YAML `type:` (or infer it from the value). */
+function goGetterFor(yamlType: string, sample: unknown): GoGetter {
+  switch (yamlType) {
+    case 'STRING':
+    case 'LOG_LEVEL':
+      return {
+        method: 'GetStringValue',
+        lit: (v) => {
+          if (typeof v !== 'string') throw new Error(`STRING value is ${typeof v}`);
+          return goStringLiteral(v);
+        },
+      };
+    case 'INT':
+      return { method: 'GetIntValue', lit: intLit };
+    case 'DOUBLE':
+      return {
+        method: 'GetFloatValue',
+        lit: (v) => {
+          if (typeof v !== 'number') throw new Error(`DOUBLE value is ${typeof v}`);
+          return formatDouble(v);
+        },
+      };
+    case 'BOOLEAN':
+      return {
+        method: 'GetBoolValue',
+        lit: (v) => {
+          if (typeof v !== 'boolean') throw new Error(`BOOLEAN value is ${typeof v}`);
+          return String(v);
+        },
+      };
+    case 'STRING_LIST':
+      return {
+        method: 'GetStringSliceValue',
+        lit: (v) => {
+          if (!Array.isArray(v)) throw new Error('STRING_LIST value is not a list');
+          return goStringListLiteral(v);
+        },
+      };
+    case 'JSON':
+      return { method: 'GetJSONValue', lit: goLiteralValue, json: true };
+    case 'DURATION':
+      return { method: 'GetDurationValue', lit: millisLit };
+    case '':
+      if (typeof sample === 'string') return goGetterFor('STRING', sample);
+      if (typeof sample === 'boolean') return goGetterFor('BOOLEAN', sample);
+      if (typeof sample === 'number' && Number.isInteger(sample)) return goGetterFor('INT', sample);
+      if (typeof sample === 'number') return goGetterFor('DOUBLE', sample);
+      throw new Error(`case has no type and value ${JSON.stringify(sample)}; can't pick a getter`);
+    default:
+      throw new Error(`unsupported YAML type: ${yamlType}`);
+  }
+}
+
+/**
+ * YAML error key -> exported sdk-go sentinel. Target-local on purpose: the
+ * shared GO_ERRORS map in src/shared/error-mapping.ts predates the
+ * public-API harness and lacks most of these.
+ */
+const GO_PUBLIC_ERRORS: Record<string, string> = {
+  missing_default: 'quonfig.ErrNotFound',
+  missing_env_var: 'quonfig.ErrMissingEnvVar',
+  unable_to_coerce_env_var: 'quonfig.ErrUnableToCoerce',
+  unable_to_decrypt: 'quonfig.ErrUnableToDecrypt',
+  initialization_timeout: 'quonfig.ErrInitializationTimeout',
+};
+
 /**
  * Render a single test function body (everything between the opening `{`
  * and closing `}`). Returns text with a trailing newline.
  *
- * Branches:
- *   - datadir_environment.yaml  → quonfig.NewClient(...) directly
- *   - post.yaml / telemetry.yaml → uniform aggregator helper trio
- *   - resolve-time raise        → assertResolveError
- *   - missing_default raise     → config-not-found assertion
- *   - initialization_timeout    → assertInitializationTimeoutError helper
- *                                 (does not exist yet — runtime/compile
- *                                  failure is the desired surface)
- *   - DURATION (expected.millis) → public Client.GetDurationValue via
- *                                 assertDurationMillis (integer-exact)
- *   - happy path                → mustLookupConfig + evaluateAndResolve +
- *                                 assert<Type>Value
+ * Every branch drives the PUBLIC quonfig.Client (qfg-2agi.31):
+ *   - datadir_environment / datadir_value_type / delivery_environment:
+ *     their own quonfig.NewClient(...) construction cases
+ *   - post.yaml / telemetry.yaml: a real client with telemetry pointed at a
+ *     local recorder, drained by Close()
+ *   - everything else: typed getter / FeatureIsOn on a datadir client, with
+ *     the YAML's `type:` and `function:` honoured and the context tiers fed
+ *     through WithGlobalContext / WithContext / the ctx argument.
  */
 function renderBody(
   suite: SuiteEntry,
@@ -281,333 +433,165 @@ function renderBody(
     );
   }
 
-  // Cases that drive real-Client construction (init timeout, fake api URL,
-  // init-failure policy) need a real quonfig.NewClient(...) so the SDK's
-  // init/timeout path actually runs. The resolver-only path can't observe
-  // init-timeout because the resolver is built off a fully loaded store.
-  // The helpers (assertInitializationTimeoutError /
-  // assertClientConstructionRaises / assertClientConstructionMissingDefault
-  // / assertClientConstructionValue) live in test_helpers_test.go and pull
-  // in their own quonfig/errors imports — the generated file body only
-  // calls the helper, so we don't add quonfig/errors to features here.
-  if (hasClientConstructionOverridesGo(kase.client_overrides)) {
-    return renderClientConstructionBodyGo(kase);
-  }
-
   if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
-    // The aggregator helpers (BuildAggregator/FeedAggregator/...) are
-    // expected to live alongside the existing fixtures helpers in
-    // sdk-go/internal/fixtures/. Their signatures will reach into the
-    // SDK's `eval` and `telemetry` packages to construct real evaluations
-    // and assertions — but that's the SDK team's implementation choice.
-    // The generated file itself doesn't need either import; if it does
-    // import them later for type hints, the SDK can amend the helper
-    // file rather than the generated one.
-    return renderPostBody(kase);
+    return renderTelemetryBody(kase, features);
   }
 
+  return renderEvalBody(kase, features);
+}
+
+function renderEvalBody(kase: YamlCase, features: Set<string>): string {
   const expected = kase.expected ?? {};
   const input = kase.input ?? {};
-  const envVars = kase.env_vars;
-
-  const rspec = repeatSpec(kase);
-  if (rspec) {
-    return renderRepeatBody(kase, rspec);
-  }
-
-  if (expected.status === 'raise') {
-    return renderRaiseBody(kase, features);
-  }
+  const fn = (kase.function ?? 'get').toString();
+  const yamlType = (kase.type ?? '').toString().toUpperCase();
+  const tiers = caseTiers(kase);
 
   const key = (input.key ?? input.flag) as string | undefined;
   if (!key || key.toString().length === 0) {
-    throw new Error('case has no input.key/flag and no raise expectation');
+    throw new Error('case has no input.key/flag');
+  }
+  const keyLit = goStringLiteral(key);
+
+  if (fn !== 'get' && fn !== 'get_or_raise' && fn !== 'enabled') {
+    throw new Error(`unsupported function: ${fn}`);
   }
 
+  features.add('assert');
+  if (tiers.global) features.add('quonfig');
+
+  let body = '';
+  body += envVarLines(kase);
+  body += clientSetup(kase, tiers);
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times through the public
+  // getter and assert the SET of values seen.
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    if (fn === 'enabled') throw new Error('repeat is not supported with function: enabled');
+    const vt = repeatValueType(kase, rspec);
+    const getter = goGetterFor(vt === 'INT' ? 'INT' : 'STRING', rspec.valuesSeen[0]);
+    const goType = vt === 'INT' ? 'int64' : 'string';
+    features.add('require');
+    body += `\tseen := map[${goType}]bool{}\n`;
+    body += `\tfor i := 0; i < ${rspec.repeat}; i++ {\n`;
+    body += `\t\tgot, ok, err := ${getterCallExpr(getter.method, keyLit, tiers)}\n`;
+    body += `\t\trequire.NoError(t, err)\n`;
+    body += `\t\trequire.True(t, ok, "evaluation %d of %q found no value", i, ${keyLit})\n`;
+    body += `\t\tseen[got] = true\n`;
+    body += `\t}\n`;
+    body += `\tassert.Equal(t, map[${goType}]bool{${rspec.valuesSeen
+      .map((v) => `${getter.lit(v)}: true`)
+      .join(', ')}}, seen, "values seen over ${rspec.repeat} evaluations")\n`;
+    return body;
+  }
+
+  // function: enabled -> FeatureIsOn (absent / non-boolean -> false).
+  if (fn === 'enabled') {
+    if (expected.status === 'raise') throw new Error('enabled cannot raise');
+    if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
+      throw new Error('enabled case has no expected.value');
+    }
+    const want = expected.value === true;
+    if (expected.value !== null && typeof expected.value !== 'boolean') {
+      throw new Error(`enabled expected.value must be a boolean, got ${JSON.stringify(expected.value)}`);
+    }
+    body += `\ton, _ := ${getterCallExpr('FeatureIsOn', keyLit, tiers)}\n`;
+    body += `\tassert.Equal(t, ${want}, on, "FeatureIsOn(%q)", ${keyLit})\n`;
+    return body;
+  }
+
+  // Raise: the (value, ok, err) form IS Go's get_or_raise — the error is
+  // the raise, compared by sentinel with errors.Is.
+  if (expected.status === 'raise') {
+    const errKey = (expected.error ?? '').toString();
+    const sentinel = GO_PUBLIC_ERRORS[errKey];
+    if (!sentinel) {
+      throw new Error(
+        `no Go error mapping for expected.error="${errKey}"; add it to GO_PUBLIC_ERRORS in src/targets/go.ts`,
+      );
+    }
+    const getter = goGetterFor(yamlType === '' ? 'STRING' : yamlType, undefined);
+    features.add('quonfig');
+    const onInit = (kase.client_overrides ?? {}).on_init_failure;
+    const zeroValuePolicy =
+      typeof onInit === 'string' && onInit.replace(/^:/, '') === 'return';
+    body += `\t_, ok, err := ${getterCallExpr(getter.method, keyLit, tiers)}\n`;
+    body += `\tassert.False(t, ok, "%q must have no value", ${keyLit})\n`;
+    if (zeroValuePolicy) {
+      // on_init_failure :return maps to quonfig.ReturnZeroValue, documented
+      // as "getters return zero values" — no error. The init timeout must
+      // not surface; "no value" is ok=false.
+      if (errKey !== 'missing_default') {
+        throw new Error(`on_init_failure :return with expected.error=${errKey} is unsupported`);
+      }
+      body += `\tassert.NotErrorIs(t, err, quonfig.ErrInitializationTimeout, "ReturnZeroValue must not surface the init timeout")\n`;
+    } else {
+      features.add('require');
+      body += `\trequire.ErrorIs(t, err, ${sentinel})\n`;
+    }
+    return body;
+  }
+
+  // Value expectations.
   let expectedValue: unknown;
   let isMillis = false;
   if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
     expectedValue = expected.millis;
     isMillis = true;
+    if (yamlType !== 'DURATION') throw new Error('expected.millis on a non-DURATION case');
   } else if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
     expectedValue = expected.value;
+    if (yamlType === 'DURATION' && expectedValue !== null && expectedValue !== undefined) {
+      throw new Error('DURATION type with a non-null expected.value (use expected.millis)');
+    }
   } else {
     throw new Error('case has no expected.value or expected.millis');
   }
 
-  const fn = (kase.function ?? '').toString();
-  const yamlType = (kase.type ?? '').toString().toUpperCase();
-
-  const indent = '\t';
-  let body = '';
-
-  // Optional env var overrides via t.Setenv — Go's testing package handles
-  // restoration. Useful if any non-datadir suite ever uses env_vars.
-  if (envVars && typeof envVars === 'object') {
-    for (const [k, v] of Object.entries(envVars)) {
-      const sval = v === null || v === undefined ? '' : String(v);
-      body += `${indent}t.Setenv(${goStringLiteral(k)}, ${goStringLiteral(sval)});\n`;
-    }
-  }
-
-  // input.default present: route through assertGetWithDefault, which
-  // mirrors the SDK's get-with-default semantic (missing-key → default,
-  // found-key → resolved value, default ignored). The Go SDK lacks a
-  // public default-arg getter; the helper bridges that gap.
   const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
-  if (hasDefault && !isMillis && expectedValue !== null && expectedValue !== undefined) {
-    const def = (input as { default?: unknown }).default;
-    body += `${indent}ctx := ${buildContextCall(kase)}\n`;
-    body += `${indent}assertGetWithDefault(t, ${goStringLiteral(key)}, ctx, ${goLiteralValue(def)}, ${goLiteralValue(expectedValue)})\n`;
-    return body;
-  }
+  const def = (input as { default?: unknown }).default;
+  const getter = goGetterFor(yamlType, hasDefault ? def : expectedValue);
+  if (yamlType === 'DURATION' || isMillis) features.add('time');
+  const call = getterCallExpr(getter.method, keyLit, tiers);
 
-  // DURATION cases go through the PUBLIC typed getter
-  // (Client.GetDurationValue) — what a customer calls — and compare the
-  // returned time.Duration integer-exactly against expected.millis. No
-  // test-only parser, no tolerance (qfg-2agi.4).
-  if (isMillis) {
-    const ms = expectedValue as number;
-    if (typeof ms !== 'number' || !Number.isInteger(ms)) {
-      throw new Error(`expected.millis must be an integer, got ${JSON.stringify(ms)}`);
-    }
-    body += `${indent}ctx := ${buildPublicContextCall(kase)}\n`;
-    body += `${indent}assertDurationMillis(t, ${goStringLiteral(key)}, ctx, ${ms.toString()})\n`;
-    return body;
-  }
-
-  body += `${indent}cfg := mustLookupConfig(t, ${goStringLiteral(key)})\n`;
-  body += `${indent}ctx := ${buildContextCall(kase)}\n`;
-  body += `${indent}match, err := evaluateAndResolve(t, cfg, ctx)\n`;
-  body += `${indent}if err != nil {\n`;
-  body += `${indent}\tt.Fatalf("resolver error: %v", err)\n`;
-  body += `${indent}}\n`;
-
-  // Pick the assertion based on type/function/value shape.
+  // No value expected (on_no_default / absent): Go's absent value is the
+  // zero value with ok=false.
   if (expectedValue === null || expectedValue === undefined) {
-    body += `${indent}assertNilValue(t, match)\n`;
+    if (hasDefault) throw new Error('a default with a null expected value is contradictory');
+    body += `\tgot, ok, _ := ${call}\n`;
+    body += `\tassert.False(t, ok, "%q must have no value", ${keyLit})\n`;
+    body += `\tassert.Zero(t, got)\n`;
     return body;
   }
 
-  if (fn === 'enabled') {
-    body += `${indent}assertEnabledValue(t, match, ${expectedValue === true})\n`;
+  const wantLit = getter.lit(expectedValue);
+  if (hasDefault) {
+    // Go has no default-argument getter; a customer applies the default
+    // when the getter reports ok=false. A getter that reports ok=true with
+    // a wrong value bypasses the default and fails here.
+    if (getter.json) throw new Error('JSON with input.default is unsupported');
+    body += `\tgot, ok, _ := ${call}\n`;
+    body += `\tif !ok {\n`;
+    body += `\t\tgot = ${getter.lit(def)}\n`;
+    body += `\t}\n`;
+    body += `\twant := ${wantLit}\n`;
+    body += `\tassert.Equal(t, want, got)\n`;
     return body;
   }
 
-  switch (yamlType) {
-    case 'STRING':
-      if (typeof expectedValue !== 'string') {
-        throw new Error(`STRING type but expected.value is ${typeof expectedValue}`);
-      }
-      body += `${indent}assertStringValue(t, match, ${goStringLiteral(expectedValue)})\n`;
-      return body;
-    case 'INT':
-      if (typeof expectedValue !== 'number' || !Number.isInteger(expectedValue)) {
-        throw new Error(`INT type but expected.value is not an integer: ${expectedValue}`);
-      }
-      body += `${indent}assertIntValue(t, match, ${expectedValue.toString()})\n`;
-      return body;
-    case 'DOUBLE':
-      if (typeof expectedValue !== 'number') {
-        throw new Error(`DOUBLE type but expected.value is not a number: ${expectedValue}`);
-      }
-      body += `${indent}assertDoubleValue(t, match, ${formatDouble(expectedValue)})\n`;
-      return body;
-    case 'BOOLEAN':
-      body += `${indent}assertBoolValue(t, match, ${expectedValue === true})\n`;
-      return body;
-    case 'STRING_LIST':
-      if (!Array.isArray(expectedValue)) {
-        throw new Error(`STRING_LIST type but expected.value is not an array`);
-      }
-      body += `${indent}assertStringListValue(t, match, ${goStringListLiteral(expectedValue)})\n`;
-      return body;
-    case 'JSON':
-      if (typeof expectedValue !== 'object' || Array.isArray(expectedValue)) {
-        throw new Error(`JSON type but expected.value is not an object`);
-      }
-      body += `${indent}assertJSONValue(t, match, ${goLiteralValue(expectedValue)})\n`;
-      return body;
-    case 'DURATION':
-      // Duration cases use `expected.millis`, handled above; reaching here
-      // means the YAML used `expected.value` for a duration, which is an
-      // unsupported shape.
-      throw new Error('DURATION type with expected.value (not millis) is unsupported');
-    case '':
-      // No type given — infer from value shape. context_precedence has some
-      // cases without `type:` but with boolean `value:`. Treat boolean as
-      // enabled-style.
-      if (typeof expectedValue === 'boolean') {
-        body += `${indent}assertEnabledValue(t, match, ${expectedValue})\n`;
-        return body;
-      }
-      if (typeof expectedValue === 'string') {
-        body += `${indent}assertStringValue(t, match, ${goStringLiteral(expectedValue)})\n`;
-        return body;
-      }
-      if (typeof expectedValue === 'number' && Number.isInteger(expectedValue)) {
-        body += `${indent}assertIntValue(t, match, ${expectedValue.toString()})\n`;
-        return body;
-      }
-      if (typeof expectedValue === 'number') {
-        body += `${indent}assertDoubleValue(t, match, ${formatDouble(expectedValue)})\n`;
-        return body;
-      }
-      throw new Error(
-        `case has no type and value is ${typeof expectedValue}; can't pick assertion`,
-      );
-    default:
-      throw new Error(`unsupported YAML type: ${yamlType}`);
+  features.add('require');
+  body += `\tgot, ok, err := ${call}\n`;
+  body += `\trequire.NoError(t, err)\n`;
+  body += `\trequire.True(t, ok, "%q found no value", ${keyLit})\n`;
+  // Bind want at statement level so gofmt keeps the emitted spacing.
+  body += `\twant := ${wantLit}\n`;
+  if (getter.json) {
+    body += `\tassertJSONValue(t, want, got)\n`;
+  } else {
+    body += `\tassert.Equal(t, want, got)\n`;
   }
-}
-
-/**
- * `repeat` + `expected.values_seen` (qfg-t9wo): evaluate `repeat` times with
- * the same context and assert the set of values seen equals `values_seen`.
- * Set equality = same size + every expected value present (values_seen is
- * validated duplicate-free), so no extra imports are needed.
- */
-function renderRepeatBody(kase: YamlCase, spec: RepeatSpec): string {
-  const key = ((kase.input ?? {}).key ?? (kase.input ?? {}).flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('repeat case has no input.key/flag');
-  }
-  const vt = repeatValueType(kase, spec);
-  const goType = vt === 'INT' ? 'int64' : 'string';
-  const getter = vt === 'INT' ? 'IntValue' : 'StringValue';
-  const lits = spec.valuesSeen
-    .map((v) => (vt === 'INT' ? String(v) : goStringLiteral(v as string)))
-    .join(', ');
-  const i = '\t';
-  let b = '';
-  b += `${i}cfg := mustLookupConfig(t, ${goStringLiteral(key)})\n`;
-  b += `${i}ctx := ${buildContextCall(kase)}\n`;
-  b += `${i}seen := map[${goType}]bool{}\n`;
-  b += `${i}for i := 0; i < ${spec.repeat}; i++ {\n`;
-  b += `${i}\tmatch, err := evaluateAndResolve(t, cfg, ctx)\n`;
-  b += `${i}\tif err != nil {\n`;
-  b += `${i}\t\tt.Fatalf("resolver error: %v", err)\n`;
-  b += `${i}\t}\n`;
-  b += `${i}\tif !match.IsMatch {\n`;
-  b += `${i}\t\tt.Fatalf("evaluation %d: expected a value but got no match", i)\n`;
-  b += `${i}\t}\n`;
-  b += `${i}\tseen[match.Value.${getter}()] = true\n`;
-  b += `${i}}\n`;
-  b += `${i}want := []${goType}{${lits}}\n`;
-  b += `${i}ok := len(seen) == len(want)\n`;
-  b += `${i}for _, w := range want {\n`;
-  b += `${i}\tif !seen[w] {\n`;
-  b += `${i}\t\tok = false\n`;
-  b += `${i}\t}\n`;
-  b += `${i}}\n`;
-  b += `${i}if !ok {\n`;
-  b += `${i}\tt.Errorf("after ${spec.repeat} evaluations expected values seen %v, got %v", want, seen)\n`;
-  b += `${i}}\n`;
-  return b;
-}
-
-/**
- * Render a `raise` expectation (anything that isn't datadir/post/telemetry).
- * Each error class maps to a different Go pattern:
- *   missing_default        → assert config is missing (no resolver call)
- *   missing_env_var,
- *     unable_to_coerce_env_var,
- *     unable_to_decrypt    → resolver returns a sentinel error
- *   initialization_timeout → call assertInitializationTimeoutError(...)
- *                            (does not exist yet — that's the point)
- */
-function renderRaiseBody(kase: YamlCase, features: Set<string>): string {
-  const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
-  const errKey = (expected.error ?? '').toString();
-  if (errKey.length === 0) {
-    throw new Error('expected.status: raise but no expected.error provided');
-  }
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('raise case has no input.key/flag');
-  }
-
-  const indent = '\t';
-  const keyLit = goStringLiteral(key);
-
-  switch (errKey) {
-    case 'missing_default': {
-      // The SDK has no client-level "missing default" raise in local eval;
-      // the case is satisfied by verifying the config is absent from the
-      // store. If a future SDK gains a real Get-or-raise, the assertion
-      // can be tightened in test_helpers_test.go without touching
-      // generated output.
-      let body = '';
-      body += `${indent}_, ok := configStore.GetConfig(${keyLit})\n`;
-      body += `${indent}if ok {\n`;
-      body += `${indent}\tt.Fatalf("expected config %q to be missing for missing_default case", ${keyLit})\n`;
-      body += `${indent}}\n`;
-      return body;
-    }
-    case 'missing_env_var':
-    case 'unable_to_coerce_env_var':
-    case 'unable_to_decrypt': {
-      let body = '';
-      body += `${indent}cfg := mustLookupConfig(t, ${keyLit})\n`;
-      body += `${indent}ctx := ${buildContextCall(kase)}\n`;
-      body += `${indent}match := evaluator.EvaluateConfig(cfg, "Production", ctx)\n`;
-      body += `${indent}if !match.IsMatch || match.Value == nil {\n`;
-      body += `${indent}\tt.Fatalf("expected a match for %q", ${keyLit})\n`;
-      body += `${indent}}\n`;
-      body += `${indent}_, err := testResolver.Resolve(match.Value, cfg, "Production", ctx)\n`;
-      body += `${indent}assertResolveError(t, err, ${goStringLiteral(errKey)})\n`;
-      return body;
-    }
-    case 'initialization_timeout': {
-      // No SDK helper exists today — emit a call to a sensibly named one.
-      // The compiler will say "undefined: assertInitializationTimeoutError"
-      // until the SDK adds it. That's the desired surfacing behavior; we
-      // don't reach for `quonfig` package symbols here.
-      const overrides = kase.client_overrides ?? {};
-      const timeoutSec =
-        typeof overrides.initialization_timeout_sec === 'number'
-          ? overrides.initialization_timeout_sec
-          : 0.01;
-      const apiURL =
-        typeof overrides.prefab_api_url === 'string'
-          ? overrides.prefab_api_url
-          : '';
-      const onInitFailure =
-        typeof overrides.on_init_failure === 'string'
-          ? overrides.on_init_failure.replace(/^:/, '')
-          : 'raise';
-      let body = '';
-      body += `${indent}assertInitializationTimeoutError(t, ${keyLit}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)})\n`;
-      return body;
-    }
-    default: {
-      // Try the global mapping for anything else (missing_environment etc.
-      // currently surface only via datadir cases, so this branch is mainly
-      // a safety net for new error keys).
-      const errClass = lookupErrorClass('go', errKey);
-      if (!errClass) {
-        throw new Error(
-          `no Go error mapping for expected.error="${errKey}". ` +
-            `Add it to src/shared/error-mapping.ts (GO_ERRORS) or update the ` +
-            `raise-case dispatch in src/targets/go.ts.`,
-        );
-      }
-      let body = '';
-      body += `${indent}cfg := mustLookupConfig(t, ${keyLit})\n`;
-      body += `${indent}ctx := ${buildContextCall(kase)}\n`;
-      body += `${indent}match := evaluator.EvaluateConfig(cfg, "Production", ctx)\n`;
-      body += `${indent}if !match.IsMatch || match.Value == nil {\n`;
-      body += `${indent}\tt.Fatalf("expected a match for %q", ${keyLit})\n`;
-      body += `${indent}}\n`;
-      body += `${indent}_, err := testResolver.Resolve(match.Value, cfg, "Production", ctx)\n`;
-      body += `${indent}if !errors.Is(err, ${errClass}) {\n`;
-      body += `${indent}\tt.Errorf("expected %v, got: %v", ${errClass}, err)\n`;
-      body += `${indent}}\n`;
-      features.add('errors');
-      return body;
-    }
-  }
+  return body;
 }
 
 /**
@@ -655,12 +639,11 @@ function renderDatadirBody(kase: YamlCase): string {
       const envName = String(overrides.environment ?? '');
       body += `${indent}assert.Contains(t, err.Error(), ${goStringLiteral(envName)})\n`;
     } else {
-      // Unknown init-error variant — assert _some_ message; the SDK error
-      // class assertion can be tightened later via lookupErrorClass.
-      const errClass = lookupErrorClass('go', errKey);
-      if (errClass) {
-        body += `${indent}assert.True(t, errors.Is(err, ${errClass}), "expected ${errClass}, got %v", err)\n`;
+      const errClass = GO_PUBLIC_ERRORS[errKey];
+      if (!errClass) {
+        throw new Error(`no Go error mapping for init expected.error="${errKey}"`);
       }
+      body += `${indent}assert.ErrorIs(t, err, ${errClass})\n`;
     }
     return body;
   }
@@ -856,46 +839,92 @@ function renderDeliveryBody(kase: YamlCase): string {
   return body;
 }
 
+/** value_type in a telemetry expected row -> the public getter a customer would call. */
+const TELEMETRY_GETTERS: Record<string, string> = {
+  string: 'GetStringValue',
+  log_level: 'GetStringValue',
+  int: 'GetIntValue',
+  double: 'GetFloatValue',
+  bool: 'GetBoolValue',
+  string_list: 'GetStringSliceValue',
+  json: 'GetJSONValue',
+  duration: 'GetDurationValue',
+};
+
 /**
- * Render post.yaml / telemetry.yaml case bodies.
- *
- * Uniform shape (matches Ruby target conceptually):
- *   agg := BuildAggregator(t, kind, overrides)
- *   FeedAggregator(t, agg, kind, data, ctx)
- *   AssertAggregatorPost(t, agg, kind, expectedData, endpoint)
- *
- * None of these helpers exist in sdk-go today. They will fail to compile
- * until the SDK team adds them — that's the desired surfacing.
+ * Render post.yaml / telemetry.yaml case bodies: a real client whose
+ * telemetry URL is a local recorder, driven through public getters, then
+ * drained (Close() runs the SDK's shutdown flush) and asserted on the wire
+ * bytes:
+ *   tel := startTelemetryClient(t, overrides[, quonfig.WithGlobalContext(...)])
+ *   c := tel.Client
+ *   _, _, _ = c.WithContext(block).GetIntValue("key")   // evaluation_summary
+ *   _, _, _ = c.GetStringValue(probe, contextSet(rec))  // context records
+ *   assertTelemetryPost(t, tel, kind, expected, endpoint)
  */
-function renderPostBody(kase: YamlCase): string {
+function renderTelemetryBody(kase: YamlCase, features: Set<string>): string {
   const aggregator = (kase.aggregator ?? '').toString();
-  if (aggregator.length === 0) {
-    throw new Error('post/telemetry case missing aggregator');
-  }
+  if (aggregator.length === 0) throw new Error('post/telemetry case missing aggregator');
   const endpoint = (kase.endpoint ?? '').toString();
-  if (endpoint.length === 0) {
-    throw new Error('post/telemetry case missing endpoint');
-  }
+  if (endpoint.length === 0) throw new Error('post/telemetry case missing endpoint');
 
   const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
   const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
     ? kase.expected_data
     : null;
   const overrides = kase.client_overrides ?? {};
-  const merged = mergeContexts(kase.contexts);
+  const tiers = caseTiers(kase);
 
-  const aggLit = goStringLiteral(aggregator);
-  const overridesLit = goLiteralValue(overrides);
-  const dataLit = goLiteralValue(data);
-  const expectedLit = goLiteralValue(expectedData);
-  const endpointLit = goStringLiteral(endpoint);
-  const ctxLit = goContextLiteral(merged);
-
-  const indent = '\t';
   let body = '';
-  body += `${indent}agg := BuildAggregator(t, ${aggLit}, ${overridesLit})\n`;
-  body += `${indent}FeedAggregator(t, agg, ${aggLit}, ${dataLit}, ${ctxLit})\n`;
-  body += `${indent}AssertAggregatorPost(t, agg, ${aggLit}, ${expectedLit}, ${endpointLit})\n`;
+  const extra = tiers.global ? `, quonfig.WithGlobalContext(${goContextSetExpr(tiers.global)})` : '';
+  if (tiers.global) features.add('quonfig');
+  body += `\ttel := startTelemetryClient(t, ${goLiteralValue(overrides)}${extra})\n`;
+  body += `\tc := tel.Client\n`;
+
+  if (aggregator === 'evaluation_summary') {
+    const d = (data ?? {}) as Record<string, unknown>;
+    const rows = Array.isArray(expectedData) ? (expectedData as Array<Record<string, unknown>>) : [];
+    const getterFor = (key: string): string => {
+      const row = rows.find((r) => r && r.key === key);
+      const vt = row && typeof row.value_type === 'string' ? row.value_type : 'string';
+      const m = TELEMETRY_GETTERS[vt];
+      if (!m) throw new Error(`no getter for telemetry value_type ${vt}`);
+      return m;
+    };
+    const keysOf = (v: unknown, field: string): string[] => {
+      if (v === undefined || v === null) return [];
+      if (!Array.isArray(v) || v.some((k) => typeof k !== 'string')) {
+        throw new Error(`data.${field} must be a list of keys`);
+      }
+      return v as string[];
+    };
+    for (const k of Object.keys(d)) {
+      if (k !== 'keys' && k !== 'keys_without_context') {
+        throw new Error(`unsupported evaluation_summary data field: ${k}`);
+      }
+    }
+    for (const key of keysOf(d.keys, 'keys')) {
+      body += `\t_, _, _ = ${getterCallExpr(getterFor(key), goStringLiteral(key), tiers)}\n`;
+    }
+    for (const key of keysOf(d.keys_without_context, 'keys_without_context')) {
+      body += `\t_, _, _ = c.${getterFor(key)}(${goStringLiteral(key)}, nil)\n`;
+    }
+  } else if (aggregator === 'context_shape' || aggregator === 'example_contexts') {
+    if (tiers.global || tiers.block || tiers.local) {
+      throw new Error(`${aggregator} cases take their contexts from data, not contexts`);
+    }
+    const records = data === null ? [] : Array.isArray(data) ? data : [data];
+    for (const rec of records) {
+      if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
+        throw new Error(`${aggregator} data records must be context maps`);
+      }
+      body += `\t_, _, _ = c.GetStringValue(telemetryContextProbeKey, ${goContextSetExpr(rec as ContextTypes)})\n`;
+    }
+  } else {
+    throw new Error(`unknown aggregator: ${aggregator}`);
+  }
+
+  body += `\tassertTelemetryPost(t, tel, ${goStringLiteral(aggregator)}, ${goLiteralValue(expectedData)}, ${goStringLiteral(endpoint)})\n`;
   return body;
 }
 
@@ -907,58 +936,6 @@ function hasClientConstructionOverridesGo(overrides: unknown): boolean {
     'prefab_api_url' in o ||
     'on_init_failure' in o
   );
-}
-
-/**
- * Render a body for a case that constructs a real quonfig.NewClient(...)
- * with init-timeout / fake api-url overrides. Asserts the expected raise
- * (initialization_timeout / missing_default) or value depending on the YAML.
- */
-function renderClientConstructionBodyGo(kase: YamlCase): string {
-  const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
-  const overrides = kase.client_overrides ?? {};
-  const fn = (kase.function ?? 'get').toString();
-  const indent = '\t';
-
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('client-construction case has no input.key/flag');
-  }
-  const errKey = (expected.error ?? '').toString();
-  const onInitFailure = (() => {
-    const v = overrides.on_init_failure;
-    if (typeof v !== 'string') return 'raise';
-    return v.replace(/^:/, '');
-  })();
-  const timeoutSec =
-    typeof overrides.initialization_timeout_sec === 'number'
-      ? overrides.initialization_timeout_sec
-      : 0.01;
-  const apiURL =
-    typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
-  const isRaise = expected.status === 'raise';
-  if (isRaise && errKey === 'initialization_timeout') {
-    return `${indent}assertInitializationTimeoutError(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)})\n`;
-  }
-  if (isRaise && errKey === 'missing_default') {
-    // The Go SDK has no missing_default error class — GetXxxValue returns
-    // (zero, false, nil). The helper checks ok=false and reports it.
-    return `${indent}assertClientConstructionMissingDefault(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)}, ${goStringLiteral(fn)})\n`;
-  }
-  if (isRaise) {
-    const errClass = lookupErrorClass('go', errKey);
-    if (!errClass) {
-      throw new Error(
-        `no Go error mapping for expected.error="${errKey}" in client-construction case.`,
-      );
-    }
-    return `${indent}assertClientConstructionRaises(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)}, ${goStringLiteral(fn)}, ${errClass})\n`;
-  }
-  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    return `${indent}assertClientConstructionValue(t, ${goStringLiteral(key)}, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInitFailure)}, ${goStringLiteral(fn)}, ${goLiteralValue(expected.value)})\n`;
-  }
-  throw new Error('client-construction case has no expected.value or expected.error');
 }
 
 function formatDouble(n: number): string {
@@ -995,12 +972,6 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<s
   if (features.has('quonfig')) {
     projectImports.push('quonfig "github.com/quonfig/sdk-go"');
   }
-  if (features.has('eval')) {
-    projectImports.push('"github.com/quonfig/sdk-go/internal/eval"');
-  }
-  if (features.has('telemetry')) {
-    projectImports.push('"github.com/quonfig/sdk-go/internal/telemetry"');
-  }
   if (features.has('assert')) {
     projectImports.push('"github.com/stretchr/testify/assert"');
   }
@@ -1032,25 +1003,7 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<s
     out += r.source;
   }
 
-  // post/telemetry use BuildAggregator/etc. which don't exist; if `eval`
-  // was tagged, emit the same `_ eval.ContextValueGetter` sink as the
-  // existing files so the import isn't reported as unused (it will be
-  // unused once the helpers are stubbed out — keeping the sink prevents
-  // a misleading "imported and not used" error).
-  if (features.has('eval') && !bodyUsesEvalIdentifier(rendered)) {
-    out += `\n// Ensure the eval import is used.\nvar _ eval.ContextValueGetter\n`;
-  }
-  if (features.has('telemetry') && !bodyUsesTelemetryIdentifier(rendered)) {
-    out += `\n// Ensure the telemetry import is used.\nvar _ telemetry.EvalMatch\n`;
-  }
   return out;
-}
-
-function bodyUsesEvalIdentifier(rendered: RenderedCase[]): boolean {
-  return rendered.some((r) => /\beval\./.test(r.source));
-}
-function bodyUsesTelemetryIdentifier(rendered: RenderedCase[]): boolean {
-  return rendered.some((r) => /\btelemetry\./.test(r.source));
 }
 
 // ---------------------------------------------------------------------------

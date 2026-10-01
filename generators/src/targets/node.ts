@@ -1,22 +1,29 @@
 // Node target — generates Vitest files under sdk-node/test/integration/.
 //
-// Mirrors the Ruby target's design philosophy:
+// Every YAML case runs through the PUBLIC `Quonfig` client exactly as a
+// customer calls it (qfg-2agi.32, modelled on python.ts):
 //
-//   1. NO auto-skips, no omissions, no wrap-and-rescue. Every YAML case
-//      becomes a runnable `it(...)` block. Cases whose YAML shape doesn't
-//      have a matching helper today (post.yaml / telemetry.yaml — the
-//      aggregator / data / expected_data triple) are still emitted, calling
-//      consistently named helper functions that may not yet exist. At
-//      runtime those throw, which is the *desired* outcome — it surfaces
-//      the gap rather than hiding it.
+//   - `type:` + `function:` pick the public method: the typed getter
+//     (getString / getNumber / getBool / getStringList / getJSON /
+//     getDuration), `get(key, contexts, default)` when the case supplies a
+//     default (Node's typed getters take none), `isEnabled` for
+//     `function: enabled`. `get_or_raise` is the same call on a client with
+//     the SDK's default `onNoDefault: "error"`.
+//   - Context tiers are NOT pre-merged here: `global` becomes the client's
+//     `globalContext` option, `block` goes through `client.withContext(...)`,
+//     `local` is the per-call contexts argument. The SDK's own merge rule is
+//     what the case asserts.
+//   - Telemetry (post.yaml / telemetry.yaml) drives a real client, closes it
+//     so the real reporter drains, and asserts on the payload the reporter
+//     POSTed to an in-process telemetry endpoint.
 //
-//   2. Unmapped raise errors and missing input keys FAIL the generator
-//      (rather than silently skipping the case at runtime).
+// There is no test-local resolver, no synthetic not-found error and no
+// harness-side exception mapping. Cases whose shape has no mapping FAIL the
+// generator rather than being skipped.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
-import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
@@ -90,12 +97,6 @@ interface RenderedCase {
 
 interface RenderResult {
   rendered: RenderedCase[];
-  /** Whether any case in the suite needed `mergeContexts`. */
-  usesMergeContexts: boolean;
-  /** Whether any case in the suite needed the `Contexts` type. */
-  usesContextsType: boolean;
-  /** Whether any case in the suite drives the public client (`publicClient()` from setup.ts). */
-  usesPublicClient: boolean;
 }
 
 /**
@@ -162,132 +163,40 @@ function describeLabel(name: string): string {
 }
 
 /**
- * Render the bodies of a suite's cases. Throws on unmappable errors so the
- * generator can stop with a clear pointer instead of emitting a silent
- * skip. Every YAML case produces one `it(...)` — no omissions.
+ * Render the bodies of a suite's cases. Throws on unmappable cases so the
+ * generator stops with a clear pointer instead of emitting a silent skip.
+ * Every YAML case produces one `it(...)` — no omissions.
  */
 function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResult {
   const rendered: RenderedCase[] = [];
-  let usesMergeContexts = false;
-  let usesContextsType = false;
-  let usesPublicClient = false;
 
   for (const nc of cases) {
     const kase = nc.raw;
     let body: string;
     try {
-      const out = renderBody(yamlBasename, kase);
-      body = out.body;
-      if (out.usesMergeContexts) usesMergeContexts = true;
-      if (out.usesContextsType) usesContextsType = true;
-      if (out.usesPublicClient) usesPublicClient = true;
+      body = renderBody(yamlBasename, kase).body;
     } catch (e) {
       throw new GeneratorError(
         `[${yamlBasename}] case "${kase.name ?? ''}": ${(e as Error).message}`,
       );
     }
 
-    const block = `\n  it(${describeLabel(kase.name ?? '')}, ${callbackSignature(yamlBasename, kase)} => {\n${body}  });\n`;
+    const block = `\n  it(${describeLabel(kase.name ?? '')}, async () => {\n${body}  });\n`;
     rendered.push({ source: block });
   }
 
-  return { rendered, usesMergeContexts, usesContextsType, usesPublicClient };
-}
-
-/**
- * Decide whether the generated `it(...)` callback should be `async`. Datadir
- * cases drive `Quonfig#init` (Promise) and need async; client-construction
- * cases (init-timeout) likewise drive Promise-returning helpers.
- */
-function callbackSignature(yamlBasename: string, kase: YamlCase): string {
-  if (
-    yamlBasename === 'datadir_environment.yaml' ||
-    yamlBasename === 'datadir_value_type.yaml' ||
-    yamlBasename === 'delivery_environment.yaml'
-  ) {
-    return 'async ()';
-  }
-  if (hasClientConstructionOverrides(kase.client_overrides)) {
-    return 'async ()';
-  }
-  // DURATION cases drive the public client, which needs an awaited init.
-  if (isDurationCase(kase)) {
-    return 'async ()';
-  }
-  return '()';
+  return { rendered };
 }
 
 interface RenderedBody {
   body: string;
-  usesMergeContexts: boolean;
-  usesContextsType: boolean;
-  usesPublicClient?: boolean;
-}
-
-/** A case typed DURATION, or one asserting `expected.millis`. */
-function isDurationCase(kase: YamlCase): boolean {
-  const t = (kase.type ?? '').toString().toUpperCase();
-  return (
-    t === 'DURATION' ||
-    Object.prototype.hasOwnProperty.call(kase.expected ?? {}, 'millis')
-  );
 }
 
 /**
- * Render a DURATION case (qfg-2agi.4). Asserts through the PUBLIC
- * `Quonfig#getDuration` (what a customer calls) on a real datadir-backed
- * client, with an integer-exact millisecond comparison. No test-only
- * duration parser and no tolerance: if the public getter disagrees with
- * the corpus, the case goes red.
- */
-function renderDurationBody(kase: YamlCase): RenderedBody {
-  const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
-  const merged = mergeContexts(kase.contexts);
-  if (expected.status === 'raise') {
-    throw new Error(
-      'DURATION raise case has no public-getter mapping in the Node target yet; add one rather than bypassing getDuration',
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(input, 'default')) {
-    throw new Error('DURATION case with input.default: Quonfig#getDuration takes no default');
-  }
-  if (kase.env_vars) {
-    throw new Error('DURATION case with env_vars is not supported by the Node target yet');
-  }
-  if (!Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    throw new Error('DURATION case has no expected.millis');
-  }
-  const millis = expected.millis;
-  if (typeof millis !== 'number' || !Number.isInteger(millis)) {
-    throw new Error(`DURATION expected.millis must be an integer, got ${String(millis)}`);
-  }
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('DURATION case has no input.key/flag');
-  }
-  const usesContextsType = hasMergedContexts(merged);
-  const ctxLit = renderContextsLiteral(merged);
-  let body = '';
-  body += `    const __client = await publicClient();
-`;
-  body += `    const __actual = __client.getDuration(${tsStringLiteral(key)}, ${ctxLit});
-`;
-  body += `    expect(__actual).toBe(${tsLiteral(millis)});
-`;
-  return { body, usesMergeContexts: usesContextsType, usesContextsType, usesPublicClient: true };
-}
-
-/**
- * Render the body of a single `it(...)` callback. Returns the body string
- * (4-space indented) plus flags telling the file-level renderer which
- * imports it needs to surface.
+ * Render the body of a single `it(...)` callback (4-space indented).
  */
 function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
   const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
-  const merged = mergeContexts(kase.contexts);
-  const envVars = kase.env_vars;
 
   if (yamlBasename === 'datadir_environment.yaml') {
     return renderDatadirBody(kase);
@@ -311,12 +220,7 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
   }
 
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
-    return renderPostBody(kase);
-  }
-
-  // DURATION cases go through the public getter (qfg-2agi.4).
-  if (isDurationCase(kase)) {
-    return renderDurationBody(kase);
+    return renderTelemetryBody(kase);
   }
 
   // Cases that override real-client-construction params (init timeout,
@@ -326,28 +230,139 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
     return renderClientConstructionBody(kase, expected);
   }
 
-  // repeat + values_seen (qfg-t9wo): evaluate N times, assert the SET of
-  // values seen equals values_seen exactly (order-free).
-  const rspec = repeatSpec(kase);
-  if (rspec) {
-    repeatValueType(kase, rspec);
-    const key = (input.key ?? input.flag) as string | undefined;
-    if (!key || key.toString().length === 0) {
-      throw new Error('repeat case has no input.key/flag');
+  return renderEvalBody(kase);
+}
+
+// ---------------------------------------------------------------------------
+// Eval cases: public client, typed getters, real context tiers
+// ---------------------------------------------------------------------------
+
+/** YAML `type:` -> the public typed getter on `Quonfig` / `BoundQuonfig`. */
+const TYPED_GETTERS: Record<string, string> = {
+  STRING: 'getString',
+  INT: 'getNumber',
+  DOUBLE: 'getNumber',
+  BOOL: 'getBool',
+  BOOLEAN: 'getBool',
+  STRING_LIST: 'getStringList',
+  JSON: 'getJSON',
+  DURATION: 'getDuration',
+};
+
+const EVAL_FUNCTIONS = new Set(['get', 'get_or_raise', 'get_feature_flag', 'enabled']);
+
+/** Map the cross-SDK `on_no_default` integer to Node's `onNoDefault` option. */
+function onNoDefaultOption(val: unknown): string {
+  if (val === 0) return 'ignore';
+  if (val === 1 || val === 2) return 'warn';
+  throw new Error(`unsupported client_overrides.on_no_default=${JSON.stringify(val)}`);
+}
+
+/** The case's context tiers, untouched (no pre-merge). */
+function contextTiers(kase: YamlCase): {
+  global?: ContextTypes;
+  block?: ContextTypes;
+  local?: ContextTypes;
+} {
+  const c = kase.contexts ?? {};
+  const nonEmpty = (t: ContextTypes | undefined): ContextTypes | undefined =>
+    t && typeof t === 'object' && Object.keys(t).length > 0 ? t : undefined;
+  return { global: nonEmpty(c.global), block: nonEmpty(c.block), local: nonEmpty(c.local) };
+}
+
+/**
+ * Client options for an eval case: the YAML `client_overrides` plus the
+ * global context tier. `{}` means the shared customer-default client.
+ */
+function evalClientOptions(kase: YamlCase): string {
+  const overrides = kase.client_overrides ?? {};
+  const opts: string[] = [];
+  for (const k of Object.keys(overrides)) {
+    if (k !== 'on_no_default') {
+      throw new Error(`unsupported client_overrides.${k} on an eval case`);
     }
-    const usesContextsType = hasMergedContexts(merged);
-    const ctxLit = renderContextsLiteral(merged);
-    let body = '';
-    body += `    const __seen = new Set<unknown>();\n`;
-    body += `    for (let __i = 0; __i < ${rspec.repeat}; __i++) {\n`;
-    body += `      __seen.add(resolveCase(${tsStringLiteral(key)}, ${ctxLit}));\n`;
-    body += `    }\n`;
-    body += `    expect(__seen).toEqual(new Set(${tsLiteral(rspec.valuesSeen)}));\n`;
-    return { body, usesMergeContexts: usesContextsType, usesContextsType };
+  }
+  if ('on_no_default' in overrides) {
+    opts.push(`onNoDefault: ${tsStringLiteral(onNoDefaultOption(overrides.on_no_default))}`);
+  }
+  const { global } = contextTiers(kase);
+  if (global) opts.push(`globalContext: ${tsLiteral(global)}`);
+  return opts.length === 0 ? '{}' : `{ ${opts.join(', ')} }`;
+}
+
+/**
+ * The public call for a case, against `recv` (`client`, or `scope` when a
+ * block context is bound). Local context is the per-call argument.
+ */
+function publicCall(kase: YamlCase, recv: string, key: string): string {
+  const input = kase.input ?? {};
+  const fn = (kase.function ?? 'get').toString();
+  if (!EVAL_FUNCTIONS.has(fn)) {
+    throw new Error(`no public Node call for function: ${fn}`);
+  }
+  const { local } = contextTiers(kase);
+  const keyLit = tsStringLiteral(key);
+  const localLit = local ? tsLiteral(local) : undefined;
+  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
+
+  if (fn === 'enabled') {
+    if (hasDefault) throw new Error('function: enabled with input.default has no public Node call');
+    return `${recv}.isEnabled(${keyLit}${localLit ? `, ${localLit}` : ''})`;
   }
 
-  // raise expectation
-  if (expected.status === 'raise') {
+  if (hasDefault) {
+    // Node's typed getters take no default; `get(key, contexts, default)` is
+    // the public call that does. DURATION defaults are integer ms (the YAML
+    // unit), which is also what Node returns for a duration.
+    const def = (input as { default?: unknown }).default;
+    return `${recv}.get(${keyLit}, ${localLit ?? 'undefined'}, ${tsLiteral(def)})`;
+  }
+
+  const yamlType = kase.type === undefined ? undefined : String(kase.type).toUpperCase();
+  let method = 'get';
+  if (yamlType !== undefined) {
+    const typed = TYPED_GETTERS[yamlType];
+    if (!typed) throw new Error(`no Node typed getter for type: ${yamlType}`);
+    method = typed;
+  }
+  return `${recv}.${method}(${keyLit}${localLit ? `, ${localLit}` : ''})`;
+}
+
+/** Wrap `inner` (already indented by `indent + 2`) in a withEnv block if needed. */
+function wrapEnv(kase: YamlCase, indent: string, inner: (indent: string) => string): string {
+  const envVars = kase.env_vars;
+  if (envVars && typeof envVars === 'object' && Object.keys(envVars).length > 0) {
+    let out = `${indent}await withEnv(${tsLiteral(stringifyEnvVars(envVars))}, async () => {\n`;
+    out += inner(indent + '  ');
+    out += `${indent}});\n`;
+    return out;
+  }
+  return inner(indent);
+}
+
+function renderEvalBody(kase: YamlCase): RenderedBody {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('case has no input.key/flag');
+  }
+  const { block } = contextTiers(kase);
+  const recv = block ? 'scope' : 'client';
+  const call = publicCall(kase, recv, key);
+  const optsLit = evalClientOptions(kase);
+
+  let assertion: (indent: string) => string;
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    // repeat + values_seen (qfg-t9wo): evaluate N times, assert the SET of
+    // values seen equals values_seen exactly (order-free).
+    repeatValueType(kase, rspec);
+    assertion = (i) =>
+      `${i}const seen = new Set<unknown>();\n` +
+      `${i}for (let i = 0; i < ${rspec.repeat}; i++) seen.add(${call});\n` +
+      `${i}expect(seen).toEqual(new Set(${tsLiteral(rspec.valuesSeen)}));\n`;
+  } else if (expected.status === 'raise') {
     const errKey = expected.error;
     if (typeof errKey !== 'string' || errKey.length === 0) {
       throw new Error('expected.status: raise but no expected.error provided');
@@ -359,91 +374,30 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
           `Add it to src/shared/error-mapping.ts (NODE_ERRORS) or remove the case from YAML.`,
       );
     }
-
-    const key = (input.key ?? input.flag) as string | undefined;
-    if (!key || key.toString().length === 0) {
-      throw new Error('raise case has no input.key/flag');
+    assertion = (i) => `${i}expect(() => ${call}).toThrow(${errClass});\n`;
+  } else if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
+    const millis = expected.millis;
+    if (typeof millis !== 'number' || !Number.isInteger(millis)) {
+      throw new Error(`expected.millis must be an integer, got ${String(millis)}`);
     }
-
-    const usesContextsType = hasMergedContexts(merged);
-    const ctxLit = renderContextsLiteral(merged);
-    const keyLit = tsStringLiteral(key);
-    const errLit = tsStringLiteral(errKey);
-
-    let body = '';
-    if (envVars && typeof envVars === 'object') {
-      body += `    const __prev: Record<string, string | undefined> = {};\n`;
-      body += `    const __envVars = ${tsLiteral(stringifyEnvVars(envVars))};\n`;
-      body += `    for (const [k, v] of Object.entries(__envVars)) { __prev[k] = process.env[k]; process.env[k] = v; }\n`;
-      body += `    try {\n`;
-      body += `      runRaiseCase(${keyLit}, ${ctxLit}, ${errLit}, ${errClass});\n`;
-      body += `    } finally {\n`;
-      body += `      for (const [k, v] of Object.entries(__prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }\n`;
-      body += `    }\n`;
-    } else {
-      body += `    runRaiseCase(${keyLit}, ${ctxLit}, ${errLit}, ${errClass});\n`;
-    }
-    return { body, usesMergeContexts: usesContextsType, usesContextsType };
-  }
-
-  // Happy-path / non-raise expectation
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('case has no input.key/flag and no raise expectation');
-  }
-
-  let expectedValue: unknown;
-  let assertion: 'toBe' | 'toEqual';
-  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    expectedValue = expected.value;
-    // Arrays / plain objects need deep equality.
-    assertion =
-      Array.isArray(expectedValue) ||
-      (expectedValue !== null && typeof expectedValue === 'object')
-        ? 'toEqual'
-        : 'toBe';
+    assertion = (i) => `${i}expect(${call}).toBe(${millis});\n`;
+  } else if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
+    const v = expected.value;
+    const deep = Array.isArray(v) || (v !== null && typeof v === 'object');
+    assertion = (i) => `${i}expect(${call}).${deep ? 'toEqual' : 'toBe'}(${tsLiteral(v)});\n`;
   } else {
-    throw new Error('case has no expected.value');
+    throw new Error('case has no expected.value, expected.millis or raise expectation');
   }
 
-  const usesContextsType = hasMergedContexts(merged);
-  const ctxLit = renderContextsLiteral(merged);
-  const keyLit = tsStringLiteral(key);
-  const expLit = tsLiteral(expectedValue);
-  const fn = (kase.function ?? '').toString();
-  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
-  const def = (input as { default?: unknown }).default;
-
-  // Pick the call-site shape:
-  //   function: enabled  → enabledCase(key, ctx) — coerces non-bool → false
-  //   input.default      → getCase(key, ctx, default) — public Quonfig#get
-  //   otherwise          → resolveCase(key, ctx) — direct evaluator/resolver
-  let actualExpr: string;
-  if (fn === 'enabled') {
-    actualExpr = `enabledCase(${keyLit}, ${ctxLit})`;
-    assertion = 'toBe';
-  } else if (hasDefault) {
-    actualExpr = `getCase(${keyLit}, ${ctxLit}, ${tsLiteral(def)})`;
-  } else {
-    actualExpr = `resolveCase(${keyLit}, ${ctxLit})`;
-  }
-
-  let body = '';
-  if (envVars && typeof envVars === 'object') {
-    body += `    const __prev: Record<string, string | undefined> = {};\n`;
-    body += `    const __envVars = ${tsLiteral(stringifyEnvVars(envVars))};\n`;
-    body += `    for (const [k, v] of Object.entries(__envVars)) { __prev[k] = process.env[k]; process.env[k] = v; }\n`;
-    body += `    try {\n`;
-    body += `      const __actual = ${actualExpr};\n`;
-    body += `      expect(__actual).${assertion}(${expLit});\n`;
-    body += `    } finally {\n`;
-    body += `      for (const [k, v] of Object.entries(__prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }\n`;
-    body += `    }\n`;
-  } else {
-    body += `    const __actual = ${actualExpr};\n`;
-    body += `    expect(__actual).${assertion}(${expLit});\n`;
-  }
-  return { body, usesMergeContexts: usesContextsType, usesContextsType };
+  const body = wrapEnv(kase, '    ', (i) => {
+    let out = `${i}await withClient(${optsLit}, (client) => {\n`;
+    const j = i + '  ';
+    if (block) out += `${j}const scope = client.withContext(${tsLiteral(block)});\n`;
+    out += assertion(j);
+    out += `${i}});\n`;
+    return out;
+  });
+  return { body };
 }
 
 function hasClientConstructionOverrides(overrides: unknown): boolean {
@@ -487,7 +441,7 @@ function renderClientConstructionBody(kase: YamlCase, expected: { status?: strin
   let body = '';
   if (isRaise && errKey === 'initialization_timeout') {
     body += `    await assertInitializationTimeoutError(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)});\n`;
-    return { body, usesMergeContexts: false, usesContextsType: false };
+    return { body };
   }
   if (isRaise) {
     const errClass = lookupErrorClass('node', errKey);
@@ -497,33 +451,14 @@ function renderClientConstructionBody(kase: YamlCase, expected: { status?: strin
       );
     }
     body += `    await assertClientConstructionRaises(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)}, ${tsStringLiteral(fn)}, ${errClass});\n`;
-    return { body, usesMergeContexts: false, usesContextsType: false };
+    return { body };
   }
   // happy path
   if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
     body += `    expect(await assertClientConstructionValue(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)}, ${tsStringLiteral(fn)})).toEqual(${tsLiteral(expected.value)});\n`;
-    return { body, usesMergeContexts: false, usesContextsType: false };
+    return { body };
   }
   throw new Error('client-construction case has no expected.value or expected.error');
-}
-
-/** True iff the merged ContextTypes map has at least one tier. */
-function hasMergedContexts(merged: ContextTypes): boolean {
-  return Object.keys(merged).length > 0;
-}
-
-/**
- * Render a `Contexts` literal — the value passed to evaluator/resolver.
- * Empty contexts just return `{}` (no `Contexts` annotation needed).
- */
-function renderContextsLiteral(merged: ContextTypes): string {
-  if (!hasMergedContexts(merged)) {
-    return '{}';
-  }
-  // Wrap in `mergeContexts({...})` so the runtime path matches the SDK's
-  // public API exactly. The runtime mergeContexts is variadic — passing a
-  // single already-merged map is a no-op semantically.
-  return `mergeContexts(${tsLiteral(merged)} as Contexts)`;
 }
 
 /**
@@ -604,7 +539,7 @@ function renderDatadirBody(kase: YamlCase): RenderedBody {
     body += `      for (const [k, v] of Object.entries(__prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }\n`;
     body += `    }\n`;
   }
-  return { body, usesMergeContexts: false, usesContextsType: false };
+  return { body };
 }
 
 /**
@@ -667,7 +602,7 @@ function renderDatadirValueTypeBody(kase: YamlCase): RenderedBody {
     body += `      \`datadir loader must coerce ${key} to a number, got \${typeof __rawValue} (\${JSON.stringify(__rawValue)})\`,\n`;
     body += `    ).toBe("number");\n`;
   }
-  return { body, usesMergeContexts: false, usesContextsType: false };
+  return { body };
 }
 
 /**
@@ -734,61 +669,104 @@ function renderDeliveryBody(kase: YamlCase): RenderedBody {
   body += `    } finally {\n`;
   body += `      await new Promise<void>((res) => __server.close(() => res()));\n`;
   body += `    }\n`;
-  return { body, usesMergeContexts: false, usesContextsType: false };
+  return { body };
+}
+
+// ---------------------------------------------------------------------------
+// post.yaml / telemetry.yaml: real client, real reporter
+// ---------------------------------------------------------------------------
+
+/** YAML `:shape_only` etc. -> Node's `contextUploadMode` option value. */
+function contextUploadModeOption(raw: unknown): string {
+  const v = String(raw).replace(/^:/, '').toLowerCase();
+  if (v === 'none') return 'none';
+  if (v === 'shape_only' || v === 'shapes_only') return 'shapes_only';
+  if (v === 'periodic_example') return 'periodic_example';
+  throw new Error(`unsupported client_overrides.context_upload_mode=${JSON.stringify(raw)}`);
 }
 
 /**
- * Render a post.yaml / telemetry.yaml case body.
+ * Render a post.yaml / telemetry.yaml case. Builds a real client (with the
+ * YAML's telemetry options), evaluates through public `get` exactly as a
+ * customer would, closes the client so the real reporter drains, and asserts
+ * the drained payload projected onto the YAML's `expected_data` shape.
  *
- * Every such case has:
- *   aggregator:    one of context_shape | evaluation_summary | example_contexts
- *   endpoint:      "/api/v1/context-shapes" | "/api/v1/telemetry"
- *   data:          aggregator input — either keys array, single context hash,
- *                  or array of context hashes (depends on aggregator)
- *   expected_data: aggregator output to assert against (may be null/empty)
- *   contexts:      optional context block (merged via mergeContexts)
- *   client_overrides: optional config flags (e.g. context_upload_mode)
- *
- * Generated TypeScript invokes a small uniform helper API:
- *   const agg = buildAggregator(type, overrides)
- *   feedAggregator(agg, type, data, contexts)
- *   expect(aggregatorPost(agg, type, endpoint)).toEqual(expectedData)
- *
- * Those helpers don't exist in the SDK today. That's fine — at runtime
- * they throw, which is the *desired* outcome: it surfaces the missing
- * helper to whoever is implementing the SDK side. Hiding the case via a
- * generator-side omission is strictly worse.
+ *   evaluation_summary: data.keys evaluated with the case's context tiers;
+ *                       data.keys_without_context with no context at all.
+ *   context_shape / example_contexts: each record in `data` is the context of
+ *                       one public evaluation (contexts reach the telemetry
+ *                       collectors only through an evaluation).
  */
-function renderPostBody(kase: YamlCase): RenderedBody {
+function renderTelemetryBody(kase: YamlCase): RenderedBody {
   const aggregator = (kase.aggregator ?? '').toString();
-  if (aggregator.length === 0) {
-    throw new Error('post/telemetry case missing aggregator');
+  if (!['evaluation_summary', 'context_shape', 'example_contexts'].includes(aggregator)) {
+    throw new Error(`unsupported aggregator: ${JSON.stringify(kase.aggregator)}`);
   }
-  const endpoint = (kase.endpoint ?? '').toString();
-  if (endpoint.length === 0) {
+  if ((kase.endpoint ?? '').toString().length === 0) {
     throw new Error('post/telemetry case missing endpoint');
   }
+  if (kase.env_vars) throw new Error('env_vars on a telemetry case is not supported');
+
+  const overrides = kase.client_overrides ?? {};
+  const opts: string[] = [];
+  for (const [k, v] of Object.entries(overrides)) {
+    if (k === 'collect_evaluation_summaries') {
+      opts.push(`collectEvaluationSummaries: ${v === false ? 'false' : 'true'}`);
+    } else if (k === 'context_upload_mode') {
+      opts.push(`contextUploadMode: ${tsStringLiteral(contextUploadModeOption(v))}`);
+    } else {
+      throw new Error(`unsupported client_overrides.${k} on a telemetry case`);
+    }
+  }
+  const { global, block, local } = contextTiers(kase);
+  if (global) opts.push(`globalContext: ${tsLiteral(global)}`);
+  const optsLit = opts.length === 0 ? '{}' : `{ ${opts.join(', ')} }`;
 
   const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
   const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
     ? kase.expected_data
     : null;
-  const overrides = kase.client_overrides ?? {};
-  const merged = mergeContexts(kase.contexts);
-  const usesContextsType = hasMergedContexts(merged);
 
-  const aggLit = tsStringLiteral(aggregator);
-  const overridesLit = tsLiteral(overrides);
-  const dataLit = tsLiteral(data);
-  const expectedLit = tsLiteral(expectedData);
-  const endpointLit = tsStringLiteral(endpoint);
-  const ctxLit = renderContextsLiteral(merged);
+  const i = '      ';
+  let calls = '';
+  if (aggregator === 'evaluation_summary') {
+    const payload = (data ?? {}) as { keys?: unknown; keys_without_context?: unknown };
+    for (const k of Object.keys(payload)) {
+      if (k !== 'keys' && k !== 'keys_without_context') {
+        throw new Error(`unsupported evaluation_summary data.${k}`);
+      }
+    }
+    const keys = (payload.keys ?? []) as string[];
+    const bare = (payload.keys_without_context ?? []) as string[];
+    if (block) calls += `${i}const scope = client.withContext(${tsLiteral(block)});\n`;
+    const recv = block ? 'scope' : 'client';
+    const localArg = local ? `, ${tsLiteral(local)}` : '';
+    for (const key of keys) {
+      const keyLit = tsStringLiteral(String(key));
+      calls += `${i}observed.set(${keyLit}, ${recv}.get(${keyLit}${localArg}));\n`;
+    }
+    for (const key of bare) {
+      const keyLit = tsStringLiteral(String(key));
+      calls += `${i}observed.set(${keyLit}, client.get(${keyLit}));\n`;
+    }
+  } else {
+    if (block || local) {
+      throw new Error(`${aggregator} cases carry their contexts in data, not contexts:`);
+    }
+    const records =
+      data === null || data === undefined ? [] : Array.isArray(data) ? data : [data];
+    for (const rec of records) {
+      calls += `${i}client.get(TELEMETRY_PROBE_KEY, ${tsLiteral(rec)});\n`;
+    }
+  }
 
   let body = '';
-  body += `    const aggregator = buildAggregator(${aggLit}, ${overridesLit});\n`;
-  body += `    feedAggregator(aggregator, ${aggLit}, ${dataLit}, ${ctxLit});\n`;
-  body += `    expect(aggregatorPost(aggregator, ${aggLit}, ${endpointLit})).toEqual(${expectedLit});\n`;
-  return { body, usesMergeContexts: usesContextsType, usesContextsType };
+  body += `    const observed = new Map<string, unknown>();\n`;
+  body += `    const posted = await collectTelemetry(${optsLit}, (client) => {\n`;
+  body += calls;
+  body += `    });\n`;
+  body += `    expect(telemetryPost(posted, ${tsStringLiteral(aggregator)}, observed)).toEqual(${tsLiteral(expectedData)});\n`;
+  return { body };
 }
 
 /** Returns true iff any rendered case body uses a client-construction helper. */
@@ -879,85 +857,21 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     return out;
   }
 
-  // All non-datadir suites lean on setup.ts + a small uniform helper API.
+  // Every other suite drives the public client through setup.ts, which only
+  // BUILDS clients (shared customer-default client, fresh client for
+  // overrides, telemetry client + endpoint). It evaluates nothing itself.
   out += `import { describe, it, expect } from "vitest";\n`;
-  out += result.usesPublicClient
-    ? `import { store, evaluator, resolver, envID, publicClient } from "./setup";\n`
-    : `import { store, evaluator, resolver, envID } from "./setup";\n`;
-  if (result.usesMergeContexts) {
-    out += `import { mergeContexts } from "../../src/context";\n`;
-  }
-  if (result.usesContextsType) {
-    out += `import type { Contexts } from "../../src/types";\n`;
-  }
   if (isPost) {
-    // Aggregator helpers — these don't exist yet. Importing them from
-    // ./aggregator-helpers will fail at module-load time once that file
-    // doesn't exist, OR fail at call time once we add stubs that throw.
-    // Either failure surfaces the gap correctly.
-    out += `import { buildAggregator, feedAggregator, aggregatorPost } from "./aggregator-helpers";\n`;
+    out += `import { collectTelemetry, telemetryPost, TELEMETRY_PROBE_KEY } from "./setup";\n`;
+  } else {
+    const usesEnv = result.rendered.some((r) => r.source.includes('await withEnv('));
+    out += usesEnv
+      ? `import { withClient, withEnv } from "./setup";\n`
+      : `import { withClient } from "./setup";\n`;
   }
   out += `\n`;
 
   if (!isPost) {
-    // Universal eval/raise helpers shared by every non-post suite. These
-    // close over the suite-wide `store`, `evaluator`, `resolver`, `envID`
-    // imported from setup.ts.
-    //
-    // resolveCase  → no default. Returns the resolved value or undefined
-    //                when the key is missing (no synthetic fallback).
-    // getCase      → with default. Routes through the public Quonfig#get
-    //                semantic: missing key → default, found key → resolved
-    //                value (default ignored).
-    // enabledCase  → function: enabled. Returns the resolved value if it's
-    //                a boolean, else false (matches Quonfig#isFeatureEnabled).
-    // runRaiseCase → resolver-time raise (env var missing, decryption error).
-    out += `function resolveCase(key: string, contexts: any): unknown {\n`;
-    out += `  const cfg = store.get(key);\n`;
-    out += `  if (!cfg) return undefined;\n`;
-    out += `  const match = evaluator.evaluateConfig(cfg, envID, contexts);\n`;
-    out += `  if (!match.isMatch || !match.value) return undefined;\n`;
-    out += `  const { resolved } = resolver.resolveValue(\n`;
-    out += `    match.value,\n`;
-    out += `    cfg.key,\n`;
-    out += `    cfg.valueType,\n`;
-    out += `    envID,\n`;
-    out += `    contexts\n`;
-    out += `  );\n`;
-    out += `  return resolver.unwrapValue(resolved);\n`;
-    out += `}\n\n`;
-    out += `function getCase(key: string, contexts: any, defaultValue: unknown): unknown {\n`;
-    out += `  const v = resolveCase(key, contexts);\n`;
-    out += `  return v === undefined ? defaultValue : v;\n`;
-    out += `}\n\n`;
-    out += `function enabledCase(key: string, contexts: any): boolean {\n`;
-    out += `  const v = resolveCase(key, contexts);\n`;
-    out += `  if (typeof v === "boolean") return v;\n`;
-    out += `  if (v === "true") return true;\n`;
-    out += `  if (v === "false") return false;\n`;
-    out += `  return false;\n`;
-    out += `}\n\n`;
-    out += `function runRaiseCase(\n`;
-    out += `  key: string,\n`;
-    out += `  contexts: any,\n`;
-    out += `  _errorKey: string,\n`;
-    out += `  errClass: ErrorConstructor,\n`;
-    out += `): void {\n`;
-    out += `  expect(() => {\n`;
-    out += `    const cfg = store.get(key);\n`;
-    out += `    if (!cfg) throw new Error(\`config not found for key: \${key}\`);\n`;
-    out += `    const match = evaluator.evaluateConfig(cfg, envID, contexts);\n`;
-    out += `    if (!match.isMatch || !match.value) throw new Error(\`no match for key: \${key}\`);\n`;
-    out += `    const { resolved } = resolver.resolveValue(\n`;
-    out += `      match.value, cfg.key, cfg.valueType, envID, contexts\n`;
-    out += `    );\n`;
-    out += `    return resolver.unwrapValue(resolved);\n`;
-    out += `  }).toThrow(errClass);\n`;
-    out += `}\n\n`;
-    // Client-construction helpers: only emitted for suites that use them
-    // (the generator can't easily detect, so we emit unconditionally —
-    // unused fns are harmless in TS strict mode because the imports
-    // aren't broken, and tree-shaking handles the binary).
     if (suiteUsesClientConstruction(suite, result.rendered)) {
       out += `async function assertInitializationTimeoutError(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string): Promise<void> {\n`;
       out += `  const { Quonfig } = await import("../../src/quonfig");\n`;

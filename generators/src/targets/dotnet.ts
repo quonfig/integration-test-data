@@ -1,25 +1,34 @@
 // .NET target — generates xUnit test classes under
 // sdk-net/tests/Quonfig.Sdk.Tests/Integration/.
 //
-// Hard rules (set by project owner, mirroring java.ts):
+// Hard rules (set by project owner):
 //
 //   1. NO auto-skips, NO omissions, NO defensive shortcuts. Every YAML case
-//      becomes a real, runnable `[Fact]` method. Cases the SDK can't yet
-//      satisfy emit code that calls a sensibly-named helper on TestSetup —
-//      runtime/compile failure is the *desired* surfacing behavior, not a
-//      hidden gap. The TestSetup class itself is added in the SDK-side
-//      iteration bead (qfg-zp7i.13); until then, the generated files compile
-//      symbol-resolution-wise (file structure, usings, syntax) but their
-//      method bodies reference TestSetup.* helpers that don't exist.
+//      becomes a real, runnable `[Fact]` method.
 //
 //   2. Unmapped raise errors and missing input keys FAIL the generator
 //      (rather than silently skipping the case at runtime).
 //
-//   3. Mirrors the structure of java.ts — same six-stage flow (load YAML,
-//      render cases, render file, write file). Anything .NET-specific
-//      (`object?` nullable annotations, file-scoped namespaces,
-//      `Assert.Throws<X>(() => ...)`, PascalCase TestSetup helpers) is
-//      handled in the helpers below.
+//   3. PUBLIC API ONLY (qfg-2agi.34). Every case runs through the public
+//      `Quonfig` client exactly as a customer would call it, modelled on
+//      python.ts:
+//        - YAML `type:` picks the typed getter (GetString / GetLong /
+//          GetDouble / GetBool / GetStringList / GetJson / GetDuration);
+//          `function: enabled` calls IsFeatureEnabled; `get_or_raise` is the
+//          typed getter with no default under the default OnNoDefault.Throw.
+//        - The context tiers are fed through the SDK's own layering API
+//          instead of being pre-merged here: `global` -> QuonfigOptions.
+//          GlobalContext, `block` -> client.WithContext(...), `local` -> the
+//          per-call contexts argument (or a nested WithContext when a block
+//          tier is also present).
+//        - Telemetry cases evaluate through the real client with a capturing
+//          ITelemetrySender and drain the real reporter by disposing the
+//          client; the assertion reads what was actually sent.
+//        - Raise cases assert the SDK's specific exception type with
+//          Assert.Throws<T> (exact type). The harness never throws on the
+//          SDK's behalf and never maps one exception type to another.
+//      No test-only resolver, parser, or synthetic config lives in the
+//      harness (sdk-net/tests/Quonfig.Sdk.Tests/Integration/TestSetup.cs).
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -29,8 +38,6 @@ import {
   dotnetTestMethodName,
   uniqueSuffix,
 } from '../shared/case-id.js';
-import { mergeContexts } from '../shared/contexts.js';
-import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
@@ -91,6 +98,36 @@ const SUITES: SuiteEntry[] = [
 const NAMESPACE = 'Quonfig.Sdk.Tests.Integration';
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/dotnet.ts';
 
+// The exceptions sdk-net actually raises, keyed by YAML `expected.error`.
+// Target-local on purpose: shared/error-mapping.ts DOTNET_ERRORS maps
+// unable_to_coerce_env_var to QuonfigKeyNotFoundException, which hid the
+// real QuonfigCoercionException (qfg-2agi.17). Asserting the exact type
+// here is what makes the generated suite able to fail on a wrong type.
+const DOTNET_ERRORS: Readonly<Record<string, string>> = {
+  missing_default: 'QuonfigKeyNotFoundException',
+  initialization_timeout: 'QuonfigInitTimeoutException',
+  missing_env_var: 'QuonfigEnvVarNotSetException',
+  unable_to_coerce_env_var: 'QuonfigCoercionException',
+  unable_to_decrypt: 'QuonfigDecryptionException',
+  missing_environment: 'InvalidOperationException',
+  invalid_environment: 'InvalidOperationException',
+};
+
+function errorClass(errKey: string): string {
+  if (errKey.length === 0) {
+    throw new Error('expected.status: raise but no expected.error provided');
+  }
+  const cls = DOTNET_ERRORS[errKey];
+  if (!cls) {
+    throw new Error(`no .NET exception mapping for expected.error="${errKey}" (DOTNET_ERRORS in dotnet.ts)`);
+  }
+  return cls;
+}
+
+// A key that exists in the integration datadir. Context-telemetry cases
+// evaluate it so the real client records the context's shape / example.
+const TELEMETRY_CONTEXT_PROBE_KEY = 'brand.new.string';
+
 class GeneratorError extends Error {
   constructor(msg: string) {
     super(msg);
@@ -102,7 +139,11 @@ class GeneratorError extends Error {
 // C# literal rendering
 // ---------------------------------------------------------------------------
 
-/** Render a value as a C# expression of static type `object?`. */
+/**
+ * Render a value as a C# expression of static type `object?`. Used for JSON
+ * values and telemetry expectations, where the SDK hands back nested
+ * dictionaries / lists.
+ */
 export function csLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'null';
   if (value === true) return 'true';
@@ -123,21 +164,19 @@ export function csLiteral(value: unknown): string {
 }
 
 /**
- * Render a number as a C# numeric literal. Integer values *always* get the
- * `L` suffix so they materialize as `long` (System.Int64) — the SDK's INT
- * type, the env-var coercion path, and JSON-int parsing all surface integer
- * values as `long`, so emitting bare `int` literals would make
- * `Assert.Equal(expected, actual)` fail against any of those returns.
- * Non-integers render with a trailing `d` so the compiler treats them as
- * `double` even when they round-trip as e.g. "9.95". NaN/Infinity use the
- * `double.NaN` / `double.PositiveInfinity` constants.
+ * Integers render with an `L` suffix (System.Int64, the SDK's INT type);
+ * non-integers with `d`.
  */
 function formatCsNumber(n: number): string {
   if (Number.isNaN(n)) return 'double.NaN';
   if (!Number.isFinite(n)) return n > 0 ? 'double.PositiveInfinity' : 'double.NegativeInfinity';
-  if (Number.isInteger(n)) {
-    return n.toString() + 'L';
-  }
+  if (Number.isInteger(n)) return n.toString() + 'L';
+  return n.toString() + 'd';
+}
+
+function formatCsDouble(n: number): string {
+  if (Number.isNaN(n)) return 'double.NaN';
+  if (!Number.isFinite(n)) return n > 0 ? 'double.PositiveInfinity' : 'double.NegativeInfinity';
   return n.toString() + 'd';
 }
 
@@ -171,613 +210,659 @@ export function csStringLiteral(s: string): string {
   return out;
 }
 
+function csStringArray(values: unknown[]): string {
+  if (values.length === 0) return 'Array.Empty<string>()';
+  return 'new[] { ' + values.map((v) => csStringLiteral(String(v))).join(', ') + ' }';
+}
+
+/**
+ * Render one tier of YAML contexts as a public `ContextSet` initializer.
+ * A null property means "explicitly absent" in the YAML (IS_PRESENT /
+ * IS_NOT_PRESENT cases), so it is left out of the context, which is how a
+ * customer expresses absence.
+ */
+function csContextSet(tier: ContextTypes | undefined): string {
+  if (!tier || Object.keys(tier).length === 0) return 'new ContextSet()';
+  const named: string[] = [];
+  for (const [name, props] of Object.entries(tier)) {
+    if (!props || typeof props !== 'object') {
+      throw new Error(`context "${name}" is not a map`);
+    }
+    const entries: string[] = [];
+    for (const [prop, v] of Object.entries(props)) {
+      if (v === null || v === undefined) continue;
+      entries.push(`[${csStringLiteral(prop)}] = ${csContextValue(v)}`);
+    }
+    const inner = entries.length === 0 ? 'new ContextProperties()' : `new ContextProperties { ${entries.join(', ')} }`;
+    named.push(`[${csStringLiteral(name)}] = ${inner}`);
+  }
+  return `new ContextSet { ${named.join(', ')} }`;
+}
+
+function csContextValue(v: unknown): string {
+  if (typeof v === 'string') return csStringLiteral(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'number') {
+    return Number.isInteger(v) ? `new ContextValueLong(${v}L)` : `new ContextValueDouble(${formatCsDouble(v)})`;
+  }
+  if (Array.isArray(v)) {
+    return `new ContextValueStringList(${csStringArray(v)})`;
+  }
+  throw new Error(`unsupported context value ${JSON.stringify(v)}`);
+}
+
 // ---------------------------------------------------------------------------
 // Per-suite rendering
 // ---------------------------------------------------------------------------
 
 interface RenderedCase {
-  /** Full `[Fact] ... public void <name>() { ... }` block, indented four spaces. */
   source: string;
 }
 
-interface RenderResult {
-  rendered: RenderedCase[];
-  /** Set of fully-qualified exception classes referenced — drives extra usings. */
-  exceptions: Set<string>;
-}
-
-function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderResult {
+function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderedCase[] {
   const rendered: RenderedCase[] = [];
   const seen = new Map<string, number>();
-  const exceptions = new Set<string>();
 
   for (const nc of cases) {
     const kase = nc.raw;
     const rawName = (kase.name ?? '').toString();
-    const baseName = dotnetTestMethodName(rawName);
-    const methodName = uniqueSuffix(seen, baseName);
+    const methodName = uniqueSuffix(seen, dotnetTestMethodName(rawName));
 
     let body: string;
     try {
-      body = renderBody(suite, kase, exceptions);
+      body = renderBody(suite, kase);
     } catch (e) {
-      throw new GeneratorError(
-        `[${suite.yaml}] case "${rawName}": ${(e as Error).message}`,
-      );
+      throw new GeneratorError(`[${suite.yaml}] case "${rawName}": ${(e as Error).message}`);
     }
 
-    const signature =
-      suite.yaml === 'delivery_environment.yaml'
-        ? `    public async Task ${methodName}()\n`
-        : `    public void ${methodName}()\n`;
-    const block =
-      `\n` +
-      `    [Fact(DisplayName = ${csStringLiteral(rawName)})]\n` +
-      signature +
-      `    {\n` +
-      body +
-      `    }\n`;
-    rendered.push({ source: block });
+    rendered.push({
+      source:
+        `\n` +
+        `    [Fact(DisplayName = ${csStringLiteral(rawName)})]\n` +
+        `    public async Task ${methodName}()\n` +
+        `    {\n` +
+        body +
+        `    }\n`,
+    });
   }
-
-  return { rendered, exceptions };
+  return rendered;
 }
 
-/**
- * Render a single test method body (everything between the opening `{` and
- * closing `}`). Returns text with a trailing newline. Indented eight spaces
- * (xUnit class body is at four; method body is at eight).
- */
-function renderBody(
-  suite: SuiteEntry,
-  kase: YamlCase,
-  exceptions: Set<string>,
-): string {
-  if (suite.yaml === 'datadir_environment.yaml') {
-    return renderDatadirBody(kase, exceptions);
-  }
-  if (suite.yaml === 'datadir_value_type.yaml') {
-    return renderDatadirValueTypeBody(kase);
-  }
-  if (suite.yaml === 'delivery_environment.yaml') {
-    return renderDeliveryBody(kase);
-  }
-  if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
-    return renderPostBody(kase);
-  }
+/** Body of one test method (indented eight spaces, trailing newline). */
+function renderBody(suite: SuiteEntry, kase: YamlCase): string {
+  if (suite.yaml === 'datadir_environment.yaml') return renderDatadirBody(kase);
+  if (suite.yaml === 'datadir_value_type.yaml') return renderDatadirValueTypeBody(kase);
+  if (suite.yaml === 'delivery_environment.yaml') return renderDeliveryBody(kase);
+  if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') return renderTelemetryBody(kase);
   // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
   // server-mode case carrying it would silently lose the raw-Value assertion,
   // so fail the generator loudly instead.
-  if (
-    kase.expected &&
-    Object.prototype.hasOwnProperty.call(kase.expected, 'raw_value_type')
-  ) {
-    throw new Error(
-      `expected.raw_value_type is only valid in datadir_value_type.yaml, not ${suite.yaml}`,
-    );
+  if (kase.expected && Object.prototype.hasOwnProperty.call(kase.expected, 'raw_value_type')) {
+    throw new Error(`expected.raw_value_type is only valid in datadir_value_type.yaml, not ${suite.yaml}`);
   }
-  return renderEvalBody(kase, exceptions);
+  return renderEvalBody(kase);
+}
+
+const I = '        ';
+
+// ---------------------------------------------------------------------------
+// Client construction
+// ---------------------------------------------------------------------------
+
+/**
+ * `await using var client = TestSetup.NewClient(new QuonfigOptions { ... });`
+ * TestSetup.NewClient only routes env lookups through the per-test env
+ * overrides and turns off what a test must not touch (dev-context
+ * injection, datadir file watching, telemetry when no sender is injected).
+ */
+function renderNewClient(optionInits: string[], indent = I, varName = 'client'): string {
+  let out = `${indent}await using var ${varName} = TestSetup.NewClient(new QuonfigOptions\n`;
+  out += `${indent}{\n`;
+  for (const o of optionInits) out += `${indent}    ${o},\n`;
+  out += `${indent}});\n`;
+  return out;
+}
+
+function datadirOptionInits(): string[] {
+  return ['Datadir = TestSetup.DATADIR', 'Environment = TestSetup.ENV_ID'];
+}
+
+/**
+ * YAML on_no_default follows the Prefab numbering: 1 = raise, 2 = return
+ * nil. sdk-net's equivalents are OnNoDefault.Throw (the default) and
+ * OnNoDefault.Ignore.
+ */
+function onNoDefaultEnum(val: unknown): string {
+  if (val === 1) return 'OnNoDefault.Throw';
+  if (val === 2) return 'OnNoDefault.Ignore';
+  throw new Error(`unsupported client_overrides.on_no_default=${JSON.stringify(val)}`);
+}
+
+function renderEnvScope(envVars: Record<string, unknown>): string {
+  const entries = Object.entries(envVars);
+  if (entries.length === 0) return '';
+  const args = entries.flatMap(([k, v]) => [
+    csStringLiteral(k),
+    csStringLiteral(v === null || v === undefined ? '' : String(v)),
+  ]);
+  return `${I}using var env = TestSetup.Env(${args.join(', ')});\n`;
 }
 
 // ---------------------------------------------------------------------------
-// Eval-style body renderer (get / enabled / get_or_raise / etc)
+// Getter calls
 // ---------------------------------------------------------------------------
 
-function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
-  const expected = kase.expected ?? {};
+interface Receiver {
+  /** Setup lines (e.g. `var scoped = client.WithContext(...)`). */
+  setup: string;
+  /** Expression the getter is called on. */
+  target: string;
+  /** Per-call contexts argument, or null when the target is a bound client. */
+  callContext: string | null;
+  bound: boolean;
+}
+
+/**
+ * Feed the block / local tiers through the public layering API:
+ *   block + local -> client.WithContext(block).WithContext(local)
+ *   block         -> client.WithContext(block)
+ *   local         -> client.GetX(key, local, ...)
+ * The global tier goes into QuonfigOptions.GlobalContext (see
+ * renderEvalBody).
+ */
+function receiverFor(kase: YamlCase, clientVar = 'client'): Receiver {
+  const block = kase.contexts?.block;
+  const local = kase.contexts?.local;
+  const hasBlock = !!block && Object.keys(block).length > 0;
+  const hasLocal = !!local && Object.keys(local).length > 0;
+  if (hasBlock) {
+    let setup = `${I}var scoped = ${clientVar}.WithContext(${csContextSet(block)});\n`;
+    if (hasLocal) {
+      setup = `${I}var scoped = ${clientVar}.WithContext(${csContextSet(block)})\n${I}    .WithContext(${csContextSet(local)});\n`;
+    }
+    return { setup, target: 'scoped', callContext: null, bound: true };
+  }
+  if (hasLocal) {
+    return { setup: '', target: clientVar, callContext: csContextSet(local), bound: false };
+  }
+  return { setup: '', target: clientVar, callContext: null, bound: false };
+}
+
+interface GetterSpec {
+  method: string;
+  renderDefault: (v: unknown) => string;
+}
+
+const GETTERS: Record<string, GetterSpec> = {
+  STRING: { method: 'GetString', renderDefault: (v) => csStringLiteral(String(v)) },
+  INT: {
+    method: 'GetLong',
+    renderDefault: (v) => {
+      if (typeof v !== 'number' || !Number.isInteger(v)) throw new Error(`INT default must be an integer, got ${JSON.stringify(v)}`);
+      return `${v}L`;
+    },
+  },
+  DOUBLE: {
+    method: 'GetDouble',
+    renderDefault: (v) => {
+      if (typeof v !== 'number') throw new Error(`DOUBLE default must be a number, got ${JSON.stringify(v)}`);
+      return formatCsDouble(v);
+    },
+  },
+  BOOLEAN: {
+    method: 'GetBool',
+    renderDefault: (v) => {
+      if (typeof v !== 'boolean') throw new Error(`BOOLEAN default must be a bool, got ${JSON.stringify(v)}`);
+      return v ? 'true' : 'false';
+    },
+  },
+  STRING_LIST: {
+    method: 'GetStringList',
+    renderDefault: (v) => {
+      if (!Array.isArray(v)) throw new Error(`STRING_LIST default must be a list, got ${JSON.stringify(v)}`);
+      return csStringArray(v);
+    },
+  },
+  JSON: { method: 'GetJson', renderDefault: (v) => csLiteral(v) },
+  // input.default on a DURATION case is integer milliseconds (get.yaml).
+  DURATION: {
+    method: 'GetDuration',
+    renderDefault: (v) => {
+      if (typeof v !== 'number' || !Number.isInteger(v)) throw new Error(`DURATION default must be integer ms, got ${JSON.stringify(v)}`);
+      return `TimeSpan.FromTicks(${v}L * TimeSpan.TicksPerMillisecond)`;
+    },
+  },
+};
+
+function yamlTypeOf(kase: YamlCase): string {
+  if (kase.type === undefined || kase.type === null) {
+    throw new Error('case has no `type:`; the typed getter cannot be chosen');
+  }
+  const t = kase.type.toString().toUpperCase();
+  if (!GETTERS[t]) throw new Error(`unsupported type: ${t}`);
+  return t;
+}
+
+/** Build `<target>.<Method>(key[, ctx][, defaultValue: d])`, optionally a Details variant. */
+function getterCall(kase: YamlCase, recv: Receiver, key: string, details = false): string {
   const input = kase.input ?? {};
-  const overrides = kase.client_overrides ?? {};
-  const envVars = kase.env_vars ?? {};
-  const merged = mergeContexts(kase.contexts);
-  const fn = (kase.function ?? 'get').toString();
-  const isRaise = expected.status === 'raise';
-  const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
+  const func = (kase.function ?? 'get').toString();
+  const keyLit = csStringLiteral(key);
 
-  const indent = '        ';
-  const hasEnv = Object.keys(envVars).length > 0;
-  const hasClientOverrides = hasClientConstructionOverrides(overrides);
+  if (func === 'enabled') {
+    if (details) throw new Error('enabled has no Details variant');
+    const args = [keyLit];
+    if (recv.callContext) args.push(recv.callContext);
+    return `${recv.target}.IsFeatureEnabled(${args.join(', ')})`;
+  }
+  if (func !== 'get' && func !== 'get_or_raise') {
+    throw new Error(`unsupported function: ${func}`);
+  }
+  const spec = GETTERS[yamlTypeOf(kase)]!;
+  const args = [keyLit];
+  if (recv.callContext) args.push(recv.callContext);
+  if (Object.prototype.hasOwnProperty.call(input, 'default')) {
+    args.push(`defaultValue: ${spec.renderDefault((input as { default?: unknown }).default)}`);
+  }
+  return `${recv.target}.${spec.method}${details ? 'Details' : ''}(${args.join(', ')})`;
+}
 
+function caseKey(kase: YamlCase): string {
+  const input = kase.input ?? {};
   const key = (input.key ?? input.flag) as string | undefined;
   if (!key || key.toString().length === 0) {
-    throw new Error('case has no input.key/flag and no raise expectation');
+    throw new Error('case has no input.key/flag');
   }
-  const ctxLit = renderContextsLiteral(merged);
-
-  // repeat + values_seen (qfg-t9wo): evaluate N times through the resolver
-  // path, assert the SET of values seen equals values_seen exactly.
-  const rspec = repeatSpec(kase);
-  if (rspec) {
-    if (hasEnv || hasClientOverrides || fn !== 'get') {
-      throw new Error('`repeat` / `values_seen` is only supported on plain `get` cases');
-    }
-    repeatValueType(kase, rspec);
-    const want = rspec.valuesSeen.map((v) => csLiteral(v)).join(', ');
-    let rb = '';
-    rb += `${indent}var seen = new System.Collections.Generic.HashSet<object?>();\n`;
-    rb += `${indent}for (var i = 0; i < ${rspec.repeat}; i++)\n`;
-    rb += `${indent}{\n`;
-    rb += `${indent}    seen.Add(TestSetup.ResolveCase(${csStringLiteral(key)}, ${ctxLit}));\n`;
-    rb += `${indent}}\n`;
-    rb += `${indent}Assert.True(\n`;
-    rb += `${indent}    seen.SetEquals(new object?[] { ${want} }),\n`;
-    rb += `${indent}    $"values seen over ${rspec.repeat} evaluations: {string.Join(", ", seen)}");\n`;
-    return rb;
-  }
-
-  let body = '';
-  if (hasEnv) {
-    body += `${indent}TestSetup.WithEnv(${envMapLiteral(envVars)}, () =>\n`;
-    body += `${indent}{\n`;
-  }
-  const inner = hasEnv ? indent + '    ' : indent;
-
-  if (hasClientOverrides) {
-    body += renderClientConstructionBody(kase, key, ctxLit, expected, exceptions, inner);
-  } else if (isRaise) {
-    body += renderRaiseBody(kase, key, ctxLit, expected, exceptions, inner);
-  } else {
-    body += renderHappyPathBody(kase, key, ctxLit, expected, fn, yamlType, input, inner);
-  }
-
-  if (hasEnv) {
-    body += `${indent}});\n`;
-  }
-  return body;
+  return key.toString();
 }
 
-function renderHappyPathBody(
-  kase: YamlCase,
-  key: string,
-  ctxLit: string,
-  expected: { value?: unknown; millis?: number; [k: string]: unknown },
-  fn: string,
-  yamlType: string,
-  input: { default?: unknown; [k: string]: unknown },
-  indent: string,
-): string {
-  const keyLit = csStringLiteral(key);
-  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
-  const def = (input as { default?: unknown }).default;
+// ---------------------------------------------------------------------------
+// Assertions
+// ---------------------------------------------------------------------------
 
-  // DURATION cases (expected.millis) go through the PUBLIC typed getters
-  // (Quonfig.GetDuration + Quonfig.GetDurationDetails) — what a customer calls
-  // — with integer-exact millisecond comparison (qfg-2agi.4). No test-only
-  // parser and no tolerance: a green case here proves the public API.
-  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    if (fn !== 'get' || hasDefault) {
-      throw new Error(
-        `DURATION case "${kase.name}": only plain \`get\` without default is supported ` +
-          `through the public getter (got function=${fn}, default=${hasDefault}).`,
-      );
-    }
-    const millis = expected.millis as number;
-    if (!Number.isInteger(millis)) {
-      throw new Error(`DURATION case "${kase.name}": expected.millis must be an integer`);
-    }
-    return `${indent}TestSetup.AssertPublicDurationMillis(${keyLit}, ${ctxLit}, ${millis}L);\n`;
-  }
-
-  // Pick the call shape — same trichotomy as java.ts:
-  //   function: enabled → EnabledCase
-  //   has default       → GetCase (mirrors public Quonfig.Get)
-  //   otherwise         → ResolveCase (direct evaluator/resolver path)
-  let actualExpr: string;
-  if (fn === 'enabled') {
-    actualExpr = `TestSetup.EnabledCase(${keyLit}, ${ctxLit})`;
-  } else if (hasDefault) {
-    actualExpr = `TestSetup.GetCase(${keyLit}, ${ctxLit}, ${csLiteral(def)})`;
-  } else {
-    actualExpr = `TestSetup.ResolveCase(${keyLit}, ${ctxLit})`;
-  }
-
-  let body = '';
-  body += `${indent}object? actual = ${actualExpr};\n`;
-  body += renderAssertion(indent, expected, fn, yamlType);
-  return body;
-}
-
-function renderRaiseBody(
-  _kase: YamlCase,
-  key: string,
-  ctxLit: string,
-  expected: { error?: string; [k: string]: unknown },
-  exceptions: Set<string>,
-  indent: string,
-): string {
-  const keyLit = csStringLiteral(key);
-  const errKey = (expected.error ?? '').toString();
-  if (errKey.length === 0) {
-    throw new Error('expected.status: raise but no expected.error provided');
-  }
-  const errClass = lookupErrorClass('dotnet', errKey);
-  if (!errClass) {
-    throw new Error(
-      `no .NET error mapping for expected.error="${errKey}". ` +
-        `Add it to src/shared/error-mapping.ts (DOTNET_ERRORS).`,
-    );
-  }
-  exceptions.add(errClass);
-  const shortName = shortClassName(errClass);
-
-  let body = '';
-  body += `${indent}Assert.Throws<${shortName}>(() =>\n`;
-  body += `${indent}    TestSetup.RunRaiseCase(${keyLit}, ${ctxLit}, ${csStringLiteral(errKey)}));\n`;
-  return body;
-}
-
-function renderClientConstructionBody(
-  kase: YamlCase,
-  key: string,
-  _ctxLit: string,
-  expected: { value?: unknown; status?: string; error?: string; [k: string]: unknown },
-  exceptions: Set<string>,
-  indent: string,
-): string {
-  const keyLit = csStringLiteral(key);
-  const overrides = kase.client_overrides ?? {};
-  const fn = (kase.function ?? 'get').toString();
-  const isRaise = expected.status === 'raise';
-  const errKey = (expected.error ?? '').toString();
-
-  const onInit = (() => {
-    const v = overrides.on_init_failure;
-    if (typeof v !== 'string') return 'raise';
-    return v.replace(/^:/, '');
-  })();
-  const timeoutSec =
-    typeof overrides.initialization_timeout_sec === 'number'
-      ? overrides.initialization_timeout_sec
-      : 0.01;
-  const apiURL =
-    typeof overrides.prefab_api_url === 'string'
-      ? overrides.prefab_api_url
-      : 'http://10.255.255.1:8080';
-
-  if (isRaise && errKey === 'initialization_timeout') {
-    return (
-      `${indent}TestSetup.AssertInitializationTimeoutError(${keyLit}, ` +
-      `${formatCsNumber(timeoutSec)}, ${csStringLiteral(apiURL)}, ` +
-      `${csStringLiteral(onInit)});\n`
-    );
-  }
-  if (isRaise) {
-    const errClass = lookupErrorClass('dotnet', errKey);
-    if (!errClass) {
-      throw new Error(
-        `no .NET error mapping for expected.error="${errKey}" in client-construction case.`,
-      );
-    }
-    exceptions.add(errClass);
-    const shortName = shortClassName(errClass);
-    return (
-      `${indent}TestSetup.AssertClientConstructionRaises<${shortName}>(${keyLit}, ` +
-      `${formatCsNumber(timeoutSec)}, ${csStringLiteral(apiURL)}, ` +
-      `${csStringLiteral(onInit)}, ${csStringLiteral(fn)});\n`
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    return (
-      `${indent}Assert.Equal(${csLiteral(expected.value)}, ` +
-      `TestSetup.AssertClientConstructionValue(${keyLit}, ` +
-      `${formatCsNumber(timeoutSec)}, ${csStringLiteral(apiURL)}, ` +
-      `${csStringLiteral(onInit)}, ${csStringLiteral(fn)}));\n`
-    );
-  }
-  throw new Error('client-construction case has no expected.value or expected.error');
-}
-
-function renderAssertion(
-  indent: string,
-  expected: { value?: unknown; millis?: number; [k: string]: unknown },
-  _fn: string,
-  _yamlType: string,
-): string {
-  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    // DURATION cases must be asserted through the public getter
-    // (renderHappyPathBody → TestSetup.AssertPublicDurationMillis). Refuse to
-    // emit a raw-resolved-value assertion that would bypass it (qfg-2agi.4).
-    throw new Error(
-      'expected.millis is only supported on plain happy-path get cases (public GetDuration path)',
-    );
-  }
+function renderValueAssertion(kase: YamlCase, actualExpr: string): string {
+  const expected = kase.expected ?? {};
   if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
     throw new Error('case has no expected.value or expected.millis');
   }
   const v = expected.value;
+  const func = (kase.function ?? 'get').toString();
+  const t = func === 'enabled' ? 'BOOLEAN' : yamlTypeOf(kase);
+
+  let out = `${I}var actual = ${actualExpr};\n`;
   if (v === null || v === undefined) {
-    return `${indent}Assert.Null(actual);\n`;
+    if (func === 'enabled') throw new Error('IsFeatureEnabled returns bool; expected.value cannot be null');
+    return out + `${I}Assert.Null(actual);\n`;
   }
-  if (typeof v === 'boolean') {
-    return `${indent}Assert.Equal(${v ? 'true' : 'false'}, actual);\n`;
+  switch (t) {
+    case 'BOOLEAN':
+      if (typeof v !== 'boolean') throw new Error(`BOOLEAN case expects a bool, got ${JSON.stringify(v)}`);
+      return out + `${I}Assert.${v ? 'True' : 'False'}(actual);\n`;
+    case 'INT':
+      if (typeof v !== 'number' || !Number.isInteger(v)) throw new Error(`INT case expects an integer, got ${JSON.stringify(v)}`);
+      return out + `${I}Assert.Equal(${v}L, actual);\n`;
+    case 'DOUBLE':
+      if (typeof v !== 'number') throw new Error(`DOUBLE case expects a number, got ${JSON.stringify(v)}`);
+      return out + `${I}TestSetup.AssertDoubleEquals(${formatCsDouble(v)}, actual);\n`;
+    case 'STRING':
+      if (typeof v !== 'string') throw new Error(`STRING case expects a string, got ${JSON.stringify(v)}`);
+      return out + `${I}Assert.Equal(${csStringLiteral(v)}, actual);\n`;
+    case 'STRING_LIST':
+      if (!Array.isArray(v)) throw new Error(`STRING_LIST case expects a list, got ${JSON.stringify(v)}`);
+      return out + `${I}Assert.Equal(${csStringArray(v)}, actual);\n`;
+    case 'JSON':
+      return out + `${I}Assert.Equal(${csLiteral(v)}, actual);\n`;
+    case 'DURATION':
+      throw new Error('DURATION cases assert expected.millis (or a null value)');
+    default:
+      throw new Error(`unsupported type ${t}`);
   }
-  if (typeof v === 'number' && !Number.isInteger(v)) {
-    // Floating-point: Assert.Equal(object, object) on doubles uses
-    // .Equals which is bit-exact. Use a TestSetup helper so generators can
-    // centralize tolerance.
-    return `${indent}TestSetup.AssertDoubleEquals(${formatCsNumber(v)}, actual);\n`;
-  }
-  return `${indent}Assert.Equal(${csLiteral(v)}, actual);\n`;
 }
 
-function envMapLiteral(envVars: Record<string, unknown>): string {
-  const entries = Object.entries(envVars);
-  if (entries.length === 0) return 'TestSetup.Map()';
-  const args = entries.flatMap(([k, v]) => {
-    const sval = v === null || v === undefined ? '' : String(v);
-    return [csStringLiteral(k), csStringLiteral(sval)];
-  });
-  return 'TestSetup.Map(' + args.join(', ') + ')';
-}
-
-function renderContextsLiteral(merged: ContextTypes): string {
-  if (Object.keys(merged).length === 0) return 'TestSetup.Map()';
-  return csLiteral(merged);
-}
-
-function hasClientConstructionOverrides(overrides: unknown): boolean {
-  if (!overrides || typeof overrides !== 'object') return false;
-  const o = overrides as Record<string, unknown>;
-  return (
-    'initialization_timeout_sec' in o ||
-    'prefab_api_url' in o ||
-    'on_init_failure' in o
-  );
-}
-
-/** "Quonfig.Sdk.Exceptions.QuonfigKeyNotFoundException" → "QuonfigKeyNotFoundException". */
-function shortClassName(fqcn: string): string {
-  const idx = fqcn.lastIndexOf('.');
-  return idx === -1 ? fqcn : fqcn.slice(idx + 1);
-}
-
-/** "Quonfig.Sdk.Exceptions.QuonfigKeyNotFoundException" → "Quonfig.Sdk.Exceptions". */
-function namespaceOf(fqcn: string): string {
-  const idx = fqcn.lastIndexOf('.');
-  return idx === -1 ? '' : fqcn.slice(0, idx);
-}
-
-// ---------------------------------------------------------------------------
-// datadir_environment.yaml renderer
-// ---------------------------------------------------------------------------
-
-function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
+/**
+ * DURATION: integer-exact milliseconds through GetDuration AND
+ * GetDurationDetails (qfg-2agi.4). With no default the Details reason must
+ * not be Error; with a default (malformed-value cases) the default is
+ * returned and the reason is not asserted.
+ */
+function renderDurationAssertion(kase: YamlCase, recv: Receiver, key: string): string {
   const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
+  const millis = expected.millis;
+  if (typeof millis !== 'number' || !Number.isInteger(millis)) {
+    throw new Error('expected.millis must be an integer');
+  }
+  if (yamlTypeOf(kase) !== 'DURATION') {
+    throw new Error('expected.millis is only valid on DURATION cases');
+  }
+  const hasDefault = Object.prototype.hasOwnProperty.call(kase.input ?? {}, 'default');
+  const want = `TimeSpan.FromTicks(${millis}L * TimeSpan.TicksPerMillisecond)`;
+  let out = '';
+  out += `${I}Assert.Equal(${want}, ${getterCall(kase, recv, key)});\n`;
+  out += `${I}var details = ${getterCall(kase, recv, key, true)};\n`;
+  out += `${I}Assert.Equal(${want}, details.Value);\n`;
+  if (!hasDefault) {
+    out += `${I}Assert.NotEqual(Reason.Error, details.Reason);\n`;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Eval-style body (get / enabled / get_or_raise / contexts / weighted)
+// ---------------------------------------------------------------------------
+
+function renderEvalBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
   const overrides = kase.client_overrides ?? {};
   const envVars = kase.env_vars ?? {};
-  const func = (kase.function ?? 'get').toString();
   const isRaise = expected.status === 'raise';
+  const key = caseKey(kase);
 
-  const indent = '        ';
-  const hasEnv = Object.keys(envVars).length > 0;
+  if (hasHttpOverrides(overrides)) {
+    return renderHttpClientBody(kase, key);
+  }
 
+  const opts = datadirOptionInits();
+  const global = kase.contexts?.global;
+  if (global && Object.keys(global).length > 0) {
+    opts.push(`GlobalContext = ${csContextSet(global)}`);
+  }
+  if ('on_no_default' in overrides) {
+    opts.push(`OnNoDefault = ${onNoDefaultEnum(overrides.on_no_default)}`);
+  }
+  for (const k of Object.keys(overrides)) {
+    if (k !== 'on_no_default') throw new Error(`unsupported client_overrides.${k} on an eval case`);
+  }
+
+  let body = renderEnvScope(envVars);
+  body += renderNewClient(opts);
+  const recv = receiverFor(kase);
+  body += recv.setup;
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times through the public
+  // getter, assert the SET of values seen equals values_seen exactly.
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    if (isRaise) throw new Error('`repeat` cannot be combined with a raise expectation');
+    repeatValueType(kase, rspec);
+    const want = rspec.valuesSeen.map((v) => csLiteral(v)).join(', ');
+    body += `${I}var seen = new HashSet<object?>();\n`;
+    body += `${I}for (var i = 0; i < ${rspec.repeat}; i++)\n`;
+    body += `${I}{\n`;
+    body += `${I}    seen.Add(${getterCall(kase, recv, key)});\n`;
+    body += `${I}}\n`;
+    body += `${I}Assert.True(\n`;
+    body += `${I}    seen.SetEquals(new object?[] { ${want} }),\n`;
+    body += `${I}    $"values seen over ${rspec.repeat} evaluations: {string.Join(", ", seen)}");\n`;
+    return body;
+  }
+
+  if (isRaise) {
+    const cls = errorClass((expected.error ?? '').toString());
+    body += `${I}Assert.Throws<${cls}>(() => ${getterCall(kase, recv, key)});\n`;
+    return body;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
+    body += renderDurationAssertion(kase, recv, key);
+    return body;
+  }
+
+  body += renderValueAssertion(kase, getterCall(kase, recv, key));
+  return body;
+}
+
+function hasHttpOverrides(overrides: unknown): boolean {
+  if (!overrides || typeof overrides !== 'object') return false;
+  const o = overrides as Record<string, unknown>;
+  return 'initialization_timeout_sec' in o || 'prefab_api_url' in o || 'on_init_failure' in o;
+}
+
+/**
+ * client_overrides with an init timeout / unreachable API URL: build a real
+ * delivery-mode client and drive InitAsync + the getter exactly as a
+ * customer would.
+ */
+function renderHttpClientBody(kase: YamlCase, key: string): string {
+  const expected = kase.expected ?? {};
+  const overrides = kase.client_overrides ?? {};
+  const isRaise = expected.status === 'raise';
+  const errKey = (expected.error ?? '').toString();
+
+  const onInit = typeof overrides.on_init_failure === 'string' ? overrides.on_init_failure.replace(/^:/, '') : 'raise';
+  if (onInit !== 'raise' && onInit !== 'return') {
+    throw new Error(`unsupported on_init_failure=${onInit}`);
+  }
+  const timeoutSec =
+    typeof overrides.initialization_timeout_sec === 'number' ? overrides.initialization_timeout_sec : 0.01;
+  const apiURL = typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : 'http://10.255.255.1:8080';
+
+  const opts = [
+    'SdkKey = "integration-tests"',
+    `ApiUrls = new[] { ${csStringLiteral(apiURL)} }`,
+    // No SSE / fallback polling against the unreachable URL.
+    'StreamUrls = Array.Empty<string>()',
+    'FallbackPollEnabled = false',
+    `InitTimeout = TimeSpan.FromMilliseconds(${Math.max(1, Math.round(timeoutSec * 1000))})`,
+    `OnInitFailure = ${onInit === 'return' ? 'OnInitFailure.ReturnDefaults' : 'OnInitFailure.Throw'}`,
+  ];
+
+  let body = renderNewClient(opts);
+  const recv = receiverFor(kase);
+  if (isRaise && errKey === 'initialization_timeout') {
+    body += `${I}await Assert.ThrowsAsync<${errorClass(errKey)}>(() => client.InitAsync());\n`;
+    return body;
+  }
+  body += `${I}await client.InitAsync();\n`;
+  body += recv.setup;
+  if (isRaise) {
+    body += `${I}Assert.Throws<${errorClass(errKey)}>(() => ${getterCall(kase, recv, key)});\n`;
+    return body;
+  }
+  return body + renderValueAssertion(kase, getterCall(kase, recv, key));
+}
+
+// ---------------------------------------------------------------------------
+// datadir_environment.yaml
+// ---------------------------------------------------------------------------
+
+function datadirOverrideInits(kase: YamlCase): string[] {
+  const overrides = kase.client_overrides ?? {};
   const opts: string[] = [];
+  for (const k of Object.keys(overrides)) {
+    if (k !== 'datadir' && k !== 'environment') throw new Error(`unsupported client_overrides.${k} on a datadir case`);
+  }
   if ('datadir' in overrides) {
-    opts.push(`"datadir", TestSetup.DATADIR`);
+    if (overrides.datadir !== 'integration-tests') {
+      throw new Error(`unsupported client_overrides.datadir=${JSON.stringify(overrides.datadir)}`);
+    }
+    opts.push('Datadir = TestSetup.DATADIR');
   }
   if ('environment' in overrides) {
-    opts.push(`"environment", ${csStringLiteral(String(overrides.environment))}`);
+    opts.push(`Environment = ${csStringLiteral(String(overrides.environment))}`);
   }
-  const optsLit = opts.length > 0 ? `TestSetup.Map(${opts.join(', ')})` : 'TestSetup.Map()';
+  return opts;
+}
 
-  let body = '';
-  if (hasEnv) {
-    body += `${indent}TestSetup.WithEnv(${envMapLiteral(envVars)}, () =>\n`;
-    body += `${indent}{\n`;
-  }
-  const inner = hasEnv ? indent + '    ' : indent;
+function renderDatadirBody(kase: YamlCase): string {
+  const expected = kase.expected ?? {};
+  const func = (kase.function ?? 'get').toString();
+  const opts = datadirOverrideInits(kase);
 
-  if (func === 'init' && isRaise) {
-    const errKey = (expected.error ?? '').toString();
-    if (errKey.length === 0) {
-      throw new Error('init raise case missing expected.error');
-    }
-    const errClass = lookupErrorClass('dotnet', errKey);
-    if (!errClass) {
-      throw new Error(
-        `no .NET error mapping for expected.error="${errKey}" in datadir init case.`,
-      );
-    }
-    exceptions.add(errClass);
-    const shortName = shortClassName(errClass);
-    body += `${inner}Assert.Throws<${shortName}>(() => TestSetup.DatadirClient(${optsLit}));\n`;
-  } else {
-    const key = (input.key ?? input.flag) as string | undefined;
-    if (!key || key.toString().length === 0) {
-      throw new Error('datadir get-case has no input.key/flag');
-    }
-    if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
-      throw new Error('datadir get-case has no expected.value');
-    }
-    const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
-    body += `${inner}object? actual = TestSetup.DatadirGet(${optsLit}, ${csStringLiteral(key)});\n`;
-    body += renderAssertion(inner, expected, func, yamlType);
+  let body = renderEnvScope(kase.env_vars ?? {});
+  if (func === 'init') {
+    if (expected.status !== 'raise') throw new Error('init case without a raise expectation');
+    const cls = errorClass((expected.error ?? '').toString());
+    body += `${I}var options = new QuonfigOptions\n${I}{\n`;
+    for (const o of opts) body += `${I}    ${o},\n`;
+    body += `${I}};\n`;
+    body += `${I}Assert.Throws<${cls}>(() => TestSetup.NewClient(options));\n`;
+    body += `${I}await Task.CompletedTask;\n`;
+    return body;
   }
-
-  if (hasEnv) {
-    body += `${indent}});\n`;
-  }
+  const key = caseKey(kase);
+  body += renderNewClient(opts);
+  body += renderValueAssertion(kase, getterCall(kase, receiverFor(kase), key));
   return body;
 }
 
 // ---------------------------------------------------------------------------
-// datadir_value_type.yaml renderer
+// datadir_value_type.yaml
 // ---------------------------------------------------------------------------
 
 /**
- * Render a datadir_value_type.yaml case body. Asserts the public typed
- * getter's coerced value (via TestSetup.DatadirGet), and — when
- * `expected.raw_value_type == "number"` — ALSO asserts the LOADED envelope's
- * raw Value is a real number, not a string, via TestSetup.AssertRawValueNumeric.
- *
- * NOTE: TestSetup.AssertRawValueNumeric does not exist yet — TestSetup is
- * built under qfg-zp7i.13. Emitting the reference now is consistent with
- * dotnet.ts's documented "fail-loud until TestSetup lands" policy: the
- * generated file references a helper that the SDK side must supply.
+ * Asserts the public typed getter's value and, when
+ * `expected.raw_value_type == "number"`, that the datadir loader produced a
+ * real number (not a string) for the key. The public getters coerce a
+ * numeric string, so only the loaded envelope can show the difference.
  */
 function renderDatadirValueTypeBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
-  const overrides = kase.client_overrides ?? {};
-  const func = (kase.function ?? 'get').toString();
-  const indent = '        ';
-
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('datadir_value_type case has no input.key/flag');
-  }
-  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    throw new Error('datadir_value_type case has no expected.value');
-  }
   const rawType = expected.raw_value_type;
   if (rawType !== undefined && rawType !== 'number') {
     throw new Error(
-      `datadir_value_type case has unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
+      `unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
     );
   }
-
-  const opts: string[] = [];
-  if ('datadir' in overrides) {
-    opts.push(`"datadir", TestSetup.DATADIR`);
-  }
-  if ('environment' in overrides) {
-    opts.push(`"environment", ${csStringLiteral(String(overrides.environment))}`);
-  }
-  const optsLit = opts.length > 0 ? `TestSetup.Map(${opts.join(', ')})` : 'TestSetup.Map()';
-
-  const keyLit = csStringLiteral(key);
-  const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
-
-  let body = '';
-  body += `${indent}object? actual = TestSetup.DatadirGet(${optsLit}, ${keyLit});\n`;
-  body += renderAssertion(indent, expected, func, yamlType);
+  const key = caseKey(kase);
+  const opts = datadirOverrideInits(kase);
+  let body = renderNewClient(opts);
+  body += renderValueAssertion(kase, getterCall(kase, receiverFor(kase), key));
   if (rawType === 'number') {
-    // Inspect the LOADED envelope's raw Value, before unwrap.
-    // AssertRawValueNumeric is added under qfg-zp7i.13 (does not exist yet).
-    body += `${indent}TestSetup.AssertRawValueNumeric(${optsLit}, ${keyLit});\n`;
+    const env = 'environment' in (kase.client_overrides ?? {}) ? csStringLiteral(String(kase.client_overrides!.environment)) : 'TestSetup.ENV_ID';
+    body += `${I}TestSetup.AssertLoadedValueNumeric(${env}, ${csStringLiteral(key)});\n`;
   }
   return body;
 }
 
 // ---------------------------------------------------------------------------
-// delivery_environment.yaml renderer (self-contained WireMock server)
+// delivery_environment.yaml (self-contained WireMock server)
 // ---------------------------------------------------------------------------
 
 /**
- * Render a delivery_environment.yaml case body. Cross-SDK DELIVERY-WIRE-SHAPE
- * gate (qfg-xpln): stands up a WireMock server returning the literal `envelope`
- * JSON on /api/v2/configs (the shape api-delivery emits in SDK-key mode),
- * builds a real Quonfig in SDK-key mode (NO Environment pin unless
- * client_overrides.environment is set), awaits InitAsync (which installs the
- * wire envelope), and asserts the resolved boolean. Exercises the wire parse +
- * meta.environment selection path the datadir tests never touch. Modeled on
- * the hand-written HttpDeliveryEnvironmentTests.cs (Transport/).
+ * Cross-SDK DELIVERY-WIRE-SHAPE gate (qfg-xpln): stands up a WireMock server
+ * returning the literal `envelope` JSON on /api/v2/configs, builds a real
+ * Quonfig in SDK-key mode (NO Environment pin unless
+ * client_overrides.environment is set), awaits InitAsync, and asserts the
+ * typed getter's value.
  */
 function renderDeliveryBody(kase: YamlCase): string {
-  const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
   const overrides = kase.client_overrides ?? {};
   const envelope = kase.envelope;
-  const indent = '        ';
-
   if (!envelope || typeof envelope !== 'object') {
     throw new Error('delivery case has no `envelope` wire shape');
-  }
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('delivery case has no input.key/flag');
-  }
-  if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    throw new Error('delivery case has no expected.value');
-  }
-  const expVal = expected.value;
-  if (typeof expVal !== 'boolean') {
-    throw new Error(`delivery case currently only handles boolean expected.value, got ${typeof expVal}`);
   }
   if (!('sdk_key' in overrides)) {
     throw new Error('delivery case must set client_overrides.sdk_key (SDK-key mode)');
   }
+  const key = caseKey(kase);
 
-  const envelopeJson = JSON.stringify(envelope);
-  const sdkKey = String(overrides.sdk_key);
-  const expCs = expVal === true ? 'true' : 'false';
-
-  const optionInits: string[] = [
-    `SdkKey = ${csStringLiteral(sdkKey)}`,
+  const opts: string[] = [
+    `SdkKey = ${csStringLiteral(String(overrides.sdk_key))}`,
     `ApiUrls = new[] { server.Urls[0] }`,
     `StreamUrls = Array.Empty<string>()`,
     `FallbackPollEnabled = false`,
     `InitTimeout = TimeSpan.FromSeconds(5)`,
   ];
   if ('environment' in overrides) {
-    optionInits.push(`Environment = ${csStringLiteral(String(overrides.environment))}`);
+    opts.push(`Environment = ${csStringLiteral(String(overrides.environment))}`);
   }
-  // Opt out of telemetry so sdk-net's now-live reporter (qfg-gxm6) does not POST
-  // to the default (production) telemetry endpoint — the WireMock server above only
-  // stubs /api/v2/configs. Mirrors sdk-go's WithAllTelemetryDisabled(), sdk-java's
-  // disableTelemetry(true), and node's collectEvaluationSummaries+contextUploadMode
-  // pair. A full opt-out (both) constructs no reporter, so nothing hits the wire.
-  optionInits.push('CollectEvaluationSummaries = false');
-  optionInits.push('ContextUploadMode = ContextUploadMode.None');
 
   let body = '';
-  body += `${indent}using var server = WireMockServer.Start();\n`;
-  body += `${indent}server\n`;
-  body += `${indent}    .Given(Request.Create().WithPath("/api/v2/configs").UsingGet())\n`;
-  body += `${indent}    .RespondWith(Response.Create().WithStatusCode(200)\n`;
-  body += `${indent}        .WithHeader("Content-Type", "application/json")\n`;
-  body += `${indent}        .WithHeader("ETag", "\\"v1\\"")\n`;
-  body += `${indent}        .WithBody(${csStringLiteral(envelopeJson)}));\n`;
+  body += `${I}using var server = WireMockServer.Start();\n`;
+  body += `${I}server\n`;
+  body += `${I}    .Given(Request.Create().WithPath("/api/v2/configs").UsingGet())\n`;
+  body += `${I}    .RespondWith(Response.Create().WithStatusCode(200)\n`;
+  body += `${I}        .WithHeader("Content-Type", "application/json")\n`;
+  body += `${I}        .WithHeader("ETag", "\\"v1\\"")\n`;
+  body += `${I}        .WithBody(${csStringLiteral(JSON.stringify(envelope))}));\n`;
   body += `\n`;
-  body += `${indent}await using var client = new Quonfig(new QuonfigOptions\n`;
-  body += `${indent}{\n`;
-  body += optionInits.map((o) => `${indent}    ${o},`).join('\n') + '\n';
-  body += `${indent}});\n`;
-  body += `${indent}await client.InitAsync();\n`;
+  body += renderNewClient(opts);
+  body += `${I}await client.InitAsync();\n`;
   body += `\n`;
-  body += `${indent}Assert.Equal(${expCs}, client.GetBool(${csStringLiteral(key)}));\n`;
+  body += renderValueAssertion(kase, getterCall(kase, receiverFor(kase), key));
   return body;
 }
 
 // ---------------------------------------------------------------------------
-// post.yaml / telemetry.yaml renderer
+// post.yaml / telemetry.yaml
 // ---------------------------------------------------------------------------
 
-function renderPostBody(kase: YamlCase): string {
+function contextUploadModeEnum(raw: unknown): string {
+  const s = String(raw).replace(/^:/, '').toLowerCase();
+  if (s === 'none') return 'ContextUploadMode.None';
+  if (s === 'shape_only' || s === 'shapes_only') return 'ContextUploadMode.ShapesOnly';
+  if (s === 'periodic_example') return 'ContextUploadMode.PeriodicExample';
+  throw new Error(`unsupported context_upload_mode=${JSON.stringify(raw)}`);
+}
+
+/**
+ * Evaluate through a real datadir client whose ITelemetrySender captures
+ * what the reporter sends; disposing the client drains the reporter (one
+ * POST of the live window). The assertion reads the captured wire payload,
+ * normalized to the YAML's expected_data shape.
+ */
+function renderTelemetryBody(kase: YamlCase): string {
   const aggregator = (kase.aggregator ?? '').toString();
-  if (aggregator.length === 0) {
-    throw new Error('post/telemetry case missing aggregator');
+  if (!['context_shape', 'evaluation_summary', 'example_contexts'].includes(aggregator)) {
+    throw new Error(`unsupported aggregator=${JSON.stringify(aggregator)}`);
   }
-  const endpoint = (kase.endpoint ?? '').toString();
-  if (endpoint.length === 0) {
+  if ((kase.endpoint ?? '').toString().length === 0) {
     throw new Error('post/telemetry case missing endpoint');
   }
-
-  const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
-  const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
-    ? kase.expected_data
-    : null;
   const overrides = kase.client_overrides ?? {};
-  const merged = mergeContexts(kase.contexts);
+  const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
+  const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data') ? kase.expected_data : null;
 
-  const aggLit = csStringLiteral(aggregator);
-  const overridesLit = csLiteral(overrides);
-  const dataLit = csLiteral(data);
-  const expectedLit = csLiteral(expectedData);
-  const endpointLit = csStringLiteral(endpoint);
-  const ctxLit = renderContextsLiteral(merged);
+  const opts = [...datadirOptionInits(), 'TelemetrySender = telemetry.Sender'];
+  for (const [k, v] of Object.entries(overrides)) {
+    if (k === 'context_upload_mode') opts.push(`ContextUploadMode = ${contextUploadModeEnum(v)}`);
+    else if (k === 'collect_evaluation_summaries') {
+      if (typeof v !== 'boolean') throw new Error('collect_evaluation_summaries must be a bool');
+      opts.push(`CollectEvaluationSummaries = ${v ? 'true' : 'false'}`);
+    } else throw new Error(`unsupported client_overrides.${k} on a telemetry case`);
+  }
+  if (kase.contexts?.global || kase.contexts?.local) {
+    throw new Error('telemetry cases support only the block context tier');
+  }
 
-  const indent = '        ';
-  let body = '';
-  body += `${indent}object? aggregator = TestSetup.BuildAggregator(${aggLit}, ${overridesLit});\n`;
-  body += `${indent}TestSetup.FeedAggregator(aggregator, ${aggLit}, ${dataLit}, ${ctxLit});\n`;
-  // xUnit2003 forbids Assert.Equal(null, ...) — use Assert.Null for parity with the
-  // analyzer-friendly form. Generator emits the correct shape so callers don't need
-  // to special-case post.yaml in code review.
-  if (expectedData === null || expectedData === undefined) {
-    body += `${indent}Assert.Null(TestSetup.AggregatorPost(aggregator, ${aggLit}, ${endpointLit}));\n`;
+  const J = I + '    ';
+  let calls = '';
+  if (aggregator === 'evaluation_summary') {
+    const d = (data ?? {}) as Record<string, unknown>;
+    const keys = Array.isArray(d.keys) ? d.keys : [];
+    const without = Array.isArray(d.keys_without_context) ? d.keys_without_context : [];
+    for (const k of Object.keys(d)) {
+      if (k !== 'keys' && k !== 'keys_without_context') throw new Error(`unsupported data.${k}`);
+    }
+    if (keys.length > 0) {
+      calls += `${J}var scoped = client.WithContext(${csContextSet(kase.contexts?.block)});\n`;
+      for (const k of keys) calls += `${J}telemetry.Evaluate(scoped, ${csStringLiteral(String(k))});\n`;
+    }
+    if (without.length > 0) {
+      calls += `${J}var unscoped = client.WithContext(new ContextSet());\n`;
+      for (const k of without) calls += `${J}telemetry.Evaluate(unscoped, ${csStringLiteral(String(k))});\n`;
+    }
   } else {
-    body += `${indent}Assert.Equal(${expectedLit}, TestSetup.AggregatorPost(aggregator, ${aggLit}, ${endpointLit}));\n`;
+    if (kase.contexts?.block) throw new Error('context telemetry cases take their contexts from data');
+    const records = Array.isArray(data) ? data : [data ?? {}];
+    for (const r of records) {
+      calls += `${J}telemetry.Evaluate(client.WithContext(${csContextSet(r as ContextTypes)}), ${csStringLiteral(TELEMETRY_CONTEXT_PROBE_KEY)});\n`;
+    }
+  }
+
+  let body = `${I}var telemetry = new TestSetup.TelemetryCapture();\n`;
+  body += `${I}await using (var client = TestSetup.NewClient(new QuonfigOptions\n`;
+  body += `${I}{\n`;
+  for (const o of opts) body += `${I}    ${o},\n`;
+  body += `${I}}))\n`;
+  body += `${I}{\n`;
+  body += calls;
+  body += `${I}}\n`;
+  const post = `telemetry.Sent(${csStringLiteral(aggregator)})`;
+  if (expectedData === null || expectedData === undefined) {
+    body += `${I}Assert.Null(${post});\n`;
+  } else {
+    body += `${I}Assert.Equal(${csLiteral(expectedData)}, ${post});\n`;
   }
   return body;
 }
@@ -786,70 +871,37 @@ function renderPostBody(kase: YamlCase): string {
 // File assembly
 // ---------------------------------------------------------------------------
 
-function renderDeliveryFile(suite: SuiteEntry, result: RenderResult): string {
-  let out = '';
-  out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
-  out += `// Regenerate with:\n`;
-  out += `//   cd integration-test-data/generators && npm run generate -- --target=dotnet\n`;
-  out += `// Source: ${GENERATOR_PATH}\n`;
-  out += `\n`;
-  out += `using System;\n`;
-  out += `using System.Threading.Tasks;\n`;
-  out += `using WireMock.RequestBuilders;\n`;
-  out += `using WireMock.ResponseBuilders;\n`;
-  out += `using WireMock.Server;\n`;
-  out += `using Xunit;\n`;
-  out += `\n`;
-  out += `namespace ${NAMESPACE};\n`;
-  out += `\n`;
-  out += `public sealed class ${suite.className}\n`;
-  out += `{\n`;
-  for (const r of result.rendered) {
-    out += r.source;
+function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
+  const src = rendered.map((r) => r.source).join('');
+  const usings = new Set<string>(['System', 'System.Threading.Tasks', 'Xunit']);
+  if (/\bHashSet<\b/.test(src)) usings.add('System.Collections.Generic');
+  if (/\bQuonfig[A-Za-z]*Exception\b/.test(src)) usings.add('Quonfig.Sdk.Exceptions');
+  if (/\bWireMockServer\b/.test(src)) {
+    usings.add('WireMock.RequestBuilders');
+    usings.add('WireMock.ResponseBuilders');
+    usings.add('WireMock.Server');
   }
-  out += `}\n`;
-  return out;
-}
-
-function renderFile(suite: SuiteEntry, result: RenderResult): string {
-  if (suite.yaml === 'delivery_environment.yaml') {
-    return renderDeliveryFile(suite, result);
-  }
-  let out = '';
-  out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
-  out += `// Regenerate with:\n`;
-  out += `//   cd integration-test-data/generators && npm run generate -- --target=dotnet\n`;
-  out += `// Source: ${GENERATOR_PATH}\n`;
-  out += `\n`;
-
-  // Collect namespaces used by exception classes. Always import Xunit.
-  // The TestSetup helpers live in the same namespace as the generated class,
-  // so no extra `using` is needed for them.
-  const namespaces = new Set<string>();
-  namespaces.add('Xunit');
-  for (const fqcn of result.exceptions) {
-    const ns = namespaceOf(fqcn);
-    if (ns.length > 0) namespaces.add(ns);
-  }
-  // Stable, conventional ordering: System.* first, then everything else alphabetical.
-  const sorted = Array.from(namespaces).sort((a, b) => {
+  const sorted = Array.from(usings).sort((a, b) => {
     const aSystem = a === 'System' || a.startsWith('System.');
     const bSystem = b === 'System' || b.startsWith('System.');
     if (aSystem && !bSystem) return -1;
     if (!aSystem && bSystem) return 1;
     return a.localeCompare(b);
   });
-  for (const ns of sorted) {
-    out += `using ${ns};\n`;
-  }
+
+  let out = '';
+  out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
+  out += `// Regenerate with:\n`;
+  out += `//   cd integration-test-data/generators && npm run generate -- --target=dotnet\n`;
+  out += `// Source: ${GENERATOR_PATH}\n`;
+  out += `\n`;
+  for (const ns of sorted) out += `using ${ns};\n`;
   out += `\n`;
   out += `namespace ${NAMESPACE};\n`;
   out += `\n`;
-  out += `public class ${suite.className}\n`;
+  out += `public sealed class ${suite.className}\n`;
   out += `{\n`;
-  for (const r of result.rendered) {
-    out += r.source;
-  }
+  out += src;
   out += `}\n`;
   return out;
 }
@@ -877,13 +929,11 @@ export function runDotnetTarget(dataRoot: string, outDir: string): DotnetRunResu
           `entry=${suite.className} derived=${dotnetSuiteClassName(suite.yaml)}`,
       );
     }
-    const yamlPath = resolve(dataRoot, suite.yaml);
-    const cases = loadYamlFile(yamlPath, suite.yaml);
-    const result = renderCases(suite, cases);
-    const src = renderFile(suite, result);
+    const cases = loadYamlFile(resolve(dataRoot, suite.yaml), suite.yaml);
+    const rendered = renderCases(suite, cases);
     const outPath = resolve(outDir, suite.out);
-    writeFileSync(outPath, src);
-    written.push({ path: outPath, cases: result.rendered.length });
+    writeFileSync(outPath, renderFile(suite, rendered));
+    written.push({ path: outPath, cases: rendered.length });
   }
 
   return { written };

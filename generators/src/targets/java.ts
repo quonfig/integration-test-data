@@ -1,37 +1,44 @@
 // Java target — generates JUnit 5 test classes under
-// sdk-java/src/test/java/com/quonfig/sdk/integration/.
+// sdk-java/core/src/test/java/com/quonfig/sdk/integration/.
 //
 // Hard rules (set by project owner):
 //
 //   1. NO auto-skips, NO omissions, NO defensive shortcuts. Every YAML case
-//      becomes a real, runnable `@Test` method. Cases the SDK can't yet
-//      satisfy emit code that calls a sensibly-named helper on TestSetup —
-//      runtime/compile failure is the *desired* surfacing behavior, not a
-//      hidden gap. The TestSetup class itself is added in the SDK-side
-//      iteration bead (qfg-mol-5bw); until then, the generated files compile
-//      symbol-resolution-wise (file structure, imports, syntax) but their
-//      method bodies reference TestSetup.* helpers that don't exist.
+//      becomes a real, runnable `@Test` method.
 //
-//   2. Unmapped raise errors and missing input keys FAIL the generator
-//      (rather than silently skipping the case at runtime).
+//   2. Unmapped raise errors, missing input keys and unknown YAML shapes FAIL
+//      the generator (rather than silently skipping the case at runtime).
 //
-//   3. Mirrors the structure of python.ts and node.ts — the same six-stage
-//      flow (load YAML, render cases, render file, write file). Anything
-//      Java-specific (Map.of vs map literal, lambda vs def, checked vs
-//      unchecked exceptions) is handled in the helpers below.
+//   3. PUBLIC API ONLY (qfg-2agi.30). Every case runs through the public
+//      `Quonfig` / `BoundQuonfig` client exactly as a customer would:
+//
+//        - YAML `type:` picks the typed getter (getString / getLong /
+//          getDouble / getBool / getStringList / getJson / getDuration);
+//          `function: enabled` calls featureIsOn; `function: get_or_raise`
+//          calls the matching get*OrThrow (qfg-2agi.27).
+//        - Context tiers are NOT pre-merged in TypeScript. `global` becomes
+//          Options.globalContext, `block` becomes Quonfig.withContext(...)
+//          (a BoundQuonfig) and `local` is the per-call ContextSet, so the
+//          SDK's own merge rule is what gets tested.
+//        - Telemetry cases evaluate through a real client wired to a
+//          capturing TelemetrySender and assert on the payload drained by
+//          Quonfig.flush(); no collector is fed by hand.
+//        - The harness (sdk-java TestSetup.java) only builds clients, turns
+//          literals into ContextSets, and projects the captured telemetry
+//          payload onto the YAML's expected_data shape. It never evaluates,
+//          resolves or throws on the SDK's behalf.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
 import {
   javaSuiteClassName,
   javaTestMethodName,
   uniqueSuffix,
 } from '../shared/case-id.js';
-import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
-import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
+import type { CaseContexts, ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
   yaml: string;
@@ -90,11 +97,74 @@ const SUITES: SuiteEntry[] = [
 const PACKAGE = 'com.quonfig.sdk.integration';
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/java.ts';
 
+/**
+ * Existing config evaluated to feed a context record into the real client for
+ * the context_shape / example_contexts telemetry cases: the SDK records the
+ * evaluation context on every evaluation of a key that exists.
+ */
+const CONTEXT_PROBE_KEY = 'brand.new.string';
+
+/**
+ * Cases sdk-java cannot express through its public API, with the reason. Each
+ * entry still renders a real @Test (the body is generated as usual) but it is
+ * annotated @Disabled with the reason, so the gap is visible in every test
+ * report instead of being faked green. Keyed by "<yaml>::<case name>".
+ * A key listed here that no longer matches a case fails the generator.
+ */
+const UNSUPPORTED: Record<string, string> = {
+  'get_or_raise.yaml::get_or_raise raises the correct error if it doesn\'t raise on init timeout':
+    'sdk-java has no on_init_failure option: a client that misses initTimeout always throws ' +
+    'QuonfigInitTimeoutException from get*OrThrow, never the :return-mode missing_default error',
+};
+
 class GeneratorError extends Error {
   constructor(msg: string) {
     super(msg);
     this.name = 'GeneratorError';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Datadir value-type index (telemetry cases name keys, not types)
+// ---------------------------------------------------------------------------
+
+/**
+ * key -> valueType ("string", "int", ...) read from the fixture datadir. Used
+ * only to pick the typed getter a customer would call for a key the YAML
+ * names without a `type:` (the telemetry `data.keys` lists).
+ */
+function loadValueTypes(datadir: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) {
+        walk(p);
+      } else if (name.endsWith('.json')) {
+        const doc = JSON.parse(readFileSync(p, 'utf8')) as { key?: unknown; valueType?: unknown };
+        if (typeof doc.key === 'string' && typeof doc.valueType === 'string') {
+          out.set(doc.key, doc.valueType);
+        }
+      }
+    }
+  };
+  walk(datadir);
+  return out;
+}
+
+const VALUE_TYPE_TO_YAML: Record<string, string> = {
+  string: 'STRING',
+  int: 'INT',
+  double: 'DOUBLE',
+  bool: 'BOOLEAN',
+  string_list: 'STRING_LIST',
+  json: 'JSON',
+  duration: 'DURATION',
+  log_level: 'LOG_LEVEL',
+};
+
+interface RenderCtx {
+  valueTypes: Map<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,14 +193,8 @@ export function javaLiteral(value: unknown): string {
 
 /**
  * Render a number as a Java numeric literal. Integer values *always* get the
- * `L` suffix so they auto-box as `Long`, not `Integer` — the SDK's INT type,
- * Jackson's JSON-int parsing (via {@code raw.asLong()}), and the env-var
- * coercion path (`Long.parseLong`) all surface integer values as {@code
- * Long}, so emitting bare {@code int} literals would make
- * `assertEquals(expected, actual)` fail against any of those returns. Non-
- * integers render with a trailing `d` so the JVM treats them as `double`
- * even when they round-trip as e.g. "9.95". NaN/Infinity use the
- * `Double.NaN` / `Double.POSITIVE_INFINITY` constants.
+ * `L` suffix so they auto-box as `Long` (the SDK's INT type); non-integers get
+ * a trailing `d`.
  */
 function formatJavaNumber(n: number): string {
   if (Number.isNaN(n)) return 'Double.NaN';
@@ -171,6 +235,199 @@ export function javaStringLiteral(s: string): string {
   return out;
 }
 
+/** `TestSetup.ctx(...)` — a public ContextSet built from a `{name: {prop: v}}` literal. */
+function ctxLiteral(tier: ContextTypes): string {
+  return `TestSetup.ctx(${javaLiteral(tier)})`;
+}
+
+function envMapLiteral(envVars: Record<string, unknown>): string {
+  const entries = Object.entries(envVars);
+  if (entries.length === 0) return 'TestSetup.map()';
+  const args = entries.flatMap(([k, v]) => {
+    const sval = v === null || v === undefined ? '' : String(v);
+    return [javaStringLiteral(k), javaStringLiteral(sval)];
+  });
+  return 'TestSetup.map(' + args.join(', ') + ')';
+}
+
+/** "com.quonfig.sdk.exceptions.QuonfigKeyNotFoundException" → "QuonfigKeyNotFoundException". */
+function shortClassName(fqcn: string): string {
+  const idx = fqcn.lastIndexOf('.');
+  return idx === -1 ? fqcn : fqcn.slice(idx + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Typed public getters
+// ---------------------------------------------------------------------------
+
+interface Getter {
+  /** Typed getter, e.g. "getString". The *Details / *OrThrow names derive from it. */
+  method: string;
+  /** Render the YAML `input.default` as an argument of the getter's value type. */
+  defaultArg(v: unknown): string;
+}
+
+function scalarDefault(kind: string, check: (v: unknown) => boolean, render: (v: never) => string) {
+  return (v: unknown): string => {
+    if (v === null || v === undefined) return 'null';
+    if (!check(v)) {
+      throw new Error(`${kind} default must match the getter type, got ${JSON.stringify(v)}`);
+    }
+    return render(v as never);
+  };
+}
+
+function getterFor(yamlType: string): Getter {
+  switch (yamlType) {
+    case 'STRING':
+    case 'LOG_LEVEL':
+      return {
+        method: 'getString',
+        defaultArg: scalarDefault('STRING', (v) => typeof v === 'string', (v: string) =>
+          javaStringLiteral(v),
+        ),
+      };
+    case 'INT':
+      return {
+        method: 'getLong',
+        defaultArg: scalarDefault(
+          'INT',
+          (v) => typeof v === 'number' && Number.isInteger(v),
+          (v: number) => `${v}L`,
+        ),
+      };
+    case 'DOUBLE':
+      return {
+        method: 'getDouble',
+        defaultArg: scalarDefault('DOUBLE', (v) => typeof v === 'number', (v: number) =>
+          Number.isInteger(v) ? `${v}.0d` : `${v}d`,
+        ),
+      };
+    case 'BOOLEAN':
+      return {
+        method: 'getBool',
+        defaultArg: scalarDefault('BOOLEAN', (v) => typeof v === 'boolean', (v: boolean) =>
+          v ? 'Boolean.TRUE' : 'Boolean.FALSE',
+        ),
+      };
+    case 'STRING_LIST':
+      return {
+        method: 'getStringList',
+        defaultArg: scalarDefault(
+          'STRING_LIST',
+          (v) => Array.isArray(v) && v.every((x) => typeof x === 'string'),
+          (v: string[]) => `java.util.List.of(${v.map(javaStringLiteral).join(', ')})`,
+        ),
+      };
+    case 'JSON':
+      return { method: 'getJson', defaultArg: (v) => javaLiteral(v) };
+    case 'DURATION':
+      // YAML duration defaults are milliseconds (same unit as expected.millis).
+      return {
+        method: 'getDuration',
+        defaultArg: scalarDefault(
+          'DURATION',
+          (v) => typeof v === 'number' && Number.isInteger(v),
+          (v: number) => `java.time.Duration.ofMillis(${v}L)`,
+        ),
+      };
+    default:
+      throw new Error(`no sdk-java typed getter for YAML type ${JSON.stringify(yamlType)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client + context tiers
+// ---------------------------------------------------------------------------
+
+interface Tiers {
+  global?: ContextTypes;
+  block?: ContextTypes;
+  local?: ContextTypes;
+}
+
+function tiersOf(contexts: CaseContexts | undefined | null): Tiers {
+  const out: Tiers = {};
+  if (!contexts || typeof contexts !== 'object') return out;
+  for (const k of Object.keys(contexts)) {
+    if (k !== 'global' && k !== 'block' && k !== 'local') {
+      throw new Error(`unknown context tier ${JSON.stringify(k)}`);
+    }
+  }
+  for (const tier of ['global', 'block', 'local'] as const) {
+    const t = contexts[tier];
+    if (t && typeof t === 'object') out[tier] = t;
+  }
+  return out;
+}
+
+/**
+ * The receiver a getter is called on. `client` is the public Quonfig; with a
+ * block tier it is `scoped`, the BoundQuonfig from client.withContext(block).
+ */
+interface Receiver {
+  name: 'client' | 'scoped';
+  bound: boolean;
+  /** Per-call ContextSet literal (local tier), or null. */
+  local: string | null;
+}
+
+/**
+ * Emit the client acquisition for an eval case and return the opening lines,
+ * the closing lines, the receiver and the indentation for the body.
+ *
+ *   no global tier → the shared fixture client (TestSetup.client())
+ *   global tier    → a fresh client built with Options.globalContext(global)
+ *   block tier     → BoundQuonfig scoped = client.withContext(block)
+ */
+function openClient(
+  tiers: Tiers,
+  indent: string,
+): { open: string; close: string; recv: Receiver; inner: string } {
+  let open = '';
+  let close = '';
+  let inner = indent;
+  if (tiers.global) {
+    open += `${indent}try (Quonfig client = TestSetup.newClient(${ctxLiteral(tiers.global)})) {\n`;
+    close = `${indent}}\n`;
+    inner = indent + '  ';
+  } else {
+    open += `${indent}Quonfig client = TestSetup.client();\n`;
+  }
+  let recv: Receiver = {
+    name: 'client',
+    bound: false,
+    local: tiers.local ? ctxLiteral(tiers.local) : null,
+  };
+  if (tiers.block) {
+    open += `${inner}BoundQuonfig scoped = client.withContext(${ctxLiteral(tiers.block)});\n`;
+    recv = { ...recv, name: 'scoped', bound: true };
+  }
+  return { open, close, recv, inner };
+}
+
+/** `<recv>.<method>(key, def[, local])` — the typed getter with a default. */
+function callWithDefault(recv: Receiver, method: string, keyLit: string, defArg: string): string {
+  if (recv.local) return `${recv.name}.${method}(${keyLit}, ${defArg}, ${recv.local})`;
+  return `${recv.name}.${method}(${keyLit}, ${defArg})`;
+}
+
+/** `<recv>.<method>OrThrow(key[, local])`. */
+function callOrThrow(recv: Receiver, method: string, keyLit: string): string {
+  if (recv.local) return `${recv.name}.${method}OrThrow(${keyLit}, ${recv.local})`;
+  return `${recv.name}.${method}OrThrow(${keyLit})`;
+}
+
+/** featureIsOn through the public API for the receiver/tier shape. */
+function callFeatureIsOn(recv: Receiver, keyLit: string): string {
+  if (!recv.bound) return `client.featureIsOn(${keyLit}, ${recv.local ?? 'null'})`;
+  if (!recv.local) return `scoped.featureIsOn(${keyLit})`;
+  // BoundQuonfig has no featureIsOn(key, ctx); a customer with a bound client
+  // and a per-call context reads the flag with getBool, which is exactly what
+  // featureIsOn does (getBool(key, false, ctx) == TRUE).
+  return `Boolean.TRUE.equals(scoped.getBool(${keyLit}, Boolean.FALSE, ${recv.local}))`;
+}
+
 // ---------------------------------------------------------------------------
 // Per-suite rendering
 // ---------------------------------------------------------------------------
@@ -186,7 +443,12 @@ interface RenderResult {
   exceptions: Set<string>;
 }
 
-function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderResult {
+function renderCases(
+  suite: SuiteEntry,
+  cases: NormalizedCase[],
+  rctx: RenderCtx,
+  unsupportedSeen: Set<string>,
+): RenderResult {
   const rendered: RenderedCase[] = [];
   const seen = new Map<string, number>();
   const exceptions = new Set<string>();
@@ -199,16 +461,24 @@ function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderResult {
 
     let body: string;
     try {
-      body = renderBody(suite, kase, exceptions);
+      body = renderBody(suite, kase, exceptions, rctx);
     } catch (e) {
       throw new GeneratorError(
         `[${suite.yaml}] case "${rawName}": ${(e as Error).message}`,
       );
     }
 
+    const unsupportedKey = `${suite.yaml}::${rawName}`;
+    let disabled = '';
+    if (Object.prototype.hasOwnProperty.call(UNSUPPORTED, unsupportedKey)) {
+      unsupportedSeen.add(unsupportedKey);
+      disabled = `  @Disabled(${javaStringLiteral('unsupported by sdk-java: ' + UNSUPPORTED[unsupportedKey])})\n`;
+    }
+
     const block =
       `\n` +
       `  @Test\n` +
+      disabled +
       `  @DisplayName(${javaStringLiteral(rawName)})\n` +
       `  void ${methodName}() throws Exception {\n` +
       body +
@@ -227,6 +497,7 @@ function renderBody(
   suite: SuiteEntry,
   kase: YamlCase,
   exceptions: Set<string>,
+  rctx: RenderCtx,
 ): string {
   if (suite.yaml === 'datadir_environment.yaml') {
     return renderDatadirBody(kase, exceptions);
@@ -238,11 +509,9 @@ function renderBody(
     return renderDeliveryBody(kase);
   }
   if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
-    return renderPostBody(kase);
+    return renderTelemetryBody(kase, rctx);
   }
-  // raw_value_type is a datadir-only field — see datadir_value_type.yaml. A
-  // server-mode case carrying it would silently lose the raw-Value assertion,
-  // so fail the generator loudly instead.
+  // raw_value_type is a datadir-only field — see datadir_value_type.yaml.
   if (
     kase.expected &&
     Object.prototype.hasOwnProperty.call(kase.expected, 'raw_value_type')
@@ -255,48 +524,48 @@ function renderBody(
 }
 
 // ---------------------------------------------------------------------------
-// Eval-style body renderer (get / enabled / get_or_raise / etc)
+// Eval-style body renderer (get / enabled / get_or_raise / precedence / ...)
 // ---------------------------------------------------------------------------
+
+const EVAL_OVERRIDE_KEYS = new Set([
+  // sdk-java has no on_no_default knob: a typed getter called without a
+  // default returns null, which is what every on_no_default case expects.
+  'on_no_default',
+  'initialization_timeout_sec',
+  'prefab_api_url',
+  'on_init_failure',
+]);
 
 function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
   const expected = kase.expected ?? {};
   const input = kase.input ?? {};
-  const overrides = kase.client_overrides ?? {};
+  const overrides = (kase.client_overrides ?? {}) as Record<string, unknown>;
   const envVars = kase.env_vars ?? {};
-  const merged = mergeContexts(kase.contexts);
   const fn = (kase.function ?? 'get').toString();
   const isRaise = expected.status === 'raise';
-  const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
 
-  const indent = '    ';
-  const hasEnv = Object.keys(envVars).length > 0;
-  const hasClientOverrides = hasClientConstructionOverrides(overrides);
+  for (const k of Object.keys(overrides)) {
+    if (!EVAL_OVERRIDE_KEYS.has(k)) {
+      throw new Error(`unsupported client_overrides.${k} for an eval case`);
+    }
+  }
+  if (!['get', 'enabled', 'get_or_raise'].includes(fn)) {
+    throw new Error(`unsupported function ${JSON.stringify(fn)}`);
+  }
 
   const key = (input.key ?? input.flag) as string | undefined;
   if (!key || key.toString().length === 0) {
-    throw new Error('case has no input.key/flag and no raise expectation');
+    throw new Error('case has no input.key/flag');
   }
   const keyLit = javaStringLiteral(key);
-  const ctxLit = renderContextsLiteral(merged);
+  const tiers = tiersOf(kase.contexts);
 
-  // repeat + values_seen (qfg-t9wo): evaluate N times through the resolver
-  // path, assert the SET of values seen equals values_seen exactly.
-  // Fully-qualified java.util types so no import bookkeeping is needed.
-  const rspec = repeatSpec(kase);
-  if (rspec) {
-    if (hasEnv || hasClientOverrides || fn !== 'get') {
-      throw new Error('`repeat` / `values_seen` is only supported on plain `get` cases');
-    }
-    repeatValueType(kase, rspec);
-    const want = rspec.valuesSeen.map((v) => javaLiteral(v)).join(', ');
-    let rb = '';
-    rb += `${indent}java.util.Set<Object> seen = new java.util.HashSet<>();\n`;
-    rb += `${indent}for (int i = 0; i < ${rspec.repeat}; i++) {\n`;
-    rb += `${indent}  seen.add(TestSetup.resolveCase(${keyLit}, ${ctxLit}));\n`;
-    rb += `${indent}}\n`;
-    rb += `${indent}assertEquals(java.util.Set.of(${want}), seen, "values seen over ${rspec.repeat} evaluations");\n`;
-    return rb;
-  }
+  const indent = '    ';
+  const hasEnv = Object.keys(envVars).length > 0;
+  const isInitCase =
+    'initialization_timeout_sec' in overrides ||
+    'prefab_api_url' in overrides ||
+    'on_init_failure' in overrides;
 
   let body = '';
   if (hasEnv) {
@@ -304,12 +573,13 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
   }
   const inner = hasEnv ? indent + '  ' : indent;
 
-  if (hasClientOverrides) {
-    body += renderClientConstructionBody(kase, key, ctxLit, expected, exceptions, inner);
-  } else if (isRaise) {
-    body += renderRaiseBody(kase, key, ctxLit, expected, exceptions, inner);
+  if (isInitCase) {
+    body += renderInitTimeoutBody(kase, keyLit, tiers, exceptions, inner);
   } else {
-    body += renderHappyPathBody(kase, key, ctxLit, expected, fn, yamlType, input, inner);
+    const { open, close, recv, inner: ci } = openClient(tiers, inner);
+    body += open;
+    body += renderEvalCall(kase, fn, keyLit, recv, exceptions, ci);
+    body += close;
   }
 
   if (hasEnv) {
@@ -318,236 +588,181 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
   return body;
 }
 
-function renderHappyPathBody(
+/** The getter call + assertion for one eval case, given the receiver. */
+function renderEvalCall(
   kase: YamlCase,
-  key: string,
-  ctxLit: string,
-  expected: { value?: unknown; millis?: number; [k: string]: unknown },
   fn: string,
-  yamlType: string,
-  input: { default?: unknown; [k: string]: unknown },
+  keyLit: string,
+  recv: Receiver,
+  exceptions: Set<string>,
   indent: string,
 ): string {
-  const keyLit = javaStringLiteral(key);
+  const expected = kase.expected ?? {};
+  const input = (kase.input ?? {}) as Record<string, unknown>;
   const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
-  const def = (input as { default?: unknown }).default;
-
-  // Pick the call shape — same trichotomy as node.ts:
-  //   function: enabled → enabledCase
-  //   has default       → getCase (mirrors public Quonfig#get)
-  //   otherwise         → resolveCase (direct evaluator/resolver path)
-  // DURATION cases (expected.millis) go through the PUBLIC typed getters
-  // (Quonfig#getDuration + Quonfig#getDurationDetails) — what a customer calls
-  // — with integer-exact millisecond comparison (qfg-2agi.4). No test-only
-  // parser and no tolerance: a green case here proves the public API.
-  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    if (fn !== 'get' || hasDefault) {
-      throw new Error(
-        `DURATION case "${kase.name}": only plain \`get\` without default is supported ` +
-          `through the public getter (got function=${fn}, default=${hasDefault}).`,
-      );
-    }
-    const millis = expected.millis as number;
-    if (!Number.isInteger(millis)) {
-      throw new Error(`DURATION case "${kase.name}": expected.millis must be an integer`);
-    }
-    return (
-      `${indent}TestSetup.assertPublicDurationMillis(${keyLit}, ${ctxLit}, ${millis}L);\n`
-    );
-  }
-
-  let actualExpr: string;
-  if (fn === 'enabled') {
-    actualExpr = `TestSetup.enabledCase(${keyLit}, ${ctxLit})`;
-  } else if (hasDefault) {
-    actualExpr = `TestSetup.getCase(${keyLit}, ${ctxLit}, ${javaLiteral(def)})`;
-  } else {
-    actualExpr = `TestSetup.resolveCase(${keyLit}, ${ctxLit})`;
-  }
-
-  let body = '';
-  body += `${indent}Object actual = ${actualExpr};\n`;
-  body += renderAssertion(indent, expected, fn, yamlType);
-  return body;
-}
-
-function renderRaiseBody(
-  kase: YamlCase,
-  key: string,
-  ctxLit: string,
-  expected: { error?: string; [k: string]: unknown },
-  exceptions: Set<string>,
-  indent: string,
-): string {
-  const keyLit = javaStringLiteral(key);
-  const errKey = (expected.error ?? '').toString();
-  if (errKey.length === 0) {
-    throw new Error('expected.status: raise but no expected.error provided');
-  }
-  const errClass = lookupErrorClass('java', errKey);
-  if (!errClass) {
-    throw new Error(
-      `no Java error mapping for expected.error="${errKey}". ` +
-        `Add it to src/shared/error-mapping.ts (JAVA_ERRORS).`,
-    );
-  }
-  exceptions.add(errClass);
-  const shortName = shortClassName(errClass);
-
-  let body = '';
-  body += `${indent}assertThrows(${shortName}.class, () ->\n`;
-  body += `${indent}    TestSetup.runRaiseCase(${keyLit}, ${ctxLit}, ${javaStringLiteral(errKey)}));\n`;
-  return body;
-}
-
-function renderClientConstructionBody(
-  kase: YamlCase,
-  key: string,
-  ctxLit: string,
-  expected: { value?: unknown; status?: string; error?: string; [k: string]: unknown },
-  exceptions: Set<string>,
-  indent: string,
-): string {
-  const keyLit = javaStringLiteral(key);
-  const overrides = kase.client_overrides ?? {};
-  const fn = (kase.function ?? 'get').toString();
   const isRaise = expected.status === 'raise';
-  const errKey = (expected.error ?? '').toString();
 
-  const onInit = (() => {
-    const v = overrides.on_init_failure;
-    if (typeof v !== 'string') return 'raise';
-    return v.replace(/^:/, '');
-  })();
-  const timeoutSec =
-    typeof overrides.initialization_timeout_sec === 'number'
-      ? overrides.initialization_timeout_sec
-      : 0.01;
-  const apiURL =
-    typeof overrides.prefab_api_url === 'string'
-      ? overrides.prefab_api_url
-      : 'http://10.255.255.1:8080';
-
-  if (isRaise && errKey === 'initialization_timeout') {
-    return (
-      `${indent}TestSetup.assertInitializationTimeoutError(${keyLit}, ` +
-      `${formatJavaNumber(timeoutSec)}, ${javaStringLiteral(apiURL)}, ` +
-      `${javaStringLiteral(onInit)});\n`
-    );
+  // enabled → featureIsOn
+  if (fn === 'enabled') {
+    if (isRaise || hasDefault) throw new Error('enabled cases take no default and do not raise');
+    if (repeatSpec(kase)) throw new Error('`repeat` is not supported on enabled cases');
+    const v = expected.value;
+    if (typeof v !== 'boolean') throw new Error('enabled case needs a boolean expected.value');
+    return `${indent}assertEquals(${v}, ${callFeatureIsOn(recv, keyLit)});\n`;
   }
+
+  const yamlType = (kase.type ?? '').toString().toUpperCase();
+  if (yamlType.length === 0) throw new Error('get/get_or_raise case has no `type:`');
+  const getter = getterFor(yamlType);
+  const defArg = hasDefault ? getter.defaultArg(input.default) : 'null';
+
+  // get_or_raise that must raise → get*OrThrow, the SDK's own exception.
   if (isRaise) {
+    if (fn !== 'get_or_raise') {
+      throw new Error(`status: raise is only supported on get_or_raise (got ${fn})`);
+    }
+    if (hasDefault) throw new Error('a raise case cannot carry a default');
+    const errKey = (expected.error ?? '').toString();
+    if (errKey.length === 0) throw new Error('expected.status: raise but no expected.error');
     const errClass = lookupErrorClass('java', errKey);
     if (!errClass) {
       throw new Error(
-        `no Java error mapping for expected.error="${errKey}" in client-construction case.`,
+        `no Java error mapping for expected.error="${errKey}". ` +
+          `Add it to src/shared/error-mapping.ts (JAVA_ERRORS).`,
       );
     }
     exceptions.add(errClass);
-    const shortName = shortClassName(errClass);
     return (
-      `${indent}TestSetup.assertClientConstructionRaises(${keyLit}, ` +
-      `${formatJavaNumber(timeoutSec)}, ${javaStringLiteral(apiURL)}, ` +
-      `${javaStringLiteral(onInit)}, ${javaStringLiteral(fn)}, ${shortName}.class);\n`
+      `${indent}assertThrows(\n` +
+      `${indent}    ${shortClassName(errClass)}.class, () -> ${callOrThrow(recv, getter.method, keyLit)});\n`
     );
   }
-  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    return (
-      `${indent}assertEquals(${javaLiteral(expected.value)}, ` +
-      `TestSetup.assertClientConstructionValue(${keyLit}, ` +
-      `${formatJavaNumber(timeoutSec)}, ${javaStringLiteral(apiURL)}, ` +
-      `${javaStringLiteral(onInit)}, ${javaStringLiteral(fn)}));\n`
-    );
-  }
-  throw new Error('client-construction case has no expected.value or expected.error');
-}
 
-function renderAssertion(
-  indent: string,
-  expected: { value?: unknown; millis?: number; [k: string]: unknown },
-  fn: string,
-  yamlType: string,
-): string {
-  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    // DURATION cases must be asserted through the public getter
-    // (renderHappyPathBody → TestSetup.assertPublicDurationMillis). Refuse to
-    // emit a raw-resolved-value assertion that would bypass it (qfg-2agi.4).
-    throw new Error(
-      'expected.millis is only supported on plain happy-path get cases (public getDuration path)',
-    );
+  // get_or_raise with a default never raises: sdk-java's *OrThrow takes no
+  // default, so the customer call is the typed getter with that default.
+  // get_or_raise without a default and not raising → *OrThrow returning a value.
+  const call =
+    fn === 'get_or_raise' && !hasDefault
+      ? callOrThrow(recv, getter.method, keyLit)
+      : callWithDefault(recv, getter.method, keyLit, defArg);
+
+  // repeat + values_seen (qfg-t9wo): evaluate N times, assert the set seen.
+  const rspec = repeatSpec(kase);
+  if (rspec) {
+    repeatValueType(kase, rspec);
+    const want = rspec.valuesSeen.map((v) => javaLiteral(v)).join(', ');
+    let rb = '';
+    rb += `${indent}java.util.Set<Object> seen = new java.util.HashSet<>();\n`;
+    rb += `${indent}for (int i = 0; i < ${rspec.repeat}; i++) {\n`;
+    rb += `${indent}  seen.add(${call});\n`;
+    rb += `${indent}}\n`;
+    rb += `${indent}assertEquals(java.util.Set.of(${want}), seen, "values seen over ${rspec.repeat} evaluations");\n`;
+    return rb;
   }
+
+  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
+    if (yamlType !== 'DURATION') throw new Error('expected.millis needs type: DURATION');
+    const millis = expected.millis as number;
+    if (!Number.isInteger(millis)) throw new Error('expected.millis must be an integer');
+    let b = '';
+    b += `${indent}java.time.Duration actual = ${call};\n`;
+    b += `${indent}assertNotNull(actual, "getDuration returned null");\n`;
+    b += `${indent}assertEquals(${millis}L, actual.toMillis());\n`;
+    // Details carries the same value (BoundQuonfig has no per-call details overload).
+    if (!(recv.bound && recv.local) && fn === 'get') {
+      b += `${indent}assertEquals(\n`;
+      b += `${indent}    ${millis}L, ${callWithDefault(recv, 'getDurationDetails', keyLit, defArg)}.value().toMillis());\n`;
+    }
+    return b;
+  }
+
   if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
     throw new Error('case has no expected.value or expected.millis');
   }
   const v = expected.value;
   if (v === null || v === undefined) {
-    return `${indent}assertNull(actual);\n`;
+    return `${indent}assertNull(${call});\n`;
   }
-  if (typeof v === 'boolean') {
-    return `${indent}assertEquals(${v ? 'true' : 'false'}, actual);\n`;
+  if (yamlType === 'DURATION') {
+    throw new Error('DURATION cases assert expected.millis or a null expected.value');
   }
-  if (typeof v === 'number' && !Number.isInteger(v)) {
-    // Floating-point: assertEquals(Object, Object) on Doubles uses
-    // .equals() which is bit-exact. Use the (double, double, double) overload
-    // via TestSetup.assertDoubleEquals so generators can centralize tolerance.
-    return `${indent}TestSetup.assertDoubleEquals(${formatJavaNumber(v)}, actual);\n`;
+  if (yamlType === 'DOUBLE') {
+    if (typeof v !== 'number') throw new Error('DOUBLE expected.value must be a number');
+    return `${indent}assertEquals(${Number.isInteger(v) ? `${v}.0` : v}d, ${call});\n`;
   }
-  return `${indent}assertEquals(${javaLiteral(v)}, actual);\n`;
+  return `${indent}assertEquals(${javaLiteral(v)}, ${call});\n`;
 }
 
-function envMapLiteral(envVars: Record<string, unknown>): string {
-  const entries = Object.entries(envVars);
-  if (entries.length === 0) return 'TestSetup.map()';
-  const args = entries.flatMap(([k, v]) => {
-    const sval = v === null || v === undefined ? '' : String(v);
-    return [javaStringLiteral(k), javaStringLiteral(sval)];
-  });
-  return 'TestSetup.map(' + args.join(', ') + ')';
-}
-
-function renderContextsLiteral(merged: ContextTypes): string {
-  if (Object.keys(merged).length === 0) return 'TestSetup.map()';
-  return javaLiteral(merged);
-}
-
-function hasClientConstructionOverrides(overrides: unknown): boolean {
-  if (!overrides || typeof overrides !== 'object') return false;
-  const o = overrides as Record<string, unknown>;
-  return (
-    'initialization_timeout_sec' in o ||
-    'prefab_api_url' in o ||
-    'on_init_failure' in o
+/**
+ * client_overrides with initialization_timeout_sec / prefab_api_url /
+ * on_init_failure: a real SDK-key client pointed at prefab_api_url with
+ * initTimeout = initialization_timeout_sec, then the public getter.
+ */
+function renderInitTimeoutBody(
+  kase: YamlCase,
+  keyLit: string,
+  tiers: Tiers,
+  exceptions: Set<string>,
+  indent: string,
+): string {
+  const overrides = (kase.client_overrides ?? {}) as Record<string, unknown>;
+  if (tiers.global || tiers.block || tiers.local) {
+    throw new Error('init-timeout cases do not take contexts');
+  }
+  const timeoutSec = overrides.initialization_timeout_sec;
+  if (typeof timeoutSec !== 'number') {
+    throw new Error('init case needs a numeric client_overrides.initialization_timeout_sec');
+  }
+  const apiURL = overrides.prefab_api_url;
+  if (typeof apiURL !== 'string') {
+    throw new Error('init case needs client_overrides.prefab_api_url');
+  }
+  let b = '';
+  b += `${indent}try (Quonfig client =\n`;
+  b += `${indent}    TestSetup.httpClient(${javaStringLiteral(apiURL)}, ${formatJavaNumber(timeoutSec)})) {\n`;
+  b += renderEvalCall(
+    kase,
+    (kase.function ?? 'get').toString(),
+    keyLit,
+    { name: 'client', bound: false, local: null },
+    exceptions,
+    indent + '  ',
   );
-}
-
-/** "com.quonfig.sdk.exceptions.QuonfigKeyNotFoundException" → "QuonfigKeyNotFoundException". */
-function shortClassName(fqcn: string): string {
-  const idx = fqcn.lastIndexOf('.');
-  return idx === -1 ? fqcn : fqcn.slice(idx + 1);
+  b += `${indent}}\n`;
+  return b;
 }
 
 // ---------------------------------------------------------------------------
 // datadir_environment.yaml renderer
 // ---------------------------------------------------------------------------
 
-function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
-  const expected = kase.expected ?? {};
-  const input = kase.input ?? {};
-  const overrides = kase.client_overrides ?? {};
-  const envVars = kase.env_vars ?? {};
-  const func = (kase.function ?? 'get').toString();
-  const isRaise = expected.status === 'raise';
-
-  const indent = '    ';
-  const hasEnv = Object.keys(envVars).length > 0;
-
+function datadirOptsLiteral(overrides: Record<string, unknown>): string {
   const opts: string[] = [];
+  for (const k of Object.keys(overrides)) {
+    if (k !== 'datadir' && k !== 'environment') {
+      throw new Error(`unsupported client_overrides.${k} for a datadir case`);
+    }
+  }
   if ('datadir' in overrides) {
     opts.push(`"datadir", TestSetup.DATADIR`);
   }
   if ('environment' in overrides) {
     opts.push(`"environment", ${javaStringLiteral(String(overrides.environment))}`);
   }
-  const optsLit = opts.length > 0 ? `TestSetup.map(${opts.join(', ')})` : 'TestSetup.map()';
+  return opts.length > 0 ? `TestSetup.map(${opts.join(', ')})` : 'TestSetup.map()';
+}
+
+function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const overrides = (kase.client_overrides ?? {}) as Record<string, unknown>;
+  const envVars = kase.env_vars ?? {};
+  const func = (kase.function ?? 'get').toString();
+  const isRaise = expected.status === 'raise';
+
+  const indent = '    ';
+  const hasEnv = Object.keys(envVars).length > 0;
+  const optsLit = datadirOptsLiteral(overrides);
 
   let body = '';
   if (hasEnv) {
@@ -569,7 +784,7 @@ function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
     exceptions.add(errClass);
     const shortName = shortClassName(errClass);
     body += `${inner}assertThrows(${shortName}.class, () -> TestSetup.datadirClient(${optsLit}));\n`;
-  } else {
+  } else if (func === 'get') {
     const key = (input.key ?? input.flag) as string | undefined;
     if (!key || key.toString().length === 0) {
       throw new Error('datadir get-case has no input.key/flag');
@@ -577,9 +792,13 @@ function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
     if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
       throw new Error('datadir get-case has no expected.value');
     }
-    const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
-    body += `${inner}Object actual = TestSetup.datadirGet(${optsLit}, ${javaStringLiteral(key)});\n`;
-    body += renderAssertion(inner, expected, func, yamlType);
+    const yamlType = (kase.type ?? '').toString().toUpperCase();
+    const getter = getterFor(yamlType);
+    body += `${inner}try (Quonfig client = TestSetup.datadirClient(${optsLit})) {\n`;
+    body += `${inner}  assertEquals(${javaLiteral(expected.value)}, client.${getter.method}(${javaStringLiteral(key)}, null));\n`;
+    body += `${inner}}\n`;
+  } else {
+    throw new Error(`unsupported datadir case function=${func} raise=${isRaise}`);
   }
 
   if (hasEnv) {
@@ -593,22 +812,17 @@ function renderDatadirBody(kase: YamlCase, exceptions: Set<string>): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Render a datadir_value_type.yaml case body. Asserts the public typed
- * getter's coerced value (via TestSetup.datadirGet), and — when
- * `expected.raw_value_type == "number"` — ALSO asserts the LOADED envelope's
- * raw Value is a real number, not a string, via TestSetup.assertRawValueNumeric.
- *
- * NOTE: TestSetup.assertRawValueNumeric does not exist yet — TestSetup is
- * still being built (qfg-mol-5bw). It is added under the same bead
- * (qfg-bwwj, Work item B2). Emitting the reference now is consistent with
- * java.ts's documented "fail-loud until TestSetup lands" policy: the
- * generated file references a helper that the SDK side must supply.
+ * Asserts the public typed getter's value. `expected.raw_value_type: number`
+ * (the loader must coerce numeric strings at load time) is proved through the
+ * same public call: sdk-java's getLong/getDouble never coerce a String payload
+ * (a String INT/DOUBLE value is a TYPE_MISMATCH that returns the default,
+ * null here), so a non-null Long/Double can only come from a loader that
+ * produced a number.
  */
 function renderDatadirValueTypeBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
   const input = kase.input ?? {};
-  const overrides = kase.client_overrides ?? {};
-  const func = (kase.function ?? 'get').toString();
+  const overrides = (kase.client_overrides ?? {}) as Record<string, unknown>;
   const indent = '    ';
 
   const key = (input.key ?? input.flag) as string | undefined;
@@ -624,27 +838,139 @@ function renderDatadirValueTypeBody(kase: YamlCase): string {
       `datadir_value_type case has unsupported expected.raw_value_type=${JSON.stringify(rawType)} (only "number" is supported)`,
     );
   }
-
-  const opts: string[] = [];
-  if ('datadir' in overrides) {
-    opts.push(`"datadir", TestSetup.DATADIR`);
+  const yamlType = (kase.type ?? '').toString().toUpperCase();
+  if (yamlType !== 'INT' && yamlType !== 'DOUBLE') {
+    throw new Error(`datadir_value_type case has unsupported type: ${yamlType}`);
   }
-  if ('environment' in overrides) {
-    opts.push(`"environment", ${javaStringLiteral(String(overrides.environment))}`);
-  }
-  const optsLit = opts.length > 0 ? `TestSetup.map(${opts.join(', ')})` : 'TestSetup.map()';
-
-  const keyLit = javaStringLiteral(key);
-  const yamlType = (kase.type ?? 'STRING').toString().toUpperCase();
+  const getter = getterFor(yamlType);
+  const v = expected.value;
+  if (typeof v !== 'number') throw new Error('datadir_value_type expected.value must be a number');
+  const want = yamlType === 'INT' ? `${v}L` : `${Number.isInteger(v) ? `${v}.0` : v}d`;
 
   let body = '';
-  body += `${indent}Object actual = TestSetup.datadirGet(${optsLit}, ${keyLit});\n`;
-  body += renderAssertion(indent, expected, func, yamlType);
-  if (rawType === 'number') {
-    // Inspect the LOADED envelope's raw Value, before unwrap.
-    // assertRawValueNumeric is added under qfg-bwwj (does not exist yet).
-    body += `${indent}TestSetup.assertRawValueNumeric(${optsLit}, ${keyLit});\n`;
+  body += `${indent}try (Quonfig client = TestSetup.datadirClient(${datadirOptsLiteral(overrides)})) {\n`;
+  body += `${indent}  assertEquals(${want}, client.${getter.method}(${javaStringLiteral(key)}, null));\n`;
+  body += `${indent}}\n`;
+  return body;
+}
+
+// ---------------------------------------------------------------------------
+// post.yaml / telemetry.yaml renderer
+// ---------------------------------------------------------------------------
+
+const TELEMETRY_OVERRIDE_KEYS = new Set(['context_upload_mode', 'collect_evaluation_summaries']);
+
+const AGGREGATOR_PROJECTION: Record<string, string> = {
+  evaluation_summary: 'evaluationSummaries',
+  context_shape: 'contextShapes',
+  example_contexts: 'exampleContexts',
+};
+
+/**
+ * A telemetry case drives a REAL client (TestSetup.telemetryClient: datadir
+ * client + capturing TelemetrySender) through the public API, then asserts on
+ * the payload Quonfig.flush() hands the sender, projected onto the YAML's
+ * expected_data shape.
+ *
+ *   evaluation_summary: `data.keys` are evaluated through the typed getter
+ *     for each key's configured value type, on the scoped (block-tier)
+ *     client; `data.keys_without_context` on the unscoped client.
+ *   context_shape / example_contexts: each `data` record is the per-call
+ *     context of one evaluation of CONTEXT_PROBE_KEY; the SDK records the
+ *     context it evaluated with.
+ *
+ * Every evaluated value is handed to `t.saw(key, value)` so the projection can
+ * report the value the customer got for a redacted counter (the wire only
+ * carries the redacted selectedValue).
+ */
+function renderTelemetryBody(kase: YamlCase, rctx: RenderCtx): string {
+  const aggregator = (kase.aggregator ?? '').toString();
+  const projection = AGGREGATOR_PROJECTION[aggregator];
+  if (!projection) {
+    throw new Error(`unknown telemetry aggregator ${JSON.stringify(aggregator)}`);
   }
+  const endpoint = (kase.endpoint ?? '').toString();
+  if (endpoint.length === 0) {
+    throw new Error('post/telemetry case missing endpoint');
+  }
+  const overrides = (kase.client_overrides ?? {}) as Record<string, unknown>;
+  for (const k of Object.keys(overrides)) {
+    if (!TELEMETRY_OVERRIDE_KEYS.has(k)) {
+      throw new Error(`unsupported client_overrides.${k} for a telemetry case`);
+    }
+  }
+  const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
+  const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
+    ? kase.expected_data
+    : null;
+  const tiers = tiersOf(kase.contexts);
+
+  const indent = '    ';
+  const inner = indent + '  ';
+  let body = '';
+  const globalArg = tiers.global ? ctxLiteral(tiers.global) : 'null';
+  body += `${indent}try (TestSetup.TelemetryClient t =\n`;
+  body += `${indent}    TestSetup.telemetryClient(${javaLiteral(overrides)}, ${globalArg})) {\n`;
+  body += `${inner}Quonfig client = t.client();\n`;
+  const recvName = tiers.block ? 'scoped' : 'client';
+  if (tiers.block) {
+    body += `${inner}BoundQuonfig scoped = client.withContext(${ctxLiteral(tiers.block)});\n`;
+  }
+  const localArg = tiers.local ? ctxLiteral(tiers.local) : null;
+
+  const evalKey = (recv: string, key: string, perCall: string | null): string => {
+    const valueType = rctx.valueTypes.get(key);
+    if (!valueType) {
+      throw new Error(`telemetry key ${JSON.stringify(key)} is not a config in the fixture datadir`);
+    }
+    const yamlType = VALUE_TYPE_TO_YAML[valueType];
+    if (!yamlType) throw new Error(`unknown valueType ${valueType} for ${key}`);
+    const getter = getterFor(yamlType);
+    const keyLit = javaStringLiteral(key);
+    const call = perCall
+      ? `${recv}.${getter.method}(${keyLit}, null, ${perCall})`
+      : `${recv}.${getter.method}(${keyLit}, null)`;
+    return `${inner}t.saw(${keyLit}, ${call});\n`;
+  };
+
+  if (aggregator === 'evaluation_summary') {
+    const d = (data ?? {}) as Record<string, unknown>;
+    for (const k of Object.keys(d)) {
+      if (k !== 'keys' && k !== 'keys_without_context') {
+        throw new Error(`unknown evaluation_summary data field ${k}`);
+      }
+    }
+    const keys = Array.isArray(d.keys) ? (d.keys as unknown[]) : [];
+    const keysWithout = Array.isArray(d.keys_without_context)
+      ? (d.keys_without_context as unknown[])
+      : [];
+    if (keys.length + keysWithout.length === 0) {
+      throw new Error('evaluation_summary case evaluates no keys');
+    }
+    for (const k of keys) body += evalKey(recvName, String(k), localArg);
+    for (const k of keysWithout) body += evalKey('client', String(k), null);
+  } else {
+    if (tiers.global || tiers.block || tiers.local) {
+      throw new Error(`${aggregator} cases take their contexts from \`data\`, not contexts tiers`);
+    }
+    const records = Array.isArray(data) ? data : [data ?? {}];
+    for (const rec of records) {
+      if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
+        throw new Error(`${aggregator} data records must be context maps`);
+      }
+      body += evalKey('client', CONTEXT_PROBE_KEY, ctxLiteral(rec as ContextTypes));
+    }
+  }
+
+  const want = javaLiteral(expectedData);
+  if (want === 'null') {
+    body += `${inner}assertNull(t.${projection}());\n`;
+  } else {
+    body += `${inner}assertEquals(\n`;
+    body += `${inner}    ${want},\n`;
+    body += `${inner}    t.${projection}());\n`;
+  }
+  body += `${indent}}\n`;
   return body;
 }
 
@@ -725,42 +1051,6 @@ function renderDeliveryBody(kase: YamlCase): string {
   body += `${indent}} finally {\n`;
   body += `${indent}  server.stop(0);\n`;
   body += `${indent}}\n`;
-  return body;
-}
-
-// ---------------------------------------------------------------------------
-// post.yaml / telemetry.yaml renderer
-// ---------------------------------------------------------------------------
-
-function renderPostBody(kase: YamlCase): string {
-  const aggregator = (kase.aggregator ?? '').toString();
-  if (aggregator.length === 0) {
-    throw new Error('post/telemetry case missing aggregator');
-  }
-  const endpoint = (kase.endpoint ?? '').toString();
-  if (endpoint.length === 0) {
-    throw new Error('post/telemetry case missing endpoint');
-  }
-
-  const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
-  const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
-    ? kase.expected_data
-    : null;
-  const overrides = kase.client_overrides ?? {};
-  const merged = mergeContexts(kase.contexts);
-
-  const aggLit = javaStringLiteral(aggregator);
-  const overridesLit = javaLiteral(overrides);
-  const dataLit = javaLiteral(data);
-  const expectedLit = javaLiteral(expectedData);
-  const endpointLit = javaStringLiteral(endpoint);
-  const ctxLit = renderContextsLiteral(merged);
-
-  const indent = '    ';
-  let body = '';
-  body += `${indent}Object aggregator = TestSetup.buildAggregator(${aggLit}, ${overridesLit});\n`;
-  body += `${indent}TestSetup.feedAggregator(aggregator, ${aggLit}, ${dataLit}, ${ctxLit});\n`;
-  body += `${indent}assertEquals(${expectedLit}, TestSetup.aggregatorPost(aggregator, ${aggLit}, ${endpointLit}));\n`;
   return body;
 }
 
@@ -851,10 +1141,13 @@ function renderDeliveryFile(suite: SuiteEntry, result: RenderResult): string {
   return out;
 }
 
+
 function renderFile(suite: SuiteEntry, result: RenderResult): string {
   if (suite.yaml === 'delivery_environment.yaml') {
     return renderDeliveryFile(suite, result);
   }
+  const src = result.rendered.map((r) => r.source).join('');
+
   let out = '';
   out += `// AUTO-GENERATED from integration-test-data/tests/eval/${suite.yaml}. DO NOT EDIT.\n`;
   out += `// Regenerate with:\n`;
@@ -863,31 +1156,29 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `\n`;
   out += `package ${PACKAGE};\n`;
   out += `\n`;
-  out += `import static org.junit.jupiter.api.Assertions.assertEquals;\n`;
-  out += `import static org.junit.jupiter.api.Assertions.assertNull;\n`;
-  out += `import static org.junit.jupiter.api.Assertions.assertThrows;\n`;
+  // Import only what the rendered cases use (spotless / unused-import hygiene).
+  for (const a of ['assertEquals', 'assertNotNull', 'assertNull', 'assertThrows']) {
+    if (new RegExp(`\\b${a}\\(`).test(src)) {
+      out += `import static org.junit.jupiter.api.Assertions.${a};\n`;
+    }
+  }
   out += `\n`;
-  out += `import org.junit.jupiter.api.DisplayName;\n`;
-  out += `import org.junit.jupiter.api.Test;\n`;
-
-  // Exception classes referenced by raise-cases. Sort for stable output.
-  // java.lang.* is auto-imported, so skip those (importing java.lang.X is
-  // legal but redundant, and google-java-format / spotless trim such lines).
+  if (/\bBoundQuonfig\b/.test(src)) out += `import com.quonfig.sdk.BoundQuonfig;\n`;
+  if (/\bQuonfig\b/.test(src)) out += `import com.quonfig.sdk.Quonfig;\n`;
+  // Exception classes referenced by raise-cases. java.lang.* is auto-imported.
   const exceptions = Array.from(result.exceptions)
     .filter((fqcn) => !fqcn.startsWith('java.lang.'))
     .sort();
-  if (exceptions.length > 0) {
-    out += `\n`;
-    for (const fqcn of exceptions) {
-      out += `import ${fqcn};\n`;
-    }
+  for (const fqcn of exceptions) {
+    out += `import ${fqcn};\n`;
   }
+  if (/@Disabled\(/.test(src)) out += `import org.junit.jupiter.api.Disabled;\n`;
+  out += `import org.junit.jupiter.api.DisplayName;\n`;
+  out += `import org.junit.jupiter.api.Test;\n`;
 
   out += `\n`;
   out += `class ${suite.className} {\n`;
-  for (const r of result.rendered) {
-    out += r.source;
-  }
+  out += src;
   out += `}\n`;
   return out;
 }
@@ -902,12 +1193,17 @@ export interface JavaRunResult {
 
 /**
  * @param dataRoot integration-test-data/tests/eval (absolute)
- * @param outDir   sdk-java/src/test/java/com/quonfig/sdk/integration (absolute)
+ * @param outDir   sdk-java/core/src/test/java/com/quonfig/sdk/integration (absolute)
  */
 export function runJavaTarget(dataRoot: string, outDir: string): JavaRunResult {
   mkdirSync(outDir, { recursive: true });
   const written: JavaRunResult['written'] = [];
+  const rctx: RenderCtx = {
+    valueTypes: loadValueTypes(resolve(dataRoot, '..', '..', 'data', 'integration-tests')),
+  };
+  const unsupportedSeen = new Set<string>();
 
+  const outputs: { path: string; src: string; cases: number }[] = [];
   for (const suite of SUITES) {
     if (suite.className !== javaSuiteClassName(suite.yaml)) {
       throw new Error(
@@ -917,12 +1213,22 @@ export function runJavaTarget(dataRoot: string, outDir: string): JavaRunResult {
     }
     const yamlPath = resolve(dataRoot, suite.yaml);
     const cases = loadYamlFile(yamlPath, suite.yaml);
-    const result = renderCases(suite, cases);
-    const src = renderFile(suite, result);
-    const outPath = resolve(outDir, suite.out);
-    writeFileSync(outPath, src);
-    written.push({ path: outPath, cases: result.rendered.length });
+    const result = renderCases(suite, cases, rctx, unsupportedSeen);
+    outputs.push({
+      path: resolve(outDir, suite.out),
+      src: renderFile(suite, result),
+      cases: result.rendered.length,
+    });
   }
 
+  const stale = Object.keys(UNSUPPORTED).filter((k) => !unsupportedSeen.has(k));
+  if (stale.length > 0) {
+    throw new GeneratorError(`UNSUPPORTED entries match no case: ${stale.join('; ')}`);
+  }
+
+  for (const o of outputs) {
+    writeFileSync(o.path, o.src);
+    written.push({ path: o.path, cases: o.cases });
+  }
   return { written };
 }
