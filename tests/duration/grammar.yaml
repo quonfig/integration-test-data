@@ -47,6 +47,7 @@ valid:
   - { value: "PT0.999999999S", millis: 1000 }
   # Magnitude ceiling
   - { value: "P36500D", millis: 3153600000000 }
+  - { value: "PT876000H", millis: 3153600000000 }
 
 invalid:
   # Empty / no component / dangling T
@@ -79,6 +80,14 @@ invalid:
   - "PT5S5S"
   # Over the magnitude ceiling
   - "P36501D"
+  - "P36500DT1S"
+  - "PT99999999999999999999S"
+  # Cross-language regex traps: Python/Ruby `$` matches before a trailing
+  # newline, Ruby `^`/`$` match at line boundaries (use \A/\z), and
+  # Python/.NET `\d` matches non-ASCII digits (U+0665 is Arabic-Indic 5).
+  - "PT5S\n"
+  - "garbage\nPT5S"
+  - "PT\u0665S"
   # Non-ISO shorthands and junk
   - "30s"
   - "5m"
