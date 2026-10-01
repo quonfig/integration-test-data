@@ -505,7 +505,11 @@ function makeGetterCall(kase: YamlCase, key: string, merged: ContextTypes): stri
   const method = methodMap[yamlType] ?? 'get_string';
 
   const kwargs: string[] = [];
-  if (hasDefault) kwargs.push(`default=${pyLiteral(def)}`);
+  if (hasDefault) {
+    // YAML duration defaults are milliseconds; get_duration takes seconds.
+    const pyDef = yamlType === 'DURATION' && typeof def === 'number' ? def / 1000 : def;
+    kwargs.push(`default=${pyLiteral(pyDef)}`);
+  }
   if (ctxLit !== '{}') kwargs.push(`contexts=${ctxLit}`);
 
   if (kwargs.length === 0) {
@@ -527,8 +531,15 @@ function renderContextsLiteral(merged: ContextTypes): string {
  */
 function renderAssertion(indent: string, expected: { value?: unknown; millis?: number; [k: string]: unknown }): string {
   if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
+    // Exact, no tolerance (plan decision 2). get_duration returns float
+    // seconds; a correct SDK returns exactly millis / 1000 (int / int true
+    // division is correctly rounded, and distinct whole-ms values in range
+    // map to distinct floats), so == catches any off-by-one-ms rounding.
     const millis = expected.millis as number;
-    return `${indent}assert abs(result * 1000 - ${millis}) < 1, f"Expected {result * 1000}ms to be close to ${millis}ms"\n`;
+    if (!Number.isInteger(millis)) {
+      throw new Error(`expected.millis must be an integer, got ${millis}`);
+    }
+    return `${indent}assert result == ${millis} / 1000, f"Expected exactly ${millis}ms (${millis} / 1000 s), got {result!r}s"\n`;
   }
   if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
     throw new Error('case has no expected.value or expected.millis');
