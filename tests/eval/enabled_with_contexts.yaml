@@ -85,6 +85,23 @@ tests:
           flag: "feature-flag.in-seg.segment-and"
         expected:
           value: false
+      - name: returns true due to local override of domain when scope user.key already matches
+        client: feature_flag_client
+        function: enabled
+        type: BOOLEAN
+        contexts:
+          block:
+            "":
+              domain: example.com
+            user:
+              key: michael
+          local:
+            "":
+              domain: prefab.cloud
+        input:
+          flag: "feature-flag.in-seg.segment-and"
+        expected:
+          value: true
       - name: returns true due to full scope context override of user.key and domain
         client: feature_flag_client
         function: enabled
