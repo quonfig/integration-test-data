@@ -1,0 +1,23 @@
+{
+  "id": "17890000000000111",
+  "projectId": "124",
+  "key": "test.duration.P36500D",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "duration",
+          "value": "P36500D"
+        }
+      }
+    ]
+  }
+}

@@ -109,21 +109,12 @@ tests:
         expected:
           millis: 90000
 
-      - name: duration 1.5M
+      - name: duration 30M
         client: config_client
         function: get
         type: DURATION
         input:
-          key: "test.duration.PT1.5M"
-        expected:
-          millis: 90000
-
-      - name: duration 0.5H
-        client: config_client
-        function: get
-        type: DURATION
-        input:
-          key: "test.duration.PT0.5H"
+          key: "test.duration.PT30M"
         expected:
           millis: 1800000
 
@@ -135,6 +126,144 @@ tests:
           key: "test.duration.P1DT6H2M1.5S"
         expected:
           millis: 108121500
+
+      # Grammar coverage (qfg-2agi.5): every component, leading zero, zero,
+      # the magnitude ceiling, and exact-decimal half-up rounding to integer ms.
+      # Same values and millis as tests/duration/grammar.yaml.
+      - name: duration zero PT0S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT0S"
+        expected:
+          millis: 0
+
+      - name: duration zero P0D
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.P0D"
+        expected:
+          millis: 0
+
+      - name: duration days only P2D
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.P2D"
+        expected:
+          millis: 172800000
+
+      - name: duration hours only PT1H
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT1H"
+        expected:
+          millis: 3600000
+
+      - name: duration minutes only PT1M
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT1M"
+        expected:
+          millis: 60000
+
+      - name: duration seconds only PT1S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT1S"
+        expected:
+          millis: 1000
+
+      - name: duration leading zero PT05S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT05S"
+        expected:
+          millis: 5000
+
+      - name: duration hours and minutes PT1H30M
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT1H30M"
+        expected:
+          millis: 5400000
+
+      - name: duration days and hours P1DT2H
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.P1DT2H"
+        expected:
+          millis: 93600000
+
+      - name: duration one millisecond PT0.001S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT0.001S"
+        expected:
+          millis: 1
+
+      - name: duration magnitude ceiling P36500D
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.P36500D"
+        expected:
+          millis: 3153600000000
+
+      - name: duration rounding PT2.01S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT2.01S"
+        expected:
+          millis: 2010
+
+      - name: duration rounding PT1.005S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT1.005S"
+        expected:
+          millis: 1005
+
+      - name: duration rounding half up PT0.0005S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT0.0005S"
+        expected:
+          millis: 1
+
+      - name: duration rounding down PT0.0004S
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "test.duration.PT0.0004S"
+        expected:
+          millis: 0
 
       - name: json test
         client: config_client

@@ -1,0 +1,23 @@
+{
+  "id": "17890000000000104",
+  "projectId": "124",
+  "key": "test.duration.PT1H",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "duration",
+          "value": "PT1H"
+        }
+      }
+    ]
+  }
+}

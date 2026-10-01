@@ -1,11 +1,10 @@
 {
-  "id": "17119880230232820",
+  "id": "17890000000000109",
   "projectId": "124",
-  "key": "test.duration.PT0.5H",
+  "key": "test.duration.P1DT2H",
   "type": "config",
   "valueType": "duration",
   "sendToClientSdk": false,
-  "draftId": "573",
   "default": {
     "rules": [
       {
@@ -16,7 +15,7 @@
         ],
         "value": {
           "type": "duration",
-          "value": "PT0.5H"
+          "value": "P1DT2H"
         }
       }
     ]
