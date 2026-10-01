@@ -2,10 +2,15 @@ import type { CaseContexts, ContextTypes } from '../types.js';
 
 /**
  * Merge the three context tiers (global → block → local) into a single
- * `{ contextType: { prop: value, ... } }` map, with later tiers overriding
- * earlier ones at the property level. Mirrors the precedence used by every
- * SDK's runtime resolver and matches the reference Ruby implementation
- * (`merge_contexts` in the now-deleted Ruby generator).
+ * `{ contextType: { prop: value, ... } }` map.
+ *
+ * Rule (docs: explanations/concepts/context.md, "Advanced: Adding to and
+ * Merging Contexts"; decided in qfg-2agi.24): a later tier that supplies a
+ * named context REPLACES that whole named context — the earlier tier's
+ * attributes in it are dropped, not merged property by property. Named
+ * contexts the later tier does not mention survive unchanged.
+ *
+ * Example: global `user{email}` + local `user{plan}` → `user{plan}` only.
  */
 export function mergeContexts(contexts: CaseContexts | undefined | null): ContextTypes {
   if (!contexts || typeof contexts !== 'object') return {};
@@ -17,10 +22,7 @@ export function mergeContexts(contexts: CaseContexts | undefined | null): Contex
 
     for (const [type, props] of Object.entries(tierHash)) {
       if (!props || typeof props !== 'object') continue;
-      const dest = (merged[type] ??= {});
-      for (const [k, v] of Object.entries(props as Record<string, unknown>)) {
-        dest[k] = v;
-      }
+      merged[type] = { ...(props as Record<string, unknown>) };
     }
   }
   return merged;

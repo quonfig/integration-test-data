@@ -232,3 +232,38 @@ tests:
       expected:
         value: "override"
       type: STRING
+    # Named-context replacement (documented rule, qfg-2agi.24): a newer tier
+    # that supplies a named context REPLACES the whole context, so the older
+    # tier's attributes in it are dropped. Disjoint attributes make this
+    # discriminating: under a property-by-property merge, user.email would
+    # survive and the rule would match.
+    - name: returns the correct `get` value when local context replaces the whole global named context (disjoint attributes)
+      contexts:
+        global:
+          user:
+            email: "test@prefab.cloud"
+        local:
+          user:
+            plan: "pro"
+      client: config_client
+      function: get
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "default"
+      type: STRING
+    - name: returns the correct `get` value when a named context the local context does not mention survives
+      contexts:
+        global:
+          user:
+            email: "test@prefab.cloud"
+        local:
+          team:
+            plan: "pro"
+      client: config_client
+      function: get
+      input:
+        key: "basic.rule.config"
+      expected:
+        value: "override"
+      type: STRING

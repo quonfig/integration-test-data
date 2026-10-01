@@ -7,7 +7,8 @@
   "scripts": {
     "generate": "tsx src/index.ts",
     "verify": "tsx src/verify.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/shared/*.test.ts"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"
