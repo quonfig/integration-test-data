@@ -80,7 +80,7 @@ tests:
               key: nobody
           local:
             "":
-              key: prefab.cloud
+              domain: prefab.cloud
         input:
           flag: "feature-flag.in-seg.segment-and"
         expected:
