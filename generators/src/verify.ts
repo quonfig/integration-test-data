@@ -210,7 +210,9 @@ function extractCaseNamesFromFile(parser: SdkSpec['parser'], path: string): stri
 
   // node
   // Match `it("...", ...)` allowing the name to include escaped chars.
-  const itRe = /^\s*it\(\s*(['"])((?:\\.|(?!\1).)*)\1\s*,/;
+  // `it.skip(` counts only as a documented-unsupported case (see findSkips);
+  // an undocumented one is still reported as a skip failure.
+  const itRe = /^\s*it(?:\.skip)?\(\s*(['"])((?:\\.|(?!\1).)*)\1\s*,/;
   for (const line of lines) {
     const m = line.match(itRe);
     if (!m) continue;
@@ -269,6 +271,24 @@ interface SkipHit {
   line: number;
   label: string;
   text: string;
+  /** Reason from a `// unsupported by <sdk>: <reason>` comment directly above. */
+  documented?: string;
+}
+
+/**
+ * A generator-emitted skip is acceptable only when the generator's UNSUPPORTED
+ * table documented it: the closest preceding non-blank line must be
+ * `// unsupported by sdk-<name>: <reason>` (see targets/node.ts UNSUPPORTED,
+ * which mirrors java.ts's @Disabled reasons).
+ */
+function documentedReason(lines: string[], idx: number): string | undefined {
+  for (let j = idx - 1; j >= 0; j--) {
+    const trimmed = (lines[j] ?? '').trim();
+    if (trimmed.length === 0) continue;
+    const m = trimmed.match(/^\/\/ unsupported by sdk-[a-z]+: (\S.*)$/);
+    return m ? m[1] : undefined;
+  }
+  return undefined;
 }
 
 function findSkips(filePath: string, patterns: SdkSpec['skipPatterns']): SkipHit[] {
@@ -279,7 +299,13 @@ function findSkips(filePath: string, patterns: SdkSpec['skipPatterns']): SkipHit
     const line = lines[i] ?? '';
     for (const p of patterns) {
       if (p.regex.test(line)) {
-        hits.push({ file: filePath, line: i + 1, label: p.label, text: line.trim() });
+        hits.push({
+          file: filePath,
+          line: i + 1,
+          label: p.label,
+          text: line.trim(),
+          documented: p.label === 'it.skip' ? documentedReason(lines, i) : undefined,
+        });
       }
     }
   }
@@ -295,6 +321,7 @@ interface SuiteResult {
   fileExists: boolean;
   empty: boolean; // file exists but no tests at all
   skipHits: SkipHit[];
+  documentedSkips: SkipHit[]; // UNSUPPORTED-table skips: reported, not failures
 }
 
 interface SdkResult {
@@ -329,11 +356,14 @@ function checkSdk(sdk: SdkSpec, suites: YamlSuite[]): SdkResult {
     let fileExists = existsSync(path);
     let empty = false;
     let skipHits: SkipHit[] = [];
+    let documentedSkips: SkipHit[] = [];
 
     if (fileExists) {
       names = extractCaseNamesFromFile(sdk.parser, path);
       if (names.length === 0) empty = true;
-      skipHits = findSkips(path, sdk.skipPatterns);
+      const allSkips = findSkips(path, sdk.skipPatterns);
+      skipHits = allSkips.filter((h) => !h.documented);
+      documentedSkips = allSkips.filter((h) => h.documented);
     }
 
     const foundSet = countNames(names);
@@ -357,6 +387,7 @@ function checkSdk(sdk: SdkSpec, suites: YamlSuite[]): SdkResult {
       fileExists,
       empty,
       skipHits,
+      documentedSkips,
     };
     result.suites.push(suiteResult);
     result.totalExpected += expected.length;
@@ -430,6 +461,14 @@ function printParityReport(suites: YamlSuite[], results: SdkResult[]): boolean {
       }
     }
     console.log('');
+  }
+
+  for (const r of results) {
+    for (const s of r.suites) {
+      for (const sh of s.documentedSkips) {
+        console.log(`  ${WARN} ${shortPath(sh.file)}:${sh.line} documented unsupported: ${sh.documented}`);
+      }
+    }
   }
 
   console.log(`Parity check: ${overallPass ? 'PASS' : 'FAIL'}`);

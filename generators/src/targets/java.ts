@@ -38,6 +38,7 @@ import {
 } from '../shared/case-id.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
+import { isMalformedDurationWithDefault } from '../shared/malformed-duration.js';
 import type { CaseContexts, ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -669,9 +670,26 @@ function renderEvalCall(
     b += `${indent}assertNotNull(actual, "getDuration returned null");\n`;
     b += `${indent}assertEquals(${millis}L, actual.toMillis());\n`;
     // Details carries the same value (BoundQuonfig has no per-call details overload).
+    const malformed = isMalformedDurationWithDefault(
+      yamlType,
+      String(input.key ?? input.flag ?? ''),
+      input,
+      millis,
+    );
     if (!(recv.bound && recv.local) && fn === 'get') {
-      b += `${indent}assertEquals(\n`;
-      b += `${indent}    ${millis}L, ${callWithDefault(recv, 'getDurationDetails', keyLit, defArg)}.value().toMillis());\n`;
+      if (malformed) {
+        // Plan decision 3: a malformed value read with a default returns the
+        // default AND Details report Reason=ERROR.
+        b += `${indent}com.quonfig.sdk.EvaluationDetails<java.time.Duration> details =\n`;
+        b += `${indent}    ${callWithDefault(recv, 'getDurationDetails', keyLit, defArg)};\n`;
+        b += `${indent}assertEquals(${millis}L, details.value().toMillis());\n`;
+        b += `${indent}assertEquals(com.quonfig.sdk.Reason.ERROR, details.reason());\n`;
+      } else {
+        b += `${indent}assertEquals(\n`;
+        b += `${indent}    ${millis}L, ${callWithDefault(recv, 'getDurationDetails', keyLit, defArg)}.value().toMillis());\n`;
+      }
+    } else if (malformed) {
+      throw new Error('malformed DURATION-with-default case needs a Details call (Reason=ERROR) but has no public Details form here');
     }
     return b;
   }

@@ -39,6 +39,7 @@ import {
   uniqueSuffix,
 } from '../shared/case-id.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
+import { isMalformedDurationWithDefault } from '../shared/malformed-duration.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -523,7 +524,8 @@ function renderValueAssertion(kase: YamlCase, actualExpr: string): string {
  * DURATION: integer-exact milliseconds through GetDuration AND
  * GetDurationDetails (qfg-2agi.4). With no default the Details reason must
  * not be Error; with a default (malformed-value cases) the default is
- * returned and the reason is not asserted.
+ * returned and the reason MUST be Error (plan 2026-10-01-duration-validity,
+ * decision 3).
  */
 function renderDurationAssertion(kase: YamlCase, recv: Receiver, key: string): string {
   const expected = kase.expected ?? {};
@@ -534,13 +536,17 @@ function renderDurationAssertion(kase: YamlCase, recv: Receiver, key: string): s
   if (yamlTypeOf(kase) !== 'DURATION') {
     throw new Error('expected.millis is only valid on DURATION cases');
   }
-  const hasDefault = Object.prototype.hasOwnProperty.call(kase.input ?? {}, 'default');
+  const input = (kase.input ?? {}) as Record<string, unknown>;
+  const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
+  const malformed = isMalformedDurationWithDefault('DURATION', key, input, millis);
   const want = `TimeSpan.FromTicks(${millis}L * TimeSpan.TicksPerMillisecond)`;
   let out = '';
   out += `${I}Assert.Equal(${want}, ${getterCall(kase, recv, key)});\n`;
   out += `${I}var details = ${getterCall(kase, recv, key, true)};\n`;
   out += `${I}Assert.Equal(${want}, details.Value);\n`;
-  if (!hasDefault) {
+  if (malformed) {
+    out += `${I}Assert.Equal(Reason.Error, details.Reason);\n`;
+  } else if (!hasDefault) {
     out += `${I}Assert.NotEqual(Reason.Error, details.Reason);\n`;
   }
   return out;

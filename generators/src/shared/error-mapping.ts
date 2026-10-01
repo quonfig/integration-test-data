@@ -16,19 +16,30 @@ const RUBY_ERRORS: ErrorMap = {
   invalid_environment: 'Quonfig::Errors::InvalidEnvironmentError',
 };
 
-// Node SDK currently raises plain `Error` instances for nearly every
-// failure path (env-var lookups, type coercion, decryption, datadir
-// init, etc). Mapping every YAML error key to "Error" is the truthful
-// reflection of today's surface area; a follow-up will refine these
-// once the SDK adds dedicated error classes.
+// sdk-node raises plain `Error` instances for every one of these failure
+// paths (it exports no dedicated error classes), so `toThrow(Error)` would
+// accept ANY failure -- a malformed-value raise would be indistinguishable
+// from a missing env var. Each key therefore maps to a vitest `toThrow`
+// matcher: a RegExp literal over the stable message sdk-node emits for that
+// path (see sdk-node src/quonfig.ts, resolver.ts, encryption.ts, datadir.ts).
+// The value is emitted verbatim into generated code.
 const NODE_ERRORS: ErrorMap = {
-  missing_default: 'Error',
-  initialization_timeout: 'Error',
-  missing_env_var: 'Error',
-  unable_to_coerce_env_var: 'Error',
-  unable_to_decrypt: 'Error',
-  missing_environment: 'Error',
-  invalid_environment: 'Error',
+  // quonfig.ts handleNoDefault (onNoDefault: "error").
+  missing_default: '/^No value found for key "/',
+  // quonfig.ts init() timeout race.
+  initialization_timeout: '/^Initialization timed out$/',
+  // resolver.ts ENV_VAR lookup.
+  missing_env_var: '/^Environment variable ".*" not set for config "/',
+  // resolver.ts coerceValue (int/double) for env vars, and quonfig.ts get()'s
+  // malformed-duration raise for both stored and ENV_VAR durations (plan
+  // 2026-10-01-duration-validity decision 3: one coercion error, any source).
+  unable_to_coerce_env_var:
+    '/^(Cannot convert ".*" to (int|double)|\\[quonfig\\] Config ".*" has a malformed duration value)$/',
+  // encryption.ts decrypt() / node:crypto GCM auth failure.
+  unable_to_decrypt: '/^(Invalid key length|Invalid encrypted string|Unsupported state or unable to authenticate data)/',
+  // datadir.ts resolveEnvironment.
+  missing_environment: '/Environment required for datadir mode/',
+  invalid_environment: '/Environment ".*" not found in workspace/',
 };
 
 // Python SDK exceptions live in `quonfig.exceptions`. The mapping below

@@ -84,6 +84,20 @@ const SUITES: SuiteEntry[] = [
 
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/node.ts';
 
+/**
+ * Cases sdk-node cannot express through its public API, with the reason
+ * (mirrors java.ts). Each entry still renders a real test body but is emitted
+ * as `it.skip(...)` preceded by the reason, so the gap is visible in every
+ * test report instead of being faked green. Keyed by "<yaml>::<case name>".
+ * A key listed here that no longer matches a case fails the generator.
+ */
+const UNSUPPORTED: Record<string, string> = {
+  "get_or_raise.yaml::get_or_raise raises the correct error if it doesn't raise on init timeout":
+    'sdk-node has no on_init_failure option: init() always rejects when initTimeout elapses and ' +
+    'the client stays uninitialized, so a getter throws "Not initialized", never the ' +
+    ':return-mode missing_default error',
+};
+
 class GeneratorError extends Error {
   constructor(msg: string) {
     super(msg);
@@ -167,7 +181,11 @@ function describeLabel(name: string): string {
  * generator stops with a clear pointer instead of emitting a silent skip.
  * Every YAML case produces one `it(...)` — no omissions.
  */
-function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResult {
+function renderCases(
+  yamlBasename: string,
+  cases: NormalizedCase[],
+  unsupportedSeen: Set<string>,
+): RenderResult {
   const rendered: RenderedCase[] = [];
 
   for (const nc of cases) {
@@ -181,7 +199,15 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
       );
     }
 
-    const block = `\n  it(${describeLabel(kase.name ?? '')}, async () => {\n${body}  });\n`;
+    const unsupportedKey = `${yamlBasename}::${kase.name ?? ''}`;
+    let prefix = '';
+    let itFn = 'it';
+    if (Object.prototype.hasOwnProperty.call(UNSUPPORTED, unsupportedKey)) {
+      unsupportedSeen.add(unsupportedKey);
+      prefix = `\n  // unsupported by sdk-node: ${UNSUPPORTED[unsupportedKey]}`;
+      itFn = 'it.skip';
+    }
+    const block = `${prefix}\n  ${itFn}(${describeLabel(kase.name ?? '')}, async () => {\n${body}  });\n`;
     rendered.push({ source: block });
   }
 
@@ -374,6 +400,8 @@ function renderEvalBody(kase: YamlCase): RenderedBody {
           `Add it to src/shared/error-mapping.ts (NODE_ERRORS) or remove the case from YAML.`,
       );
     }
+    // errClass is a message matcher (sdk-node throws plain Error): it pins
+    // WHICH failure raised, not just that something did.
     assertion = (i) => `${i}expect(() => ${call}).toThrow(${errClass});\n`;
   } else if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
     const millis = expected.millis;
@@ -873,19 +901,25 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
 
   if (!isPost) {
     if (suiteUsesClientConstruction(suite, result.rendered)) {
-      out += `async function assertInitializationTimeoutError(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string): Promise<void> {\n`;
+      out += `async function assertInitializationTimeoutError(key: string, timeoutSec: number, apiURL: string, onInitFailure: string): Promise<void> {\n`;
+      out += `  // sdk-node has no on_init_failure option; its only behaviour is :raise (init() rejects).\n`;
+      out += `  expect(onInitFailure).toBe("raise");\n`;
       out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
       out += `  // Use 10.255.255.1 (RFC5737-style unreachable IP) so the fetch hangs and the init timer wins.\n`;
       out += `  const targetURL = "http://10.255.255.1:8080";\n`;
       out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)) });\n`;
-      out += `  await expect(client.init()).rejects.toThrow(/initialization|timeout|timed out/i);\n`;
+      out += `  await expect(client.init()).rejects.toThrow(${lookupErrorClass('node', 'initialization_timeout')});\n`;
       out += `}\n\n`;
-      out += `async function assertClientConstructionRaises(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string, _fn: string, errClass: any): Promise<void> {\n`;
+      out += `async function assertClientConstructionRaises(key: string, timeoutSec: number, apiURL: string, onInitFailure: string, _fn: string, errMatcher: RegExp): Promise<void> {\n`;
+      out += `  // sdk-node has no on_init_failure option, so :return (init failure -> keep\n`;
+      out += `  // going and evaluate with no config) cannot be expressed. Fail loudly\n`;
+      out += `  // rather than assert on whatever an uninitialized client throws.\n`;
+      out += `  if (onInitFailure !== "raise") throw new Error(\`sdk-node has no on_init_failure=\${onInitFailure} option\`);\n`;
       out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
       out += `  const targetURL = "http://10.255.255.1:8080";\n`;
       out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)), onNoDefault: "error" });\n`;
-      out += `  try { await client.init(); } catch {}\n`;
-      out += `  expect(() => client.get(key)).toThrow(errClass);\n`;
+      out += `  await expect(client.init()).rejects.toThrow();\n`;
+      out += `  expect(() => client.get(key)).toThrow(errMatcher);\n`;
       out += `}\n\n`;
       out += `async function assertClientConstructionValue(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string, _fn: string): Promise<unknown> {\n`;
       out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
@@ -918,15 +952,21 @@ export interface NodeRunResult {
 export function runNodeTarget(dataRoot: string, outDir: string): NodeRunResult {
   mkdirSync(outDir, { recursive: true });
   const written: NodeRunResult['written'] = [];
+  const unsupportedSeen = new Set<string>();
 
   for (const suite of SUITES) {
     const yamlPath = resolve(dataRoot, suite.yaml);
     const cases = loadYamlFile(yamlPath, suite.yaml);
-    const result = renderCases(suite.yaml, cases);
+    const result = renderCases(suite.yaml, cases, unsupportedSeen);
     const src = renderFile(suite, result);
     const outPath = resolve(outDir, suite.out);
     writeFileSync(outPath, src);
     written.push({ path: outPath, cases: result.rendered.length });
+  }
+
+  const stale = Object.keys(UNSUPPORTED).filter((k) => !unsupportedSeen.has(k));
+  if (stale.length > 0) {
+    throw new GeneratorError(`UNSUPPORTED entries match no case: ${stale.join('; ')}`);
   }
 
   return { written };
