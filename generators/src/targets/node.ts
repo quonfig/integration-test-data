@@ -94,6 +94,8 @@ interface RenderResult {
   usesMergeContexts: boolean;
   /** Whether any case in the suite needed the `Contexts` type. */
   usesContextsType: boolean;
+  /** Whether any case in the suite drives the public client (`publicClient()` from setup.ts). */
+  usesPublicClient: boolean;
 }
 
 /**
@@ -168,6 +170,7 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
   const rendered: RenderedCase[] = [];
   let usesMergeContexts = false;
   let usesContextsType = false;
+  let usesPublicClient = false;
 
   for (const nc of cases) {
     const kase = nc.raw;
@@ -177,6 +180,7 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
       body = out.body;
       if (out.usesMergeContexts) usesMergeContexts = true;
       if (out.usesContextsType) usesContextsType = true;
+      if (out.usesPublicClient) usesPublicClient = true;
     } catch (e) {
       throw new GeneratorError(
         `[${yamlBasename}] case "${kase.name ?? ''}": ${(e as Error).message}`,
@@ -187,7 +191,7 @@ function renderCases(yamlBasename: string, cases: NormalizedCase[]): RenderResul
     rendered.push({ source: block });
   }
 
-  return { rendered, usesMergeContexts, usesContextsType };
+  return { rendered, usesMergeContexts, usesContextsType, usesPublicClient };
 }
 
 /**
@@ -206,6 +210,10 @@ function callbackSignature(yamlBasename: string, kase: YamlCase): string {
   if (hasClientConstructionOverrides(kase.client_overrides)) {
     return 'async ()';
   }
+  // DURATION cases drive the public client, which needs an awaited init.
+  if (isDurationCase(kase)) {
+    return 'async ()';
+  }
   return '()';
 }
 
@@ -213,6 +221,61 @@ interface RenderedBody {
   body: string;
   usesMergeContexts: boolean;
   usesContextsType: boolean;
+  usesPublicClient?: boolean;
+}
+
+/** A case typed DURATION, or one asserting `expected.millis`. */
+function isDurationCase(kase: YamlCase): boolean {
+  const t = (kase.type ?? '').toString().toUpperCase();
+  return (
+    t === 'DURATION' ||
+    Object.prototype.hasOwnProperty.call(kase.expected ?? {}, 'millis')
+  );
+}
+
+/**
+ * Render a DURATION case (qfg-2agi.4). Asserts through the PUBLIC
+ * `Quonfig#getDuration` (what a customer calls) on a real datadir-backed
+ * client, with an integer-exact millisecond comparison. No test-only
+ * duration parser and no tolerance: if the public getter disagrees with
+ * the corpus, the case goes red.
+ */
+function renderDurationBody(kase: YamlCase): RenderedBody {
+  const expected = kase.expected ?? {};
+  const input = kase.input ?? {};
+  const merged = mergeContexts(kase.contexts);
+  if (expected.status === 'raise') {
+    throw new Error(
+      'DURATION raise case has no public-getter mapping in the Node target yet; add one rather than bypassing getDuration',
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'default')) {
+    throw new Error('DURATION case with input.default: Quonfig#getDuration takes no default');
+  }
+  if (kase.env_vars) {
+    throw new Error('DURATION case with env_vars is not supported by the Node target yet');
+  }
+  if (!Object.prototype.hasOwnProperty.call(expected, 'millis')) {
+    throw new Error('DURATION case has no expected.millis');
+  }
+  const millis = expected.millis;
+  if (typeof millis !== 'number' || !Number.isInteger(millis)) {
+    throw new Error(`DURATION expected.millis must be an integer, got ${String(millis)}`);
+  }
+  const key = (input.key ?? input.flag) as string | undefined;
+  if (!key || key.toString().length === 0) {
+    throw new Error('DURATION case has no input.key/flag');
+  }
+  const usesContextsType = hasMergedContexts(merged);
+  const ctxLit = renderContextsLiteral(merged);
+  let body = '';
+  body += `    const __client = await publicClient();
+`;
+  body += `    const __actual = __client.getDuration(${tsStringLiteral(key)}, ${ctxLit});
+`;
+  body += `    expect(__actual).toBe(${tsLiteral(millis)});
+`;
+  return { body, usesMergeContexts: usesContextsType, usesContextsType, usesPublicClient: true };
 }
 
 /**
@@ -249,6 +312,11 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
 
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
     return renderPostBody(kase);
+  }
+
+  // DURATION cases go through the public getter (qfg-2agi.4).
+  if (isDurationCase(kase)) {
+    return renderDurationBody(kase);
   }
 
   // Cases that override real-client-construction params (init timeout,
@@ -326,10 +394,7 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
 
   let expectedValue: unknown;
   let assertion: 'toBe' | 'toEqual';
-  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    expectedValue = expected.millis;
-    assertion = 'toBe';
-  } else if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
+  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
     expectedValue = expected.value;
     // Arrays / plain objects need deep equality.
     assertion =
@@ -338,7 +403,7 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
         ? 'toEqual'
         : 'toBe';
   } else {
-    throw new Error('case has no expected.value or expected.millis');
+    throw new Error('case has no expected.value');
   }
 
   const usesContextsType = hasMergedContexts(merged);
@@ -816,7 +881,9 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
 
   // All non-datadir suites lean on setup.ts + a small uniform helper API.
   out += `import { describe, it, expect } from "vitest";\n`;
-  out += `import { store, evaluator, resolver, envID } from "./setup";\n`;
+  out += result.usesPublicClient
+    ? `import { store, evaluator, resolver, envID, publicClient } from "./setup";\n`
+    : `import { store, evaluator, resolver, envID } from "./setup";\n`;
   if (result.usesMergeContexts) {
     out += `import { mergeContexts } from "../../src/context";\n`;
   }

@@ -158,6 +158,21 @@ function buildContextCall(kase: YamlCase): string {
   return `buildContextFromMaps(${lit(global)}, ${lit(block)}, ${lit(local)})`;
 }
 
+/**
+ * Build the three-arg `buildPublicContext(global, block, local)` call, which
+ * returns a `*quonfig.ContextSet` for the public Client getters. Same tier
+ * layout as {@link buildContextCall}.
+ */
+function buildPublicContextCall(kase: YamlCase): string {
+  const ctxBlock = kase.contexts ?? {};
+  const global = (ctxBlock.global ?? null) as ContextTypes | null;
+  const block = (ctxBlock.block ?? null) as ContextTypes | null;
+  const local = (ctxBlock.local ?? null) as ContextTypes | null;
+  const lit = (c: ContextTypes | null): string =>
+    c == null ? 'nil' : goContextLiteral(c);
+  return `buildPublicContext(${lit(global)}, ${lit(block)}, ${lit(local)})`;
+}
+
 // ---------------------------------------------------------------------------
 // Per-suite rendering
 // ---------------------------------------------------------------------------
@@ -220,6 +235,8 @@ function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderResult {
  *   - initialization_timeout    → assertInitializationTimeoutError helper
  *                                 (does not exist yet — runtime/compile
  *                                  failure is the desired surface)
+ *   - DURATION (expected.millis) → public Client.GetDurationValue via
+ *                                 assertDurationMillis (integer-exact)
  *   - happy path                → mustLookupConfig + evaluateAndResolve +
  *                                 assert<Type>Value
  */
@@ -345,6 +362,20 @@ function renderBody(
     return body;
   }
 
+  // DURATION cases go through the PUBLIC typed getter
+  // (Client.GetDurationValue) — what a customer calls — and compare the
+  // returned time.Duration integer-exactly against expected.millis. No
+  // test-only parser, no tolerance (qfg-2agi.4).
+  if (isMillis) {
+    const ms = expectedValue as number;
+    if (typeof ms !== 'number' || !Number.isInteger(ms)) {
+      throw new Error(`expected.millis must be an integer, got ${JSON.stringify(ms)}`);
+    }
+    body += `${indent}ctx := ${buildPublicContextCall(kase)}\n`;
+    body += `${indent}assertDurationMillis(t, ${goStringLiteral(key)}, ctx, ${ms.toString()})\n`;
+    return body;
+  }
+
   body += `${indent}cfg := mustLookupConfig(t, ${goStringLiteral(key)})\n`;
   body += `${indent}ctx := ${buildContextCall(kase)}\n`;
   body += `${indent}match, err := evaluateAndResolve(t, cfg, ctx)\n`;
@@ -353,11 +384,6 @@ function renderBody(
   body += `${indent}}\n`;
 
   // Pick the assertion based on type/function/value shape.
-  if (isMillis) {
-    body += `${indent}assertDurationMillis(t, match, ${(expectedValue as number).toString()})\n`;
-    return body;
-  }
-
   if (expectedValue === null || expectedValue === undefined) {
     body += `${indent}assertNilValue(t, match)\n`;
     return body;

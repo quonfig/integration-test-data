@@ -312,14 +312,20 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
     const ctxLit = rubyLiteral(merged);
     const keyLit = rubyLiteral(key);
     let body = '';
-    body += `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
+    // type: DURATION (qfg-2agi.4): raise through the PUBLIC typed getter.
+    const call = isDurationCase(kase)
+      ? `client.get_duration(${keyLit}, context: ctx)`
+      : `resolver.get(${keyLit}, ctx)`;
+    body += isDurationCase(kase)
+      ? `    client = IntegrationTestHelpers.build_client(@store)\n`
+      : `    resolver = IntegrationTestHelpers.build_resolver(@store)\n`;
     body += `    ctx = Quonfig::Context.new(${ctxLit})\n`;
     if (envVars && typeof envVars === 'object') {
       body += `    IntegrationTestHelpers.with_env(${rubyLiteral(stringifyEnvVars(envVars))}) do\n`;
-      body += `      assert_raises(${errClass}) { resolver.get(${keyLit}, ctx) }\n`;
+      body += `      assert_raises(${errClass}) { ${call} }\n`;
       body += `    end\n`;
     } else {
-      body += `    assert_raises(${errClass}) { resolver.get(${keyLit}, ctx) }\n`;
+      body += `    assert_raises(${errClass}) { ${call} }\n`;
     }
     return body;
   }
@@ -346,10 +352,18 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
   const def = (input as { default?: unknown }).default;
 
-  // The `assert_get_with_default` branch takes `@store` directly and never
-  // touches `resolver`, so building one would trip Lint/UselessAssignment.
-  // Only emit the resolver setup line for branches that actually use it.
-  const needsResolver = fn === 'enabled' || !hasDefault;
+  const isDuration = isDurationCase(kase) && fn !== 'enabled';
+  if (isDuration && !Number.isInteger(expectedValue)) {
+    throw new Error(
+      `DURATION case must set expected.millis to an integer, got ${JSON.stringify(expectedValue)}`,
+    );
+  }
+
+  // The `assert_get_with_default` / `assert_duration` branches take `@store`
+  // directly and never touch `resolver`, so building one would trip
+  // Lint/UselessAssignment. Only emit the resolver setup line for branches
+  // that actually use it.
+  const needsResolver = !isDuration && (fn === 'enabled' || !hasDefault);
 
   let inner = '';
   if (needsResolver) {
@@ -366,6 +380,12 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
     // so the bool-coercion semantics live in the helper, not inferred from
     // the expected literal.
     inner += `${indent}IntegrationTestHelpers.assert_enabled(self, resolver, ${keyLit}, ${ctxLit}, ${expLit})\n`;
+  } else if (isDuration) {
+    // type: DURATION (qfg-2agi.4): assert through the PUBLIC
+    // Client#get_duration with an integer-exact millisecond comparison, so a
+    // green corpus says something about the getter a customer calls.
+    const defArg = hasDefault ? `, default: ${rubyLiteral(def)}` : '';
+    inner += `${indent}IntegrationTestHelpers.assert_duration(self, @store, ${keyLit}, ${ctxLit}, ${expLit}${defArg})\n`;
   } else if (hasDefault) {
     // input.default: thread through the SDK's get-with-default API. Build
     // a real client over the loaded store so we observe what the SDK
@@ -378,6 +398,11 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
     inner += `    end\n`;
   }
   return inner;
+}
+
+/** True iff the case is typed DURATION (asserted via Client#get_duration). */
+function isDurationCase(kase: YamlCase): boolean {
+  return typeof kase.type === 'string' && kase.type.toUpperCase() === 'DURATION';
 }
 
 /** True iff client_overrides contains keys that drive Client construction. */

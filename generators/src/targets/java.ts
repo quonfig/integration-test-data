@@ -336,6 +336,26 @@ function renderHappyPathBody(
   //   function: enabled → enabledCase
   //   has default       → getCase (mirrors public Quonfig#get)
   //   otherwise         → resolveCase (direct evaluator/resolver path)
+  // DURATION cases (expected.millis) go through the PUBLIC typed getters
+  // (Quonfig#getDuration + Quonfig#getDurationDetails) — what a customer calls
+  // — with integer-exact millisecond comparison (qfg-2agi.4). No test-only
+  // parser and no tolerance: a green case here proves the public API.
+  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
+    if (fn !== 'get' || hasDefault) {
+      throw new Error(
+        `DURATION case "${kase.name}": only plain \`get\` without default is supported ` +
+          `through the public getter (got function=${fn}, default=${hasDefault}).`,
+      );
+    }
+    const millis = expected.millis as number;
+    if (!Number.isInteger(millis)) {
+      throw new Error(`DURATION case "${kase.name}": expected.millis must be an integer`);
+    }
+    return (
+      `${indent}TestSetup.assertPublicDurationMillis(${keyLit}, ${ctxLit}, ${millis}L);\n`
+    );
+  }
+
   let actualExpr: string;
   if (fn === 'enabled') {
     actualExpr = `TestSetup.enabledCase(${keyLit}, ${ctxLit})`;
@@ -448,11 +468,12 @@ function renderAssertion(
   yamlType: string,
 ): string {
   if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    const millis = expected.millis as number;
-    // assertDurationMillis lives on TestSetup so the Duration return type
-    // and the millis-vs-seconds conversion are encapsulated there. Match the
-    // python target's tolerance (1ms).
-    return `${indent}TestSetup.assertDurationMillis(actual, ${millis});\n`;
+    // DURATION cases must be asserted through the public getter
+    // (renderHappyPathBody → TestSetup.assertPublicDurationMillis). Refuse to
+    // emit a raw-resolved-value assertion that would bypass it (qfg-2agi.4).
+    throw new Error(
+      'expected.millis is only supported on plain happy-path get cases (public getDuration path)',
+    );
   }
   if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
     throw new Error('case has no expected.value or expected.millis');

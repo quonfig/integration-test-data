@@ -326,7 +326,7 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
 }
 
 function renderHappyPathBody(
-  _kase: YamlCase,
+  kase: YamlCase,
   key: string,
   ctxLit: string,
   expected: { value?: unknown; millis?: number; [k: string]: unknown },
@@ -338,6 +338,24 @@ function renderHappyPathBody(
   const keyLit = csStringLiteral(key);
   const hasDefault = Object.prototype.hasOwnProperty.call(input, 'default');
   const def = (input as { default?: unknown }).default;
+
+  // DURATION cases (expected.millis) go through the PUBLIC typed getters
+  // (Quonfig.GetDuration + Quonfig.GetDurationDetails) — what a customer calls
+  // — with integer-exact millisecond comparison (qfg-2agi.4). No test-only
+  // parser and no tolerance: a green case here proves the public API.
+  if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
+    if (fn !== 'get' || hasDefault) {
+      throw new Error(
+        `DURATION case "${kase.name}": only plain \`get\` without default is supported ` +
+          `through the public getter (got function=${fn}, default=${hasDefault}).`,
+      );
+    }
+    const millis = expected.millis as number;
+    if (!Number.isInteger(millis)) {
+      throw new Error(`DURATION case "${kase.name}": expected.millis must be an integer`);
+    }
+    return `${indent}TestSetup.AssertPublicDurationMillis(${keyLit}, ${ctxLit}, ${millis}L);\n`;
+  }
 
   // Pick the call shape — same trichotomy as java.ts:
   //   function: enabled → EnabledCase
@@ -455,11 +473,12 @@ function renderAssertion(
   _yamlType: string,
 ): string {
   if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
-    const millis = expected.millis as number;
-    // AssertDurationMillis lives on TestSetup so the TimeSpan return type
-    // and the millis-vs-seconds conversion are encapsulated there. Match the
-    // python target's tolerance (1ms).
-    return `${indent}TestSetup.AssertDurationMillis(actual, ${millis}L);\n`;
+    // DURATION cases must be asserted through the public getter
+    // (renderHappyPathBody → TestSetup.AssertPublicDurationMillis). Refuse to
+    // emit a raw-resolved-value assertion that would bypass it (qfg-2agi.4).
+    throw new Error(
+      'expected.millis is only supported on plain happy-path get cases (public GetDuration path)',
+    );
   }
   if (!Object.prototype.hasOwnProperty.call(expected, 'value')) {
     throw new Error('case has no expected.value or expected.millis');
