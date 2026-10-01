@@ -55,6 +55,22 @@ Two fixtures pin the weight-scale contract:
 There is intentionally no zero-total (0/0) case: SDKs diverge at zero total
 and the write layers make it unstorable (see qfg-wis6.19).
 
+## Duration grammar fixture (qfg-2agi.29)
+
+`tests/duration/grammar.yaml` is the single definition of the accepted
+ISO-8601 duration grammar (fraction on S only, max 9 fractional digits,
+no dangling T, magnitude <= P36500D). Writers, `qfg verify`, the corpus
+scan and SDK tests load it instead of keeping their own copy.
+
+```yaml
+valid:                                   # must parse; millis is exact decimal, round half up
+  - { value: "P1DT6H2M1.5S", millis: 108121500 }
+invalid:                                 # must be rejected
+  - "PT0.5H"
+```
+
+Self-check: `cd generators && npm test` (`src/shared/duration-grammar.test.ts`).
+
 ## Workflow
 
 ```
