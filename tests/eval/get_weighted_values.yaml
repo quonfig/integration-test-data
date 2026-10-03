@@ -92,6 +92,47 @@ tests:
       expected:
         value: "b"
   - cases:
+    # Non-ASCII hash input (qfg-1mvb): SDKs hash the UTF-8 BYTES of the
+    # hash input. sdk-ruby before 1.7.1 used the character count and served
+    # the opposite variant for each of these (hash fractions ~0.47, ~0.29,
+    # ~0.63 per mmh3 seed 0).
+    - name: non-ascii tracking_id emoji hashes utf-8 bytes
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "🚀-rocket"
+      input:
+        flag: "feature-flag.weighted.even-split-ones"
+      expected:
+        value: "a"
+    - name: non-ascii tracking_id latin hashes utf-8 bytes
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "münchen-7"
+      input:
+        flag: "feature-flag.weighted.even-split-ones"
+      expected:
+        value: "a"
+    - name: non-ascii tracking_id cjk hashes utf-8 bytes
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "ユーザー1"
+      input:
+        flag: "feature-flag.weighted.even-split-ones"
+      expected:
+        value: "b"
+  - cases:
     # Resilience contract (qfg-wis6.13): the stored weights sum to 180000
     # (deliberately non-conforming fixture — never round-trip it through qfg
     # tooling). Evaluation normalizes by total: true wins for fractions
