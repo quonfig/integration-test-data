@@ -24,6 +24,34 @@ tests:
           value: false
 
 
+      #################
+      ## MISSING KEY ##
+      #################
+      ## enabled() on a key that does not exist returns false -- it never
+      ## raises, regardless of the client's on_no_default (qfg-goi1.3).
+
+      - name: returns false for a flag key that does not exist
+        client: feature_flag_client
+        function: enabled
+        input:
+          flag: "my-missing-key"
+        expected:
+          value: false
+
+      - name: returns false for a flag key that does not exist with a context
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          local:
+            user:
+              key: "michael"
+              email: "michael@example.com"
+        input:
+          flag: "my-missing-key"
+        expected:
+          value: false
+
+
       #####################
       ## PROP_IS_ONE_OF ##
       #####################
