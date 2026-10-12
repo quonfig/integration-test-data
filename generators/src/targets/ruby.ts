@@ -24,6 +24,12 @@ import { loadYamlFile } from '../yaml-loader.js';
 import { rubyMethodSuffix, uniqueSuffix } from '../shared/case-id.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
+import {
+  isRedactedMatcher,
+  messageExpectations,
+  redactedRowKeys,
+  REDACTED_SELECTED_VALUE_PATTERN,
+} from '../shared/message-and-redaction.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -50,12 +56,26 @@ const SUITES: SuiteEntry[] = [
 
 const GENERATOR_PATH = 'integration-test-data/generators/src/targets/ruby.ts';
 
+/** A pre-rendered Ruby expression, emitted verbatim by rubyLiteral. */
+class RubyCode {
+  constructor(readonly code: string) {}
+}
+
+/**
+ * Ruby constant for the YAML `selected_value: {redacted: true}` matcher. Its
+ * class is emitted into the generated file (rubyRedactedMatcherClass) when a
+ * case references it; the Ruby helper's assert_equal compares expected == actual,
+ * so the matcher's #== runs against the wire selectedValue hash.
+ */
+const RUBY_REDACTED_MATCHER = 'RedactedSelectedValueMatcher';
+
 /**
  * Format an arbitrary JS value as a Ruby literal. Produces the same shapes the
  * Ruby reference implementation produced via `Object#inspect`/`Hash#inspect`,
  * so generated assertions stay byte-comparable to the prior output.
  */
 export function rubyLiteral(value: unknown): string {
+  if (value instanceof RubyCode) return value.code;
   if (value === null || value === undefined) return 'nil';
   if (value === true) return 'true';
   if (value === false) return 'false';
@@ -310,6 +330,12 @@ function raiseClass(kase: YamlCase): string {
  */
 function renderBody(yamlBasename: string, kase: YamlCase): string {
   const expected = kase.expected ?? {};
+  // message_contains / message_excludes: rejected on non-raise cases here, and
+  // honoured only by renderEvalBody. Any other body would silently drop them.
+  const msg = messageExpectations(expected);
+  if ((msg.contains.length > 0 || msg.excludes.length > 0) && !isPlainEvalCase(yamlBasename, kase)) {
+    throw new Error('message_contains/message_excludes are only supported on eval (get/get_or_raise) cases');
+  }
 
   if (yamlBasename === 'datadir_environment.yaml') {
     return renderDatadirBody(kase);
@@ -342,6 +368,18 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   }
 
   return renderEvalBody(kase);
+}
+
+/** True when renderBody routes the case to renderEvalBody. */
+function isPlainEvalCase(yamlBasename: string, kase: YamlCase): boolean {
+  const routedElsewhere = [
+    'datadir_environment.yaml',
+    'datadir_value_type.yaml',
+    'delivery_environment.yaml',
+    'post.yaml',
+    'telemetry.yaml',
+  ];
+  return !routedElsewhere.includes(yamlBasename) && !hasClientConstructionOverrides(kase.client_overrides);
 }
 
 /**
@@ -449,6 +487,8 @@ function valueAssertion(kase: YamlCase, call: string): string[] {
 /** Body for get / enabled / get_or_raise cases against the shared datadir corpus. */
 function renderEvalBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
+  // Rejects message_contains/message_excludes on a non-raise case.
+  const msg = messageExpectations(expected);
   const envVars = kase.env_vars;
   const envWrap = !!envVars && typeof envVars === 'object' && Object.keys(envVars).length > 0;
   const indent = envWrap ? '      ' : '    ';
@@ -469,7 +509,14 @@ function renderEvalBody(kase: YamlCase): string {
       `             ${rubyLiteral(`expected values seen over ${rspec.repeat} evaluations`)}`,
     );
   } else if (expected.status === 'raise') {
-    lines.push(`assert_raises(${raiseClass(kase)}) { ${plan.call} }`);
+    if (msg.contains.length === 0 && msg.excludes.length === 0) {
+      lines.push(`assert_raises(${raiseClass(kase)}) { ${plan.call} }`);
+    } else {
+      // message_contains / message_excludes: inspect the raised message.
+      lines.push(`error = assert_raises(${raiseClass(kase)}) { ${plan.call} }`);
+      for (const sub of msg.contains) lines.push(`assert_includes error.message, ${rubyLiteral(sub)}`);
+      for (const sub of msg.excludes) lines.push(`refute_includes error.message, ${rubyLiteral(sub)}`);
+    }
   } else {
     lines.push(`actual = ${plan.call}`);
     lines.push(...valueAssertion(kase, plan.call));
@@ -765,7 +812,20 @@ function renderTelemetryBody(kase: YamlCase): string {
   const block = tier(kase, 'block');
 
   const data = hasOwn(kase, 'data') ? kase.data : null;
-  const expectedData = hasOwn(kase, 'expected_data') ? kase.expected_data : null;
+  let expectedData = hasOwn(kase, 'expected_data') ? kase.expected_data : null;
+  // selected_value {redacted: true} rows match {'string' => '*****<5 hex>'}
+  // (redaction shape only; the hash input is not pinned): swap the marker for
+  // the generated file's matcher, compare the rest of the row exactly.
+  if (redactedRowKeys(expectedData).length > 0) {
+    if (aggregator !== 'evaluation_summary') {
+      throw new Error('selected_value {redacted: true} is only valid for evaluation_summary');
+    }
+    expectedData = (expectedData as Array<Record<string, unknown>>).map((row) =>
+      isRedactedMatcher(row.selected_value)
+        ? { ...row, selected_value: new RubyCode(`${RUBY_REDACTED_MATCHER}.new`) }
+        : row,
+    );
+  }
 
   const opts: string[] = [];
   const overrides = kase.client_overrides ?? {};
@@ -908,12 +968,42 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   out += `require 'integration/test_helpers'\n`;
   out += `\n`;
   out += `class ${suite.className} < Minitest::Test\n`;
+  // Nested in the test class: Style/OneClassPerFile allows one top-level class.
+  const usesMatcher = rendered.some((r) => r.source.includes(`${RUBY_REDACTED_MATCHER}.new`));
+  if (usesMatcher) out += rubyRedactedMatcherClass();
   rendered.forEach((r, i) => {
     // Layout/EmptyLinesAroundClassBody: no blank line right after `class`.
-    out += i === 0 ? r.source.replace(/^\n/, '') : r.source;
+    out += i === 0 && !usesMatcher ? r.source.replace(/^\n/, '') : r.source;
   });
   out += `end\n`;
   return out;
+}
+
+/**
+ * File-level matcher emitted when a case uses selected_value {redacted: true}:
+ * equal to a selectedValue of exactly {'string' => '*****<5 hex>'} and nothing
+ * else (the redaction shape; the hash input is not pinned).
+ */
+function rubyRedactedMatcherClass(): string {
+  // Ruby ^/$ are line anchors; pin the whole string with \A / \z.
+  const re = REDACTED_SELECTED_VALUE_PATTERN.replace(/^\^/, '\\A').replace(/\$$/, '\\z');
+  return (
+    `  # Matches a telemetry selectedValue of exactly { 'string' => '*****<5 hex>' }:\n` +
+    `  # the redaction shape, without pinning the hash input (YAML\n` +
+    `  # \`selected_value: { redacted: true }\`).\n` +
+    `  class ${RUBY_REDACTED_MATCHER}\n` +
+    `    PATTERN = /${re}/\n` +
+    `\n` +
+    `    def ==(other)\n` +
+    `      other.is_a?(Hash) && other.keys == ['string'] && other['string'].is_a?(String) &&\n` +
+    `        PATTERN.match?(other['string'])\n` +
+    `    end\n` +
+    `\n` +
+    `    def inspect\n` +
+    `      "{ 'string' => #{PATTERN.inspect} }"\n` +
+    `    end\n` +
+    `  end\n`
+  );
 }
 
 export interface RubyRunResult {

@@ -40,6 +40,11 @@ import {
 } from '../shared/case-id.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import { isMalformedDurationWithDefault } from '../shared/malformed-duration.js';
+import {
+  messageExpectations,
+  redactedRowKeys,
+  REDACTED_SELECTED_VALUE_PATTERN,
+} from '../shared/message-and-redaction.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -290,7 +295,24 @@ function renderCases(suite: SuiteEntry, cases: NormalizedCase[]): RenderedCase[]
 }
 
 /** Body of one test method (indented eight spaces, trailing newline). */
+const NON_EVAL_SUITES = new Set([
+  'datadir_environment.yaml',
+  'datadir_value_type.yaml',
+  'delivery_environment.yaml',
+  'post.yaml',
+  'telemetry.yaml',
+]);
+
+/** Only the eval raise paths honour message_contains/message_excludes; fail elsewhere. */
+function rejectMessageExpectations(kase: YamlCase, yaml: string): void {
+  const msg = messageExpectations(kase.expected);
+  if (msg.contains.length > 0 || msg.excludes.length > 0) {
+    throw new Error(`message_contains/message_excludes are not supported in ${yaml}`);
+  }
+}
+
 function renderBody(suite: SuiteEntry, kase: YamlCase): string {
+  if (NON_EVAL_SUITES.has(suite.yaml)) rejectMessageExpectations(kase, suite.yaml);
   if (suite.yaml === 'datadir_environment.yaml') return renderDatadirBody(kase);
   if (suite.yaml === 'datadir_value_type.yaml') return renderDatadirValueTypeBody(kase);
   if (suite.yaml === 'delivery_environment.yaml') return renderDeliveryBody(kase);
@@ -558,6 +580,8 @@ function renderDurationAssertion(kase: YamlCase, recv: Receiver, key: string): s
 
 function renderEvalBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
+  // Rejects message_contains/message_excludes on a non-raise case.
+  messageExpectations(expected);
   const overrides = kase.client_overrides ?? {};
   const envVars = kase.env_vars ?? {};
   const isRaise = expected.status === 'raise';
@@ -604,7 +628,7 @@ function renderEvalBody(kase: YamlCase): string {
 
   if (isRaise) {
     const cls = errorClass((expected.error ?? '').toString());
-    body += `${I}Assert.Throws<${cls}>(() => ${getterCall(kase, recv, key)});\n`;
+    body += renderRaiseAssertion(kase, cls, getterCall(kase, recv, key));
     return body;
   }
 
@@ -615,6 +639,21 @@ function renderEvalBody(kase: YamlCase): string {
 
   body += renderValueAssertion(kase, getterCall(kase, recv, key));
   return body;
+}
+
+/**
+ * Assert.Throws<cls> on `call`; with message_contains / message_excludes the
+ * raised exception's Message is checked too.
+ */
+function renderRaiseAssertion(kase: YamlCase, cls: string, call: string): string {
+  const msg = messageExpectations(kase.expected);
+  if (msg.contains.length === 0 && msg.excludes.length === 0) {
+    return `${I}Assert.Throws<${cls}>(() => ${call});\n`;
+  }
+  let out = `${I}var raised = Assert.Throws<${cls}>(() => ${call});\n`;
+  for (const sub of msg.contains) out += `${I}Assert.Contains(${csStringLiteral(sub)}, raised.Message, StringComparison.Ordinal);\n`;
+  for (const sub of msg.excludes) out += `${I}Assert.DoesNotContain(${csStringLiteral(sub)}, raised.Message, StringComparison.Ordinal);\n`;
+  return out;
 }
 
 function hasHttpOverrides(overrides: unknown): boolean {
@@ -655,13 +694,14 @@ function renderHttpClientBody(kase: YamlCase, key: string): string {
   let body = renderNewClient(opts);
   const recv = receiverFor(kase);
   if (isRaise && errKey === 'initialization_timeout') {
+    rejectMessageExpectations(kase, 'an initialization_timeout case');
     body += `${I}await Assert.ThrowsAsync<${errorClass(errKey)}>(() => client.InitAsync());\n`;
     return body;
   }
   body += `${I}await client.InitAsync();\n`;
   body += recv.setup;
   if (isRaise) {
-    body += `${I}Assert.Throws<${errorClass(errKey)}>(() => ${getterCall(kase, recv, key)});\n`;
+    body += renderRaiseAssertion(kase, errorClass(errKey), getterCall(kase, recv, key));
     return body;
   }
   return body + renderValueAssertion(kase, getterCall(kase, recv, key));
@@ -865,6 +905,33 @@ function renderTelemetryBody(kase: YamlCase): string {
   body += calls;
   body += `${I}}\n`;
   const post = `telemetry.Sent(${csStringLiteral(aggregator)})`;
+  // selected_value {redacted: true} rows: the wire selectedValue must be
+  // exactly {string: "*****<5 hex>"} (redaction shape; the hash input is not
+  // pinned). Check it on the projected rows, then swap in the YAML marker so
+  // the exact comparison covers every other field.
+  const redacted = redactedRowKeys(expectedData);
+  if (redacted.length > 0) {
+    if (aggregator !== 'evaluation_summary') {
+      throw new Error('selected_value {redacted: true} is only valid for evaluation_summary');
+    }
+    const keysLit = redacted.map(csStringLiteral).join(', ');
+    body += `${I}var posted = Assert.IsType<List<object?>>(${post});\n`;
+    body += `${I}var redactedKeys = new HashSet<string> { ${keysLit} };\n`;
+    body += `${I}foreach (var o in posted)\n`;
+    body += `${I}{\n`;
+    body += `${J}if (o is not IDictionary<string, object?> row || row["key"] is not string rowKey) continue;\n`;
+    body += `${J}if (!redactedKeys.Contains(rowKey)) continue;\n`;
+    body += `${J}row.TryGetValue("selected_value", out var sv);\n`;
+    body += `${J}Assert.True(\n`;
+    body += `${J}    sv is IDictionary<string, object?> svm && svm.Count == 1\n`;
+    body += `${J}        && svm.TryGetValue("string", out var svs) && svs is string svStr\n`;
+    body += `${J}        && Regex.IsMatch(svStr, ${csStringLiteral(REDACTED_SELECTED_VALUE_PATTERN)}),\n`;
+    body += `${J}    $"{rowKey}: selectedValue {(sv is IDictionary<string, object?> d ? string.Join(", ", d) : sv)} is not redacted");\n`;
+    body += `${J}row["selected_value"] = TestSetup.Map("redacted", true);\n`;
+    body += `${I}}\n`;
+    body += `${I}Assert.Equal(${csLiteral(expectedData)}, posted);\n`;
+    return body;
+  }
   if (expectedData === null || expectedData === undefined) {
     body += `${I}Assert.Null(${post});\n`;
   } else {
@@ -880,7 +947,8 @@ function renderTelemetryBody(kase: YamlCase): string {
 function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   const src = rendered.map((r) => r.source).join('');
   const usings = new Set<string>(['System', 'System.Threading.Tasks', 'Xunit']);
-  if (/\bHashSet<\b/.test(src)) usings.add('System.Collections.Generic');
+  if (/\b(HashSet|List|IDictionary)<\b/.test(src)) usings.add('System.Collections.Generic');
+  if (/\bRegex\./.test(src)) usings.add('System.Text.RegularExpressions');
   if (/\bQuonfig[A-Za-z]*Exception\b/.test(src)) usings.add('Quonfig.Sdk.Exceptions');
   if (/\bWireMockServer\b/.test(src)) {
     usings.add('WireMock.RequestBuilders');

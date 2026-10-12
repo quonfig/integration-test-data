@@ -74,6 +74,47 @@ tests:
         status: raise
         error: unable_to_coerce_env_var
 
+    # Coercion error text never carries the env var's value (qfg-goi1.10.11,
+    # WS1). Env vars hold secrets, and this message reaches callers, logs and
+    # the *_details error_message / OpenFeature error events. Pinned template
+    # (sdk-go 4178377, sdk-net 0402468; <type> is the lowercase config-file
+    # type name):
+    #   environment variable "<NAME>" cannot be converted to <type> for config "<key>"
+    # message_contains: the raised error's message contains this string (an
+    # SDK may add a prefix or a sanitized reason such as ": parsing int:
+    # invalid syntax"). message_excludes: none of these substrings may appear.
+    - name: coercion error for an int env var names the variable and never its value
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "provided.secret.not.an.int"
+      env_vars:
+        QUONFIG_ITD_SECRET_ENV: "postgres://admin:hunter2@db"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+        message_contains: 'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to int for config "provided.secret.not.an.int"'
+        message_excludes:
+          - "hunter2"
+          - "postgres://"
+
+    - name: coercion error for a double env var names the variable and never its value
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "provided.secret.not.a.double"
+      env_vars:
+        QUONFIG_ITD_SECRET_ENV: "postgres://admin:hunter2@db"
+      expected:
+        status: raise
+        error: unable_to_coerce_env_var
+        message_contains: 'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to double for config "provided.secret.not.a.double"'
+        message_excludes:
+          - "hunter2"
+          - "postgres://"
+
     - name: raises an error for decryption failure
       client: config_client
       function: get_or_raise

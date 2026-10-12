@@ -39,6 +39,11 @@ import {
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import { isMalformedDurationWithDefault } from '../shared/malformed-duration.js';
+import {
+  messageExpectations,
+  redactedRowKeys,
+  REDACTED_SELECTED_VALUE_PATTERN,
+} from '../shared/message-and-redaction.js';
 import type { CaseContexts, ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -490,6 +495,22 @@ function renderCases(
   return { rendered, exceptions };
 }
 
+const NON_EVAL_SUITES = new Set([
+  'datadir_environment.yaml',
+  'datadir_value_type.yaml',
+  'delivery_environment.yaml',
+  'post.yaml',
+  'telemetry.yaml',
+]);
+
+/** Only renderEvalCall honours message_contains/message_excludes; fail elsewhere. */
+function rejectMessageExpectations(kase: YamlCase, yaml: string): void {
+  const msg = messageExpectations(kase.expected);
+  if (msg.contains.length > 0 || msg.excludes.length > 0) {
+    throw new Error(`message_contains/message_excludes are not supported in ${yaml}`);
+  }
+}
+
 /**
  * Render a single test method body (everything between the opening `{` and
  * closing `}`). Returns text with a trailing newline. Indented four spaces.
@@ -500,6 +521,7 @@ function renderBody(
   exceptions: Set<string>,
   rctx: RenderCtx,
 ): string {
+  if (NON_EVAL_SUITES.has(suite.yaml)) rejectMessageExpectations(kase, suite.yaml);
   if (suite.yaml === 'datadir_environment.yaml') {
     return renderDatadirBody(kase, exceptions);
   }
@@ -539,6 +561,8 @@ const EVAL_OVERRIDE_KEYS = new Set([
 
 function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
   const expected = kase.expected ?? {};
+  // Rejects message_contains/message_excludes on a non-raise case.
+  messageExpectations(expected);
   const input = kase.input ?? {};
   const overrides = (kase.client_overrides ?? {}) as Record<string, unknown>;
   const envVars = kase.env_vars ?? {};
@@ -633,10 +657,25 @@ function renderEvalCall(
       );
     }
     exceptions.add(errClass);
-    return (
-      `${indent}assertThrows(\n` +
-      `${indent}    ${shortClassName(errClass)}.class, () -> ${callOrThrow(recv, getter.method, keyLit)});\n`
-    );
+    const thrown =
+      `assertThrows(\n` +
+      `${indent}    ${shortClassName(errClass)}.class, () -> ${callOrThrow(recv, getter.method, keyLit)});\n`;
+    const msg = messageExpectations(expected);
+    if (msg.contains.length === 0 && msg.excludes.length === 0) return `${indent}${thrown}`;
+    // message_contains / message_excludes: inspect the raised message.
+    let rb = `${indent}${shortClassName(errClass)} raised =\n${indent}    ${thrown}`;
+    rb += `${indent}String raisedMessage = String.valueOf(raised.getMessage());\n`;
+    for (const sub of msg.contains) {
+      rb += `${indent}assertTrue(\n`;
+      rb += `${indent}    raisedMessage.contains(${javaStringLiteral(sub)}),\n`;
+      rb += `${indent}    () -> "message lacks " + ${javaStringLiteral(sub)} + ": " + raisedMessage);\n`;
+    }
+    for (const sub of msg.excludes) {
+      rb += `${indent}assertFalse(\n`;
+      rb += `${indent}    raisedMessage.contains(${javaStringLiteral(sub)}),\n`;
+      rb += `${indent}    () -> "message contains " + ${javaStringLiteral(sub)} + ": " + raisedMessage);\n`;
+    }
+    return rb;
   }
 
   // get_or_raise with a default never raises: sdk-java's *OrThrow takes no
@@ -980,6 +1019,39 @@ function renderTelemetryBody(kase: YamlCase, rctx: RenderCtx): string {
     }
   }
 
+  // selected_value {redacted: true} rows: the wire selectedValue must be
+  // exactly {string: "*****<5 hex>"} (redaction shape; the hash input is not
+  // pinned). Check it on the projected rows, then swap in the YAML marker so
+  // the exact comparison below covers every other field.
+  const redacted = redactedRowKeys(expectedData);
+  if (redacted.length > 0) {
+    if (aggregator !== 'evaluation_summary') {
+      throw new Error('selected_value {redacted: true} is only valid for evaluation_summary');
+    }
+    const keysLit = redacted.map(javaStringLiteral).join(', ');
+    body += `${inner}Object projected = t.${projection}();\n`;
+    body += `${inner}assertNotNull(projected, "no evaluation summaries were sent");\n`;
+    body += `${inner}for (Object o : (java.util.List<?>) projected) {\n`;
+    body += `${inner}  @SuppressWarnings("unchecked")\n`;
+    body += `${inner}  java.util.Map<String, Object> row = (java.util.Map<String, Object>) o;\n`;
+    body += `${inner}  if (!java.util.Set.of(${keysLit}).contains(row.get("key"))) continue;\n`;
+    body += `${inner}  Object sv = row.get("selected_value");\n`;
+    body += `${inner}  assertTrue(\n`;
+    body += `${inner}      sv instanceof java.util.Map\n`;
+    body += `${inner}          && ((java.util.Map<?, ?>) sv).size() == 1\n`;
+    body += `${inner}          && ((java.util.Map<?, ?>) sv).get("string") instanceof String\n`;
+    body += `${inner}          && ((String) ((java.util.Map<?, ?>) sv).get("string"))\n`;
+    body += `${inner}              .matches(${javaStringLiteral(REDACTED_SELECTED_VALUE_PATTERN)}),\n`;
+    body += `${inner}      () -> row.get("key") + ": selectedValue " + sv + " is not redacted");\n`;
+    body += `${inner}  row.put("selected_value", TestSetup.map("redacted", true));\n`;
+    body += `${inner}}\n`;
+    body += `${inner}assertEquals(\n`;
+    body += `${inner}    ${javaLiteral(expectedData)},\n`;
+    body += `${inner}    projected);\n`;
+    body += `${indent}}\n`;
+    return body;
+  }
+
   const want = javaLiteral(expectedData);
   if (want === 'null') {
     body += `${inner}assertNull(t.${projection}());\n`;
@@ -1175,7 +1247,7 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `package ${PACKAGE};\n`;
   out += `\n`;
   // Import only what the rendered cases use (spotless / unused-import hygiene).
-  for (const a of ['assertEquals', 'assertNotNull', 'assertNull', 'assertThrows']) {
+  for (const a of ['assertEquals', 'assertFalse', 'assertNotNull', 'assertNull', 'assertThrows', 'assertTrue']) {
     if (new RegExp(`\\b${a}\\(`).test(src)) {
       out += `import static org.junit.jupiter.api.Assertions.${a};\n`;
     }

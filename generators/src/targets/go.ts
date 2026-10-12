@@ -29,6 +29,11 @@ import {
   uniqueGoSuffix,
 } from '../shared/case-id.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
+import {
+  messageExpectations,
+  redactedRowKeys,
+  REDACTED_SELECTED_VALUE_PATTERN,
+} from '../shared/message-and-redaction.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -442,6 +447,8 @@ function renderBody(
 
 function renderEvalBody(kase: YamlCase, features: Set<string>): string {
   const expected = kase.expected ?? {};
+  // Rejects message_contains/message_excludes on a non-raise case.
+  messageExpectations(expected);
   const input = kase.input ?? {};
   const fn = (kase.function ?? 'get').toString();
   const yamlType = (kase.type ?? '').toString().toUpperCase();
@@ -530,8 +537,19 @@ function renderEvalBody(kase: YamlCase, features: Set<string>): string {
       features.add('require');
       body += `\trequire.ErrorIs(t, err, ${sentinel})\n`;
     }
+    const msg = messageExpectations(expected);
+    if ((msg.contains.length > 0 || msg.excludes.length > 0) && zeroValuePolicy) {
+      throw new Error('message_contains/message_excludes need a raised error');
+    }
+    for (const sub of msg.contains) {
+      body += `\tassert.Contains(t, err.Error(), ${goStringLiteral(sub)})\n`;
+    }
+    for (const sub of msg.excludes) {
+      body += `\tassert.NotContains(t, err.Error(), ${goStringLiteral(sub)})\n`;
+    }
     return body;
   }
+
 
   // Value expectations.
   let expectedValue: unknown;
@@ -924,8 +942,71 @@ function renderTelemetryBody(kase: YamlCase, features: Set<string>): string {
     throw new Error(`unknown aggregator: ${aggregator}`);
   }
 
+  const redacted = redactedRowKeys(expectedData);
+  if (redacted.length > 0) {
+    // {redacted: true} rows: check the wire selectedValue against the
+    // redaction shape, then compare every row exactly through the same
+    // decoder assertTelemetryPost uses (see checkRedactedSelectedValues).
+    if (aggregator !== 'evaluation_summary') {
+      throw new Error('selected_value {redacted: true} is only valid for evaluation_summary');
+    }
+    if (endpoint !== '/api/v1/telemetry') throw new Error(`unexpected endpoint ${endpoint}`);
+    features.add('redactedHelper');
+    features.add('assert');
+    body += `\tsummaries := eventsOfKind(tel.events(t), "summaries")\n`;
+    body += `\tcheckRedactedSelectedValues(t, summaries, ${redacted.map(goStringLiteral).join(', ')})\n`;
+    body += `\tassertEvalSummaryWire(t, summaries, ${goLiteralValue(expectedData)})\n`;
+    return body;
+  }
   body += `\tassertTelemetryPost(t, tel, ${goStringLiteral(aggregator)}, ${goLiteralValue(expectedData)}, ${goStringLiteral(endpoint)})\n`;
   return body;
+}
+
+/**
+ * File-level helper emitted when a case uses selected_value {redacted: true}.
+ * It asserts each matching counter's wire selectedValue is exactly
+ * {"string": "*****<5 hex>"} and then swaps it for the {redacted: true}
+ * marker so assertEvalSummaryWire compares the remaining fields exactly.
+ */
+function goRedactedHelper(): string {
+  return (
+    `\n` +
+    `// checkRedactedSelectedValues asserts every counter for keys reports a\n` +
+    `// selectedValue of exactly {"string": "*****<5 hex>"} (the redaction shape;\n` +
+    `// the hash input is not pinned), then replaces it with the YAML's\n` +
+    `// {redacted: true} marker for the exact row comparison.\n` +
+    `func checkRedactedSelectedValues(t *testing.T, summaries []map[string]interface{}, keys ...string) {\n` +
+    `\tt.Helper()\n` +
+    `\twant := map[string]bool{}\n` +
+    `\tfor _, k := range keys {\n` +
+    `\t\twant[k] = true\n` +
+    `\t}\n` +
+    `\tfor _, s := range summaries {\n` +
+    `\t\tlist, _ := s["summaries"].([]interface{})\n` +
+    `\t\tfor _, item := range list {\n` +
+    `\t\t\tsm, _ := item.(map[string]interface{})\n` +
+    `\t\t\tkey, _ := sm["key"].(string)\n` +
+    `\t\t\tif !want[key] {\n` +
+    `\t\t\t\tcontinue\n` +
+    `\t\t\t}\n` +
+    `\t\t\tcounters, _ := sm["counters"].([]interface{})\n` +
+    `\t\t\tfor _, ci := range counters {\n` +
+    `\t\t\t\tc, _ := ci.(map[string]interface{})\n` +
+    `\t\t\t\tsv, _ := c["selectedValue"].(map[string]interface{})\n` +
+    `\t\t\t\tstr, isString := sv["string"].(string)\n` +
+    `\t\t\t\tif len(sv) != 1 || !isString {\n` +
+    `\t\t\t\t\tt.Errorf("%s: selectedValue %v is not a redacted string", key, c["selectedValue"])\n` +
+    `\t\t\t\t\tcontinue\n` +
+    `\t\t\t\t}\n` +
+    `\t\t\t\tif !assert.Regexp(t, ${'`'}${REDACTED_SELECTED_VALUE_PATTERN}${'`'}, str, "%s: selectedValue is not redacted", key) {\n` +
+    `\t\t\t\t\tcontinue\n` +
+    `\t\t\t\t}\n` +
+    `\t\t\t\tc["selectedValue"] = map[string]interface{}{"redacted": true}\n` +
+    `\t\t\t}\n` +
+    `\t\t}\n` +
+    `\t}\n` +
+    `}\n`
+  );
 }
 
 function hasClientConstructionOverridesGo(overrides: unknown): boolean {
@@ -1001,6 +1082,9 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<s
 
   for (const r of rendered) {
     out += r.source;
+  }
+  if (features.has('redactedHelper')) {
+    out += goRedactedHelper();
   }
 
   return out;

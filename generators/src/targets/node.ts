@@ -25,6 +25,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import {
+  messageExpectations,
+  redactedRowKeys,
+  isRedactedMatcher,
+  REDACTED_SELECTED_VALUE_PATTERN,
+} from '../shared/message-and-redaction.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
@@ -368,6 +374,8 @@ function wrapEnv(kase: YamlCase, indent: string, inner: (indent: string) => stri
 
 function renderEvalBody(kase: YamlCase): RenderedBody {
   const expected = kase.expected ?? {};
+  // Rejects message_contains/message_excludes on a non-raise case.
+  messageExpectations(expected);
   const input = kase.input ?? {};
   const key = (input.key ?? input.flag) as string | undefined;
   if (!key || key.toString().length === 0) {
@@ -402,7 +410,18 @@ function renderEvalBody(kase: YamlCase): RenderedBody {
     }
     // errClass is a message matcher (sdk-node throws plain Error): it pins
     // WHICH failure raised, not just that something did.
-    assertion = (i) => `${i}expect(() => ${call}).toThrow(${errClass});\n`;
+    const msg = messageExpectations(expected);
+    assertion = (i) => {
+      let a = `${i}expect(() => ${call}).toThrow(${errClass});\n`;
+      if (msg.contains.length === 0 && msg.excludes.length === 0) return a;
+      // message_contains / message_excludes: inspect the raised message.
+      a += `${i}let raised: unknown;\n`;
+      a += `${i}try {\n${i}  ${call};\n${i}} catch (e) {\n${i}  raised = e;\n${i}}\n`;
+      a += `${i}const raisedMessage = String((raised as Error | undefined)?.message);\n`;
+      for (const sub of msg.contains) a += `${i}expect(raisedMessage).toContain(${tsStringLiteral(sub)});\n`;
+      for (const sub of msg.excludes) a += `${i}expect(raisedMessage).not.toContain(${tsStringLiteral(sub)});\n`;
+      return a;
+    };
   } else if (Object.prototype.hasOwnProperty.call(expected, 'millis')) {
     const millis = expected.millis;
     if (typeof millis !== 'number' || !Number.isInteger(millis)) {
@@ -793,7 +812,29 @@ function renderTelemetryBody(kase: YamlCase): RenderedBody {
   body += `    const posted = await collectTelemetry(${optsLit}, (client) => {\n`;
   body += calls;
   body += `    });\n`;
-  body += `    expect(telemetryPost(posted, ${tsStringLiteral(aggregator)}, observed)).toEqual(${tsLiteral(expectedData)});\n`;
+  // selected_value {redacted: true} rows match {string: "*****<5 hex>"}
+  // (redaction shape only; the hash input is not pinned).
+  const redacted = redactedRowKeys(expectedData);
+  if (redacted.length > 0 && aggregator !== 'evaluation_summary') {
+    throw new Error('selected_value {redacted: true} is only valid for evaluation_summary');
+  }
+  const expectedLit =
+    redacted.length === 0
+      ? tsLiteral(expectedData)
+      : '[' +
+        (expectedData as Array<Record<string, unknown>>)
+          .map((row) => {
+            if (!isRedactedMatcher(row.selected_value)) return tsLiteral(row);
+            const entries = Object.entries(row).map(([k, v]) =>
+              k === 'selected_value'
+                ? `${tsObjectKey(k)}: { string: expect.stringMatching(/${REDACTED_SELECTED_VALUE_PATTERN}/) }`
+                : `${tsObjectKey(k)}: ${tsLiteral(v)}`,
+            );
+            return '{ ' + entries.join(', ') + ' }';
+          })
+          .join(', ') +
+        ']';
+  body += `    expect(telemetryPost(posted, ${tsStringLiteral(aggregator)}, observed)).toEqual(${expectedLit});\n`;
   return { body };
 }
 

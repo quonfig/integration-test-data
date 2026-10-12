@@ -29,6 +29,12 @@ import { pythonTestFunctionName, uniqueSuffix } from '../shared/case-id.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
+import {
+  isRedactedMatcher,
+  messageExpectations,
+  redactedRowKeys,
+  REDACTED_SELECTED_VALUE_PATTERN,
+} from '../shared/message-and-redaction.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -65,8 +71,23 @@ class GeneratorError extends Error {
 // Python literal rendering
 // ---------------------------------------------------------------------------
 
+/** A pre-rendered Python expression, emitted verbatim by pyLiteral. */
+class PyCode {
+  constructor(readonly code: string) {}
+}
+
+/**
+ * Python name of the YAML `selected_value: {redacted: true}` matcher. Its
+ * class is emitted into the generated file (pyRedactedMatcherClass) when a
+ * case references it. The generated comparison is `actual == expected`, so
+ * dict.__eq__ returns NotImplemented for the matcher and Python falls back
+ * to the matcher's reflected __eq__ against the wire selectedValue dict.
+ */
+const PY_REDACTED_MATCHER = 'RedactedSelectedValue';
+
 /** Render a value as a Python literal expression (matches `repr()` shape). */
 export function pyLiteral(value: unknown): string {
+  if (value instanceof PyCode) return value.code;
   if (value === null || value === undefined) return 'None';
   if (value === true) return 'True';
   if (value === false) return 'False';
@@ -190,6 +211,22 @@ function renderCase(
   const header =
     `# ${rawName.replace(/\r?\n/g, ' ')}\n` /* keep one-line comment */;
 
+  // message_contains / message_excludes: rejected on non-raise cases here, and
+  // honoured only by renderFreshClientBody (every raise eval case routes there).
+  // Any other body would silently drop them.
+  const msg = messageExpectations(kase.expected);
+  const hasMsg = msg.contains.length > 0 || msg.excludes.length > 0;
+  const nonEvalSuites = [
+    'datadir_environment.yaml',
+    'datadir_value_type.yaml',
+    'delivery_environment.yaml',
+    'post.yaml',
+    'telemetry.yaml',
+  ];
+  if (hasMsg && nonEvalSuites.includes(yamlBasename)) {
+    throw new Error('message_contains/message_excludes are only supported on eval (get/get_or_raise) cases');
+  }
+
   if (yamlBasename === 'datadir_environment.yaml') {
     const body = renderDatadirBody(kase, exceptions);
     return {
@@ -304,6 +341,8 @@ function renderCase(
  */
 function renderFixtureBody(kase: YamlCase, _exceptions: Set<string>): string {
   const expected = kase.expected ?? {};
+  // Rejects message_contains/message_excludes on a non-raise case.
+  messageExpectations(expected);
   const input = kase.input ?? {};
   const merged = mergeContexts(kase.contexts);
 
@@ -329,6 +368,8 @@ function renderFixtureBody(kase: YamlCase, _exceptions: Set<string>): string {
  */
 function renderFreshClientBody(kase: YamlCase, exceptions: Set<string>): string {
   const expected = kase.expected ?? {};
+  // Rejects message_contains/message_excludes on a non-raise case.
+  const msg = messageExpectations(expected);
   const input = kase.input ?? {};
   const overrides = kase.client_overrides ?? {};
   const envVars = kase.env_vars ?? {};
@@ -377,8 +418,17 @@ function renderFreshClientBody(kase: YamlCase, exceptions: Set<string>): string 
     if (errClass.startsWith('Quonfig')) {
       exceptions.add(errClass);
     }
-    body += `${inner}with pytest.raises(${errClass}):\n`;
-    body += `${inner}    ${getterCall}\n`;
+    if (msg.contains.length === 0 && msg.excludes.length === 0) {
+      body += `${inner}with pytest.raises(${errClass}):\n`;
+      body += `${inner}    ${getterCall}\n`;
+    } else {
+      // message_contains / message_excludes: inspect the raised message.
+      body += `${inner}with pytest.raises(${errClass}) as excinfo:\n`;
+      body += `${inner}    ${getterCall}\n`;
+      body += `${inner}message = str(excinfo.value)\n`;
+      for (const sub of msg.contains) body += `${inner}assert ${pyStringLiteral(sub)} in message\n`;
+      for (const sub of msg.excludes) body += `${inner}assert ${pyStringLiteral(sub)} not in message\n`;
+    }
   } else {
     body += `${inner}result = ${getterCall}\n`;
     body += renderAssertion(inner, expected);
@@ -831,9 +881,22 @@ function renderPostBody(kase: YamlCase): string {
   }
 
   const data = Object.prototype.hasOwnProperty.call(kase, 'data') ? kase.data : null;
-  const expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
+  let expectedData = Object.prototype.hasOwnProperty.call(kase, 'expected_data')
     ? kase.expected_data
     : null;
+  // selected_value {redacted: true} rows match {"string": "*****<5 hex>"}
+  // (redaction shape only; the hash input is not pinned): swap the marker for
+  // the generated file's matcher, compare the rest of the row exactly.
+  if (redactedRowKeys(expectedData).length > 0) {
+    if (aggregator !== 'evaluation_summary') {
+      throw new Error('selected_value {redacted: true} is only valid for evaluation_summary');
+    }
+    expectedData = (expectedData as Array<Record<string, unknown>>).map((row) =>
+      isRedactedMatcher(row.selected_value)
+        ? { ...row, selected_value: new PyCode(`${PY_REDACTED_MATCHER}()`) }
+        : row,
+    );
+  }
   const overrides = kase.client_overrides ?? {};
   const merged = mergeContexts(kase.contexts);
 
@@ -929,7 +992,13 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     // Aggregator helpers — these don't exist yet. Importing them will fail
     // at module-load time once that module doesn't exist. Either failure
     // surfaces the gap correctly.
-    out += `from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator\n\n\n`;
+    if (result.rendered.some((r) => r.source.includes(`${PY_REDACTED_MATCHER}()`))) {
+      out += `import re\n\n`;
+      out += `from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator\n\n\n`;
+      out += pyRedactedMatcherClass();
+    } else {
+      out += `from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator\n\n\n`;
+    }
   } else {
     out += `from quonfig import Quonfig\n`;
     if (result.exceptions.size > 0) {
@@ -974,6 +1043,30 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   });
   if (!out.endsWith('\n')) out += '\n';
   return out;
+}
+
+/**
+ * File-level matcher emitted when a case uses selected_value {redacted: true}:
+ * equal to a selectedValue of exactly {"string": "*****<5 hex>"} and nothing
+ * else (the redaction shape; the hash input is not pinned).
+ */
+function pyRedactedMatcherClass(): string {
+  return (
+    `class ${PY_REDACTED_MATCHER}:\n` +
+    `    """Matches a selectedValue of exactly {"string": "*****<5 hex>"}.\n\n` +
+    `    The redaction shape, without pinning the hash input (YAML\n` +
+    `    \`selected_value: {redacted: true}\`).\n` +
+    `    """\n\n` +
+    `    PATTERN = re.compile(r"${REDACTED_SELECTED_VALUE_PATTERN}")\n\n` +
+    `    def __eq__(self, other: object) -> bool:\n` +
+    `        if not isinstance(other, dict) or list(other) != ["string"]:\n` +
+    `            return False\n` +
+    `        value = other["string"]\n` +
+    `        return isinstance(value, str) and self.PATTERN.fullmatch(value) is not None\n\n` +
+    `    __hash__ = None  # type: ignore[assignment]\n\n` +
+    `    def __repr__(self) -> str:\n` +
+    `        return f"{{'string': <matches {self.PATTERN.pattern}>}}"\n\n\n`
+  );
 }
 
 // ---------------------------------------------------------------------------

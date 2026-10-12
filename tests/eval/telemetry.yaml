@@ -552,6 +552,93 @@ tests:
               config_row_index: 0
               conditional_value_index: 0
 
+      # A confidential weighted variant (qfg-goi1.10.11, WS1): the SELECTED
+      # weighted value decides redaction, not the outer weighted_values
+      # Value (which carries no confidential flag). One variant, weight
+      # 100000, so every hash lands in bucket 0.
+      # md5("weighted-secret-variant") = 364b0ebe207ab184fad8a346cd698060
+      # First 5 hex = 364b0 → redacted = "*****364b0"
+      - name: confidential weighted variant is redacted in selectedValue
+        client: client
+        function: post
+        aggregator: evaluation_summary
+        endpoint: "/api/v1/telemetry"
+        contexts:
+          block:
+            user:
+              tracking_id: "92a202f2"
+        data:
+          keys:
+            - "confidential.weighted.variant"
+        expected_data:
+          - key: "confidential.weighted.variant"
+            type: CONFIG
+            value: "weighted-secret-variant"
+            value_type: string
+            count: 1
+            reason: 3
+            selected_value:
+              string: "*****364b0"
+            summary:
+              config_row_index: 0
+              conditional_value_index: 0
+              weighted_value_index: 0
+
+      # ENV_VAR-provided values (qfg-goi1.10.11, WS1; Jeff 2026-10-09): a
+      # provided value is redacted ONLY when marked confidential. Both cases
+      # read IS_A_NUMBER, which every SDK harness sets to "1234".
+      #
+      # Confidential (a string config, so value_type matches the redacted
+      # wire string in every harness): the redaction hash input for a provided value is not
+      # pinned across SDKs (sdk-go and sdk-node hash the stored descriptor,
+      # in different serializations), so this case asserts only the redaction
+      # shape. `selected_value: {redacted: true}` matches
+      # {string: "*****<5 lowercase hex>"} and nothing else; in particular
+      # never the resolved value 1234.
+      - name: confidential ENV_VAR-provided value is redacted in selectedValue
+        client: client
+        function: post
+        aggregator: evaluation_summary
+        endpoint: "/api/v1/telemetry"
+        data:
+          keys:
+            - "confidential.provided.a.number"
+        expected_data:
+          - key: "confidential.provided.a.number"
+            type: CONFIG
+            value: "1234"
+            value_type: string
+            count: 1
+            reason: 1
+            selected_value:
+              redacted: true
+            summary:
+              config_row_index: 0
+              conditional_value_index: 0
+
+      # Non-confidential: selectedValue is the resolved value, typed like any
+      # ordinary value (not the {source, lookup} descriptor).
+      - name: non-confidential ENV_VAR-provided value is reported as its resolved value
+        client: client
+        function: post
+        aggregator: evaluation_summary
+        endpoint: "/api/v1/telemetry"
+        data:
+          keys:
+            - "provided.a.number"
+        expected_data:
+          - key: "provided.a.number"
+            type: CONFIG
+            value: 1234
+            value_type: int
+            count: 1
+            reason: 1
+            selected_value:
+              int: 1234
+            summary:
+              config_row_index: 0
+              conditional_value_index: 0
+
 # NOTE: brand.new.secret was considered as a third case but was dropped — its
 # decryptWith points at `reforge.secrets.encryption.key`, whose backing env var
 # (`REFORGE_INTEGRATION_TEST_ENCRYPTION_KEY`) is not set in any SDK's
