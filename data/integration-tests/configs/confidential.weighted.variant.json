@@ -1,0 +1,35 @@
+{
+  "id": "17598536863800971",
+  "projectId": "124",
+  "key": "confidential.weighted.variant",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "weighted_values",
+          "value": {
+            "weightedValues": [
+              {
+                "weight": 100000,
+                "value": {
+                  "type": "string",
+                  "value": "weighted-secret-variant",
+                  "confidential": true
+                }
+              }
+            ],
+            "hashByPropertyName": "user.tracking_id"
+          }
+        }
+      }
+    ]
+  }
+}

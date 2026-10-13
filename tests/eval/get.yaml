@@ -91,6 +91,22 @@ tests:
         expected:
           value: "hello.world"
 
+      # The decryption key config is evaluated like any config, for the
+      # client's environment with criteria honored: environment rules first,
+      # then default (qfg-goi1.10.11, WS9). env.scoped.encryption.key has a
+      # wrong key in its default row and, in Production, a non-matching
+      # criteria row (wrong key) above an ALWAYS_TRUE row providing the real
+      # key from PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY. Only that row
+      # decrypts env.scoped.secret (same ciphertext as a.secret.config).
+      - name: decrypts a secret whose key config has an environment rule
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "env.scoped.secret"
+        expected:
+          value: "hello.world"
+
       - name: duration 200 ms
         client: config_client
         function: get

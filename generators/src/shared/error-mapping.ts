@@ -33,8 +33,13 @@ const NODE_ERRORS: ErrorMap = {
   // resolver.ts coerceValue (int/double) for env vars, and quonfig.ts get()'s
   // malformed-duration raise for both stored and ENV_VAR durations (plan
   // 2026-10-01-duration-validity decision 3: one coercion error, any source).
+  // The ENV_VAR form is the cross-SDK template pinned in ITD T1
+  // (qfg-goi1.10.11; sdk-go 4178377, sdk-net 0402468): it names the env var,
+  // the type and the config, never the value. The old
+  // `Cannot convert "<value>" to int` form leaked the value and no longer
+  // matches.
   unable_to_coerce_env_var:
-    '/^(Cannot convert ".*" to (int|double)|\\[quonfig\\] Config ".*" has a malformed duration value)$/',
+    '/^(environment variable ".*" cannot be converted to (int|double|duration) for config ".*"|\\[quonfig\\] Config ".*" has a malformed duration value)$/',
   // encryption.ts decrypt() / node:crypto GCM auth failure.
   unable_to_decrypt: '/^(Invalid key length|Invalid encrypted string|Unsupported state or unable to authenticate data)/',
   // datadir.ts resolveEnvironment.
