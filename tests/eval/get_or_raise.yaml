@@ -24,6 +24,9 @@ tests:
       expected:
         value: "DEFAULT"
 
+    # The two init-timeout cases below point at 192.0.2.1 (TEST-NET-1, RFC 5737):
+    # it never answers, so the SDK hits its init TIMEOUT rather than a fast
+    # connection-refused, and CI never contacts a third-party host (qfg-goi1.6).
     - name: get_or_raise raises the correct error if it doesn't raise on init timeout
       client: config_client
       function: get_or_raise
@@ -36,7 +39,7 @@ tests:
         message: "No value found for key 'any-key'"
       client_overrides:
         initialization_timeout_sec: 0.01
-        prefab_api_url: "https://app.staging-prefab.cloud"
+        prefab_api_url: "http://192.0.2.1:1"
         on_init_failure: :return
 
     - name: get_or_raise can raise an error if the client does not initialize in time
@@ -51,7 +54,7 @@ tests:
         message: "Prefab couldn't initialize in 0.01 second timeout. Trying to fetch key `any-key`."
       client_overrides:
         initialization_timeout_sec: 0.01
-        prefab_api_url: "https://app.staging-prefab.cloud"
+        prefab_api_url: "http://192.0.2.1:1"
         on_init_failure: :raise
 
     - name: raises an error if a config is provided by a missing environment variable
