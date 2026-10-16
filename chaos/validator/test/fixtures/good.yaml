@@ -12,7 +12,7 @@ tests:
           sse_silent_stall_after_ms: 100
     expectations:
       - within_ms: 90000
-        assert: "client.connectionState() == 'reconnecting' OR client.connectionState() == 'falling_back'"
+        assert: "client.connectionState() == 'disconnected' OR client.connectionState() == 'falling_back'"
       - within_ms: 90000
         assert: "server_metric('quonfig_subscriber_lag_seconds') > 60"
       - within_ms: 180000

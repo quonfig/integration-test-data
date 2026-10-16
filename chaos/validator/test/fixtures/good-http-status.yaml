@@ -1,0 +1,16 @@
+function: sse_resilience
+tests:
+  - name: "http_status alias on the config fetch endpoint"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 30
+    chaos:
+      - at_ms: 1000
+        inject:
+          name: http_forbidden
+          http_status: 410
+    expectations:
+      - within_ms: 30000
+        assert: "client.connectionState() == 'disconnected'"

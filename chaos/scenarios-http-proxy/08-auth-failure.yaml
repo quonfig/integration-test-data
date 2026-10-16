@@ -1,24 +1,52 @@
 function: sse_resilience
 tests:
-  - name: "08 auth failure — SSE returns 401 indefinitely"
+  - name: "08 auth failure — key revoked mid-life, SSE + config fetch return 401"
     description: |
-      API key is bad. SDK must back off (exponential, not tight-loop), surface
-      the error in logs, and stop hammering the endpoint.
+      The key is revoked after the client is ready: both the SSE endpoint and
+      the config fetch endpoint answer 401 from 5s on. SSE keeps its normal
+      reconnect ladder until the fallback poller's first cycle (engaged 120s
+      after the drop, fetches at once) is rejected on every leg; that cycle
+      enters auth-failed. While auth-failed SSE and the fallback poller are
+      off, one fetch probe runs per 150-300s, connectionState() is
+      'disconnected', and the config channel logs exactly one ERROR. Injecting
+      on SSE only would correctly never enter auth-failed (the poll gets a 200).
+      Rule: project/plans/2026-10-07-sdk-auth-failure-rule.md section 4
+      (qfg-goi1.4). Not runnable until an HTTP-aware fault proxy exists (WS4);
+      until then Tier-1 supervisor Test 8 (mocked clock) is the gate.
     setup:
       sdk: any
       sse_endpoint: chaos
       http_endpoint: chaos
-      wall_clock_seconds: 60
+      wall_clock_seconds: 260
     chaos:
-      - at_ms: 0
+      - at_ms: 5000
         inject:
-          name: forbidden
+          name: sse_forbidden
           sse_http_status: 401
+      - at_ms: 5000
+        inject:
+          name: http_forbidden
+          http_status: 401
     expectations:
-      - within_ms: 10000
-        assert: "client.connectionState() == 'disconnected' OR client.connectionState() == 'reconnecting'"
-      - within_ms: 60000
-        must_hold_for_ms: 30000
-        assert: "client.sdkMetric('quonfig_sse_connect_attempts_total') < 20"
-      - within_ms: 60000
-        assert: "client.sdkLog('error', /401|unauthor/i) >= 1"
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      # Entry: the fallback poller engages 120s after the drop and fetches at
+      # once in every backend SDK; 140s after the inject leaves margin.
+      - within_ms: 145000
+        must_hold_for_ms: 90000
+        assert: "client.connectionState() == 'disconnected' AND client.fallbackPollerActive() == false"
+      # SSE is off while auth-failed. Before entry it follows the normal ladder
+      # and is not asserted; the hold runs from 140s after the inject to the end.
+      - within_ms: 145000
+        must_hold_for_ms: 110000
+        assert: "client.sdkMetricRise('quonfig_sse_connect_attempts_total') == 0"
+      # The fallback poller counts only the cycles up to entry, then stops.
+      # The metric name is TBD per SDK; where it does not exist the runner
+      # reports this expectation as an explicit SKIPPED with a reason.
+      - within_ms: 145000
+        must_hold_for_ms: 110000
+        assert: "client.sdkMetricRise('quonfig_fallback_poll_requests_total') == 0"
+      # Exactly one config ERROR. Pre-entry lines are WARN or lower. Telemetry's
+      # own one-time auth ERROR does not count: the runners disable telemetry.
+      - within_ms: 255000
+        assert: "client.sdkLog('error', /401|unauthor/i) == 1"

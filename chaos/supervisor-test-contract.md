@@ -1,8 +1,8 @@
 # Tier 1 supervisor unit-test contract
 
 A shared spec — no shared code. Every Quonfig backend SDK (`sdk-go`, `sdk-node`,
-`sdk-python`, `sdk-ruby`, `sdk-java`) implements the six tests below in its own
-native test framework and language idiom. Each SDK team owns ~1-2 days of work.
+`sdk-python`, `sdk-ruby`, `sdk-java`, `sdk-net`) implements the tests below in
+its own native test framework and language idiom. Each SDK team owns ~1-2 days of work.
 
 Source plan: `project/plans/sdk-hardening-and-verification.md` section
 "Tier 1 — Per-SDK supervisor unit tests".
@@ -49,6 +49,15 @@ test does not know it is talking to a fake. Concretely:
 The test fixture should NOT mock the supervisor itself — that defeats the
 test. Mock only the worker and the clock.
 
+**Exception, Test 8 only: a fake config fetch.** Test 8 also replaces the
+config fetch legs (the hedged or failed-over HTTP fetch the fallback poller
+and polling mode run) with a fake. It takes a per-leg script of
+`(status, envelope valid or not)` for each fetch cycle, and counts cycles and
+the legs each cycle asked, so every SDK stubs the legs the same way. The
+log capture marks the point where the client enters auth-failed, so Test 8
+(c) can count log lines from there. Everything else (the supervisor, the
+fallback-poller schedule, the auth-failed state machine) stays real.
+
 ## Common assertion vocabulary
 
 Tests reference these capabilities; each SDK names them per language idiom
@@ -60,6 +69,7 @@ but the meaning is fixed:
 | `lastSuccessfulRefresh()` | Wall-clock timestamp (UTC) of the most recent successful refresh — the last time the SDK confirmed its config source reachable and its held config current. A LIVENESS signal, not an install counter (qfg-41nh.11): advanced by any envelope install AND by a config fetch that completed successfully without installing — a 304 Not Modified, a 200 the reject-older guard dropped as equal-or-older, or a received-and-processed SSE message that was a guard no-op. Transport errors never advance it. Returns null / zero / None before the first successful refresh. |
 | `connectionState()` | Returns one of: `initializing`, `connected`, `disconnected`, `falling_back`. Documented values are fixed; SDKs may not invent new strings. |
 | `client.close()` | Public shutdown method. Stops the supervisor, joins all workers, releases resources. Idempotent. |
+| auth class -> `auth-failed` | HTTP **401, 403, 404, 410** on a config fetch leg is the *auth class*. A fetch cycle in which **no leg returned 200/304 and the primary (first) leg returned an auth-class status** puts the client in the internal **auth-failed** regime (Test 8). Every other status keeps its transient handling. An SSE response is never classified: SSE alone never enters auth-failed. `auth-failed` is NOT a `connectionState()` value: while in it the client reports `disconnected`. |
 
 These names are the *contract* — the SDK can map them to idiomatic names
 (`LastSuccessfulRefresh()` in Go, `last_successful_refresh` in Python,
@@ -430,6 +440,97 @@ four months while the parent was dark.
 **Reference implementations:** `sdk-ruby/test/test_fork_safety.rb` (1.4.0)
 and `sdk-python/tests/unit/test_forking.py` (1.4.0).
 
+## Test 8 — Auth-class response (all backend SDKs)
+
+**Applies to:** every backend SDK (go, node, python, ruby, java, net). Plan:
+`project/plans/2026-10-07-sdk-auth-failure-rule.md` section 4 (rule R1-R6),
+approved by Jeff 2026-10-09 (bead `qfg-goi1.4`). This is the gate for the
+auth-failure rule until chaos scenario
+`scenarios-http-proxy/08-auth-failure.yaml` becomes runnable (it needs an
+HTTP-aware fault proxy, WS4; not built yet).
+
+**Goal:** A rejected key never latches, never tight-loops and logs one
+config ERROR. While auth-failed the client sends one slow fetch probe per
+auth period and leaves on the first valid answer.
+
+**The rule under test (R1-R6):**
+
+- **R1 Auth class.** 401, 403, 404, 410 on a config fetch leg. Every other
+  status keeps its current transient handling.
+- **R2 Entry, poll-driven.** Only a fetch cycle the SDK already runs can
+  enter: the fallback poller's cycle (engaged on the SDK's existing rule) or
+  a poll in polling mode. It enters auth-failed when **no leg returned
+  200/304 and the primary leg returned an auth-class status**. Primary
+  auth-class + secondary 503 or timeout enters; primary 503 + secondary
+  auth-class does not. A single-leg client's only leg is the primary. A
+  cycle with a 200/304 on any leg installs and stays in the normal regime.
+  **SSE does not change before entry:** an SSE 401/403/404/410 keeps the
+  SDK's normal reconnect ladder and log line, and never enters auth-failed
+  by itself.
+- **R3 While auth-failed.** SSE is not attempted and the fallback poller does
+  not run. The client sends **one probe per auth period T, uniform in
+  [150s, 300s]**, for as long as the process lives: no doubling, **no
+  latch**. A probe is one fetch cycle across every configured leg. In
+  polling mode the wait is `max(T, poll interval)`. T is an internal test
+  seam, never a customer option.
+- **R4 Exit.** The first probe that gets a 200 with a valid envelope, or a
+  304, on any leg: the client installs it, leaves auth-failed, and SSE
+  restarts from its normal base backoff. This is the only way out.
+- **R5 Logging.** Before entry, unchanged (each SDK logs SSE and poller
+  failures as today, never at ERROR; sdk-ruby gives an SSE 401/403/404/410
+  a WARN once per status, re-armed by a 200, DEBUG otherwise). On entry:
+  **one config ERROR** from the entering cycle, in place of its usual
+  failure line, naming the status and the host and never the key. Each
+  probe: DEBUG only. On exit: one INFO.
+- **R6 State.** `connectionState()` is `disconnected` while auth-failed,
+  never `falling_back`. No new state string. No new getter (sdk-ruby keeps
+  `terminal_failure?`, meaning "auth-failed now").
+
+**Setup:**
+
+- Fake worker (SSE), fake config fetch (see "How to set up the test
+  fixture") and mocked clock. Two legs (primary, secondary) unless a
+  sub-test says otherwise.
+- Run every sub-test parameterized over **401, 403, 404, 410**.
+
+**Assert:**
+
+- **(a) Entry and probe cadence.** The SSE worker gets auth-class responses;
+  then the fallback poller (engaged on the SDK's existing rule) gets
+  auth-class on every leg. Before that cycle, SSE attempts are requested at
+  the SDK's normal ladder (the waits its Test 2 implementation requests)
+  and no fetch cycle runs. After it the client is auth-failed, and the next
+  **6 probes** are each requested at a wait in **[150s, 300s]**. No
+  doubling, no stop.
+- **(b) While auth-failed.** No SSE attempt; the fallback poller never
+  engages; each probe is one fetch cycle across the configured legs;
+  `connectionState()` is `disconnected` throughout, never `falling_back`.
+- **(c) Logging.** Counting from entry through the 6 probes: exactly one
+  `log_count(ERROR, /401|403|404|410/)` (the entering cycle's line), no
+  other ERROR, and no WARN. Logs before entry are not asserted (R5).
+- **(d) Exit.** A probe gets a 200 with a valid envelope on the **secondary
+  leg only**: the client installs it, exits, logs one INFO, and SSE
+  restarts. The next ordinary SSE failure requests the SDK's normal first
+  backoff (the one its Test 2 implementation requests). A 304 on any leg
+  exits the same way.
+- **(e) Transient primary rejection.** SSE auth-class, then a poller cycle
+  with a 200 on any leg: no auth-failed and no ERROR. SSE keeps the normal
+  ladder (its next attempt is requested at the SDK's Test 2 wait) and the
+  poller keeps its normal interval.
+- **(f) Mixed legs.** Primary auth-class + secondary 503 (or timeout) enters
+  auth-failed. Primary 503 + secondary auth-class does not, and follows the
+  normal ladder.
+- **(g) Non-auth status.** A 503 on every leg follows the normal ladder
+  (Test 2 unchanged) and never enters auth-failed.
+
+**Anti-vacuity rule:** (a) and (d) MUST assert the *requested* wait values
+from the clock or backoff hook, not only that a probe eventually ran; a
+client that probes every 60s passes "a probe ran" and fails (a).
+
+**Per-language hints:** the clock hooks of Test 2 apply. The fake fetch is a
+per-leg function returning `(status, body)`; record each call with its leg
+index and the clock time.
+
 ## Test runner conventions
 
 Each SDK places these tests in its own test directory, run by its own
@@ -442,6 +543,7 @@ test framework, named consistently:
 | sdk-python | `sdk-python/tests/test_supervisor.py` | pytest |
 | sdk-ruby | `sdk-ruby/spec/supervisor_spec.rb` | rspec |
 | sdk-java | `sdk-java/src/test/java/.../SupervisorTest.java` | JUnit 5 |
+| sdk-net | `sdk-net/tests/Quonfig.Sdk.Tests/Supervisor/SupervisorTests.cs` | xUnit |
 
 Each test should be named after its number above, e.g.
 `TestSupervisor_RestartsWorkerWithin1000ms` (Go),
@@ -451,7 +553,8 @@ Each test should be named after its number above, e.g.
 
 A Tier 1 implementation is accepted when:
 
-1. All six tests run green in the SDK's CI (plus Test 7 where applicable).
+1. Tests 1-6 and 8 run green in the SDK's CI (plus Test 7 where applicable;
+   Test 7 is N/A for go, node, java and net).
 2. The SDK exposes `worker_restart_total`, `lastSuccessfulRefresh()`,
    `connectionState()` per the contract.
 3. The SDK's `connectionState()` only returns documented values.
