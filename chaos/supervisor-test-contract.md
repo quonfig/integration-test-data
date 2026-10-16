@@ -58,6 +58,14 @@ log capture marks the point where the client enters auth-failed, so Test 8
 (c) can count log lines from there. Everything else (the supervisor, the
 fallback-poller schedule, the auth-failed state machine) stays real.
 
+**Exception, Test 9 only: the real worker against a local server.** The
+first-frame rule lives in the worker's frame handling, so Test 9 does not
+fake the worker. It drives the SDK's real SSE worker against a local HTTP
+server on 127.0.0.1 built from the language's stdlib or existing test
+dependencies (no toxiproxy, no fault proxy, no new dependency). Only the
+fallback threshold/interval is shrunk, through the SDK's existing option or
+test seam.
+
 ## Common assertion vocabulary
 
 Tests reference these capabilities; each SDK names them per language idiom
@@ -74,6 +82,50 @@ but the meaning is fixed:
 These names are the *contract* — the SDK can map them to idiomatic names
 (`LastSuccessfulRefresh()` in Go, `last_successful_refresh` in Python,
 `#lastSuccessfulRefresh()` in Java) but the semantics must match.
+
+## Rule — a connection is `connected` at its first valid frame
+
+A stream connection counts as connected only after it delivers its **first
+valid frame**. Only at that moment may the SDK (1) reset its reconnect
+backoff to the initial delay, (2) cancel the fallback poller's engage timer
+or disengage an engaged poller, and (3) report `connected` via
+`connectionState()` and its SSE state-change callback.
+
+- **Valid frame:** a complete SSE event block, terminated by a blank line,
+  that is either comment-only (the server keepalive, `: keepalive`) or a
+  `data:` block that decodes and validates as a config envelope.
+- **Not a frame:** 200 response headers alone; a block cut off by EOF; a
+  malformed or non-envelope `data:` block; an oversized event.
+- **Failed attempt:** a connection that ends (EOF, IO error, read watchdog)
+  before its first valid frame. It MUST be handled exactly like a connect
+  error: backoff grows, the SDK reports a not-connected state, and the
+  engage timer is armed (if not already) and not cancelled.
+- Between the 200 headers and the first frame the SDK keeps the state it
+  had before the attempt. No new state value.
+- A keepalive does NOT advance `lastSuccessfulRefresh()`; only the events in
+  the vocabulary table above do.
+- A connection that did deliver a frame and then ends with a clean EOF (the
+  normal load-balancer recycle) still reconnects with a reset backoff. This
+  rule changes only connections that end before their first frame.
+
+**Bounded transparent reconnect (sdk-python, sdk-ruby; Jeff, 2026-10-16).**
+These two SDKs keep reporting `connected` across a reconnect after a clean
+EOF, with no state edge, so an ordinary load-balancer recycle stays
+invisible. The hold is bounded by the very next connection: it either
+delivers its first valid frame (stay `connected`, still no edge) or it is a
+failed attempt (report the not-connected state at once, grow the backoff
+and arm the engage timer). `connected` may never be held across two
+consecutive connections that deliver no frame. Every other SDK (go, node,
+java, net) reports the not-connected edge on every connection end, as
+before.
+
+Why "first frame" and not "first envelope": a workspace that is not yet in
+the server's cache sends no snapshot, and its first frame is the 30 s
+keepalive. Why not "200 headers": a server or proxy that answers 200 and
+closes would otherwise reset the backoff and cancel the fallback poller on
+every attempt — a reconnect storm with frozen config (qfg-goi1.10.9).
+Against Quonfig's own servers the 200 headers and the first frame arrive in
+the same write, so the only new delay there is parsing that frame.
 
 ## Test 1 — Restart on worker throw within 1000ms
 
@@ -150,14 +202,17 @@ restart 8: 30000ms   (cap)
 thundering-herd reconnects after a partition heal. If jitter is added,
 the test asserts the unjittered base value and tolerates the band.
 
-**Reset:** A *successful* worker run (one that delivered at least one
-envelope to the cache before exiting) MUST reset the backoff counter to
-500ms for the next failure. Add a parallel sub-test for this:
+**Reset:** A *successful* worker run (one that delivered at least one valid
+frame — an envelope or a keepalive — before exiting; see "Rule — a
+connection is `connected` at its first valid frame") MUST reset the backoff
+counter to 500ms for the next failure. Add a parallel sub-test for this:
 
 - Worker 1: fails.
 - Worker 2 (500ms later): runs successfully, delivers an envelope, then exits
   cleanly after 5s.
 - Worker 3 starts: backoff should be **500ms again**, not 1000ms.
+- Worker 2 variant: returns 200 and exits with no frame. Worker 3's backoff
+  MUST be 1000ms (grown), not 500ms.
 
 **Per-language hints:**
 
@@ -329,7 +384,8 @@ State transitions, captured by polling or via a state-change listener:
 ```
 t=0 (before start)         : initializing
 t=after start, before conn : initializing
-t=after first envelope     : connected
+t=after 200 headers, no frame : initializing   (unchanged: not connected)
+t=after first valid frame     : connected
 t=after worker exit        : disconnected
 t=after fallback engages*  : falling_back   (* only if SDK has HTTP fallback)
 t=after reconnect succeeds : connected
@@ -531,6 +587,54 @@ client that probes every 60s passes "a probe ran" and fails (a).
 per-leg function returning `(status, body)`; record each call with its leg
 index and the clock time.
 
+## Test 9 — First-frame rule against a local server (all SSE SDKs)
+
+**Applies to:** every backend SDK with SSE (go, node, python, ruby, java,
+net). Plan: `project/plans/2026-10-12-sse-connected-first-frame.md`, approved
+by Jeff 2026-10-16 (bead `qfg-goi1.10.9`). Unlike Tests 1-6 this test drives
+the **real** SSE worker against a local HTTP server on 127.0.0.1 (see "How to
+set up the test fixture"), because the rule lives in the worker's frame
+handling. Use only the language's stdlib or existing test dependencies; no
+toxiproxy, no fault proxy. Shrink the fallback threshold/interval through
+the SDK's existing option or test seam. The server's config-fetch endpoint
+serves envelope v2; the client's init fetch got v1.
+
+**The rule under test:** "Rule — a connection is `connected` at its first
+valid frame" above, including the bounded transparent reconnect for
+sdk-python and sdk-ruby.
+
+**9a — headers only.** Every SSE attempt: 200 + `text/event-stream`
+headers, flush, close.
+- No `connected` edge is ever reported; `connectionState()` is never
+  `connected`.
+- The requested backoff grows across attempts (Test 2's ladder).
+- The fallback poller engages after the threshold: `connectionState()` is
+  `falling_back` and `get` returns v2.
+
+**9b — headers early, frame late.** 200 + headers, flush, wait 1s, send
+`: keepalive\n\n`, hold the stream open.
+- Exactly one `connected` edge, reported no earlier than the keepalive
+  (edge time >= send time - 50ms).
+
+**9c — one keepalive then close.** Every attempt: 200 + `: keepalive\n\n`,
+close.
+- One `connected` edge per attempt (sdk-python and sdk-ruby: `connected`
+  held across the reconnects, per the bounded transparent reconnect); the
+  requested backoff stays at the initial delay; the poller does not engage
+  within the threshold.
+
+**9d — control.** 200 + a snapshot envelope, hold the stream open: one
+`connected` edge, unchanged from today.
+
+**Anti-vacuity:** 9a MUST assert through the fallback-delivered value (v2),
+not through `connectionState()` alone, and the test MUST be shown red on
+the pre-fix SDK (9a or 9b; sdk-ruby: 9a or 9c).
+
+**Existing fakes:** audit the SDK's other tests for fake servers that flush
+200 and then idle before sending anything (header-timeout, state-order and
+callback tests). Under this rule they no longer report `connected` on
+headers and must send a frame first.
+
 ## Test runner conventions
 
 Each SDK places these tests in its own test directory, run by its own
@@ -553,7 +657,7 @@ Each test should be named after its number above, e.g.
 
 A Tier 1 implementation is accepted when:
 
-1. Tests 1-6 and 8 run green in the SDK's CI (plus Test 7 where applicable;
+1. Tests 1-6, 8 and 9 run green in the SDK's CI (plus Test 7 where applicable;
    Test 7 is N/A for go, node, java and net).
 2. The SDK exposes `worker_restart_total`, `lastSuccessfulRefresh()`,
    `connectionState()` per the contract.

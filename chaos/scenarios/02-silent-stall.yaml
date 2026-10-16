@@ -22,8 +22,12 @@ tests:
         assert: "client.connectionState() == 'connected'"
       - within_ms: 95000
         assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"
+      # 'reconnecting' is not a connectionState() value (supervisor contract
+      # vocabulary). While the stall holds, a reconnect gets no frame, so it is
+      # not connected (first-frame rule, qfg-goi1.10.9); this row is still true
+      # on a healthy client, so it is not stall coverage (02[1] and 02[3] are).
       - within_ms: 95000
-        assert: "client.connectionState() == 'reconnecting' OR client.connectionState() == 'connected'"
+        assert: "client.connectionState() == 'disconnected' OR client.connectionState() == 'connected'"
       - within_ms: 180000
         after_ms: 125000
         assert: "client.connectionState() == 'connected' AND server_metric('quonfig_subscriber_lag_seconds') == 0"
