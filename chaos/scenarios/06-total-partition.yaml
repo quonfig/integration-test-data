@@ -20,11 +20,14 @@ tests:
       - within_ms: 5000
         assert: "client.connectionState() == 'connected'"
       - within_ms: 30000
+        after_ms: 5000
         assert: "client.connectionState() != 'connected'"
       - within_ms: 200000
-        must_hold_for_ms: 60000
+        must_hold_for_ms: 195000
         assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') < 200"
       - within_ms: 230000
+        after_ms: 185000
         assert: "client.connectionState() == 'connected'"
       - within_ms: 230000
+        after_ms: 185000
         assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"

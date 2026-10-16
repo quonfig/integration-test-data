@@ -1,0 +1,17 @@
+function: sse_resilience
+tests:
+  - name: "bad-hold-exceeds-within"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      wall_clock_seconds: 120
+    chaos:
+      - at_ms: 5000
+        inject:
+          sse_down_ms: 60000
+    expectations:
+      - within_ms: 5000
+        assert: "client.connectionState() == 'connected'"
+      - within_ms: 90000
+        must_hold_for_ms: 91000
+        assert: "client.connectionState() == 'connected'"

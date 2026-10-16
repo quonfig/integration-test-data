@@ -22,5 +22,6 @@ tests:
       - within_ms: 5000
         assert: "client.ready() == true"
       - within_ms: 30000
-        must_hold_for_ms: 18000
+        after_ms: 2000
+        must_hold_for_ms: 25000
         assert: "client.sseFailedOverToSecondary() == false"

@@ -58,6 +58,47 @@ test('rejects an inject carrying both sse_http_status and http_status (one alias
   assert.equal(result.valid, false);
 });
 
+test('accepts after_ms on an expectation (absolute ms from t=0)', () => {
+  const result = validateYaml(load(join(FIXTURES, 'good-after-ms.yaml')));
+  assert.equal(result.valid, true, `expected valid, got errors: ${JSON.stringify(result.errors)}`);
+});
+
+test('rejects an unknown expectation key (no silently dropped timing field)', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-unknown-expectation-key.yaml')));
+  assert.equal(result.valid, false);
+  assert.ok(
+    result.errors!.some((e) => /not_before_ms/.test(e)),
+    `expected the unknown key to be named, got: ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('rejects must_hold_for_ms > within_ms (hold cannot finish inside its window)', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-hold-exceeds-within.yaml')));
+  assert.equal(result.valid, false);
+  assert.ok(
+    result.errors!.some((e) => /must_hold_for_ms/.test(e) && /within_ms/.test(e)),
+    `expected a hold/within error, got: ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('rejects after_ms >= within_ms (nothing left to evaluate)', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-after-ge-within.yaml')));
+  assert.equal(result.valid, false);
+  assert.ok(
+    result.errors!.some((e) => /after_ms/.test(e) && /within_ms/.test(e)),
+    `expected an after/within error, got: ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('rejects after_ms + must_hold_for_ms > within_ms', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-after-plus-hold-exceeds-within.yaml')));
+  assert.equal(result.valid, false);
+  assert.ok(
+    result.errors!.some((e) => /after_ms \+ must_hold_for_ms/.test(e)),
+    `expected an after+hold error, got: ${JSON.stringify(result.errors)}`,
+  );
+});
+
 test('every default-suite scenario in chaos/scenarios/*.yaml validates', () => {
   const files = readdirSync(SCENARIOS).filter((f) => f.endsWith('.yaml'));
   assert.ok(files.length >= 10, `expected at least 10 default scenarios, found ${files.length}`);

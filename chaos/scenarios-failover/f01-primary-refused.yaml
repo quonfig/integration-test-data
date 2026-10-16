@@ -23,5 +23,6 @@ tests:
       - within_ms: 4000
         assert: "client.ready() == true AND client.resolvedFrom() == 'secondary'"
       - within_ms: 15000
-        must_hold_for_ms: 5000
+        after_ms: 4000
+        must_hold_for_ms: 10000
         assert: "client.ready() == true"

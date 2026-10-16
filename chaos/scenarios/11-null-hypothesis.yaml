@@ -22,6 +22,8 @@ tests:
         must_hold_for_ms: 1795000
         assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"
       - within_ms: 1800000
+        must_hold_for_ms: 1795000
         assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') == 0"
       - within_ms: 1800000
+        must_hold_for_ms: 1795000
         assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='2') == 0"
