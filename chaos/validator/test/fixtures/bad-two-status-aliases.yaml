@@ -1,0 +1,15 @@
+function: sse_resilience
+tests:
+  - name: "one inject may not carry two convenience aliases"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+    chaos:
+      - at_ms: 1000
+        inject:
+          sse_http_status: 401
+          http_status: 401
+    expectations:
+      - within_ms: 30000
+        assert: "client.connectionState() == 'disconnected'"

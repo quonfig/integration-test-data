@@ -48,6 +48,16 @@ test('rejects unknown toxiproxy toxic types', () => {
   );
 });
 
+test('accepts the http_status alias on the config fetch endpoint (scenario 08)', () => {
+  const result = validateYaml(load(join(FIXTURES, 'good-http-status.yaml')));
+  assert.equal(result.valid, true, `expected valid, got errors: ${JSON.stringify(result.errors)}`);
+});
+
+test('rejects an inject carrying both sse_http_status and http_status (one alias per inject)', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-two-status-aliases.yaml')));
+  assert.equal(result.valid, false);
+});
+
 test('every default-suite scenario in chaos/scenarios/*.yaml validates', () => {
   const files = readdirSync(SCENARIOS).filter((f) => f.endsWith('.yaml'));
   assert.ok(files.length >= 10, `expected at least 10 default scenarios, found ${files.length}`);

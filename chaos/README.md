@@ -114,7 +114,7 @@ The plan's Tier 2 table, one YAML per scenario. Most live in `scenarios/` (the d
 
 | File                            | Why it's not in the default suite                  |
 | ------------------------------- | -------------------------------------------------- |
-| `08-auth-failure.yaml`          | 401 response injection — toxiproxy is TCP-only and cannot rewrite HTTP responses. Needs mitmproxy / mock server / fixture mode. |
+| `08-auth-failure.yaml`          | Mid-life key revocation: 401 on SSE + config fetch -> auth-failed (slow probe, no latch, one ERROR). Toxiproxy is TCP-only and cannot rewrite HTTP responses; needs an HTTP-aware fault proxy (WS4). **Not runnable yet: the current gate is Tier-1 supervisor Test 8** (`supervisor-test-contract.md`). |
 
 ### Failover suite (`scenarios-failover/`, 1 upstream + primary+secondary proxies)
 
@@ -162,7 +162,7 @@ The schema rejects any expectation that does not declare `within_ms`. This is no
 ```yaml
 expectations:
   - within_ms: 90000
-    assert: "client.connectionState() == 'reconnecting' OR client.connectionState() == 'falling_back'"
+    assert: "client.connectionState() == 'disconnected' OR client.connectionState() == 'falling_back'"
   - within_ms: 180000
     must_hold_for_ms: 30000   # optional: must keep holding for N ms after first true
     assert: "client.connectionState() == 'connected' AND server_metric('quonfig_subscriber_lag_seconds') == 0"
@@ -213,6 +213,7 @@ The failover and ordering suites add these expressions (still free-form strings 
 - `client.ready()` — the SDK has installed a config and can serve evaluations.
 - `client.resolvedFrom()` — which leg the last successful config-fetch came from: `'primary'` or `'secondary'`. Used by the failover suite to assert config resolved off the secondary.
 - `client.heldGeneration()` — the `Meta.generation` of the currently-installed config. Used by the ordering suite to assert the SDK holds the higher generation and never regresses.
+- `client.sdkMetricRise(name)` — how much the SDK metric `name` has risen since the start of the expectation's `must_hold_for_ms` window. `== 0` held over the window asserts the counter stopped. Used by `08-auth-failure.yaml` (SSE attempts and fallback polls stop while auth-failed). A runner whose SDK lacks the metric reports that expectation as an explicit SKIPPED with a reason.
 - `client.configInstallCount()` — how many times the SDK has installed a config payload. Used by `o04` to assert a same-generation second leg is a no-op (no flap).
 - `client.sseFailedOverToSecondary()` — whether the SSE stream silently repointed to the secondary host. Must stay `false` (`f05`): SSE does not fail over.
 

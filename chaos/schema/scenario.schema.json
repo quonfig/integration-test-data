@@ -183,7 +183,13 @@
           "minimum": 0
         },
         "sse_http_status": {
-          "description": "Convenience: scenario 8 — force SSE endpoint to return this HTTP status indefinitely.",
+          "description": "Convenience: scenario 8 — on the SSE endpoint, at at_ms close every open connection on that proxy, then answer every new request with this HTTP status indefinitely (until cleared). Needs an HTTP-aware fault proxy (scenarios-http-proxy/).",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "http_status": {
+          "description": "Convenience: scenario 8 — same as sse_http_status, for the HTTP config fetch endpoint: at at_ms close every open connection on that proxy, then answer every new request with this HTTP status indefinitely (until cleared). Needs an HTTP-aware fault proxy (scenarios-http-proxy/).",
           "type": "integer",
           "minimum": 100,
           "maximum": 599
@@ -214,6 +220,7 @@
         { "required": ["both_down_ms"] },
         { "required": ["sse_half_open_after_bytes"] },
         { "required": ["sse_http_status"] },
+        { "required": ["http_status"] },
         { "required": ["primary_refused_ms"] },
         { "required": ["primary_hang_ms"] },
         { "required": ["primary_latency_ms"] }
