@@ -1143,7 +1143,8 @@ tests:
         expected:
           value: false
 
-      - name: returns false for PROP_SEMVER_EQUAL rule when the given prop is not a valid semver
+      ## Abbreviated versions: "2.0" reads as 2.0.0 (Q5, qfg-goi1.5; was false).
+      - name: returns true for PROP_SEMVER_EQUAL rule when the given prop is an abbreviated major.minor version
         client: feature_flag_client
         function: enabled
         contexts:
@@ -1153,7 +1154,7 @@ tests:
         input:
           flag: "feature-flag.semver-equal"
         expected:
-          value: false
+          value: true
 
 
       #####################################
@@ -1233,5 +1234,436 @@ tests:
               version: "0.0.5"
         input:
           flag: "feature-flag.semver-greater-than"
+        expected:
+          value: false
+
+
+      ##################################################################
+      ## OPERATOR EDGES (qfg-goi1.5) ##
+      ##
+      ## Pins the canonical cross-SDK operator semantics from
+      ## project/plans/2026-10-07-sdk-operator-semantics.md (section 4),
+      ## as decided on qfg-goi1.5 (2026-10-09, 2026-10-12):
+      ##  R1 canonical string form for *_ONE_OF and string ops: bool ->
+      ##     "true"/"false"; an integral number -> plain digits (no ".0",
+      ##     no exponent) whatever its runtime type; case-sensitive.
+      ##  R2 string operators stringify non-string context values (R1).
+      ##  R3 IN_INT_RANGE is [start, end); a missing bound is unbounded.
+      ##  R4 semver = SemVer 2.0 precedence (prerelease < release, build
+      ##     metadata ignored); abbreviated "2" / "2.0" = 2.0.0 (Q5);
+      ##     a "v" prefix is invalid.
+      ##  R5 a timestamp is a JSON number (epoch ms), an all-digit string
+      ##     (epoch ms), or RFC3339 with Z or a numeric offset, on BOTH the
+      ##     context and the criterion side. Date-only, offset-less and
+      ##     free-form strings never match.
+      ##  R6 numeric operators need a numeric context value.
+      ## Whole-number floats (1.0, 1234567.0) cannot be carried by a YAML
+      ## corpus case (generators read YAML as JS numbers); SDKs cover them
+      ## with unit tests (plan section 6, SIMPLIFY row).
+      ##################################################################
+
+      ## R1 bool: is-one-of ["true"] on user.beta
+      - name: returns true for PROP_IS_ONE_OF ["true"] when the context value is boolean true
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              beta: true
+        input:
+          flag: "feature-flag.is-one-of.bool"
+        expected:
+          value: true
+
+      - name: returns false for PROP_IS_ONE_OF ["true"] when the context value is boolean false
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              beta: false
+        input:
+          flag: "feature-flag.is-one-of.bool"
+        expected:
+          value: false
+
+      - name: returns true for PROP_IS_ONE_OF ["true"] when the context value is the string "true"
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              beta: "true"
+        input:
+          flag: "feature-flag.is-one-of.bool"
+        expected:
+          value: true
+
+      - name: returns false for PROP_IS_NOT_ONE_OF ["true"] when the context value is boolean true
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              beta: true
+        input:
+          flag: "feature-flag.is-not-one-of.bool"
+        expected:
+          value: false
+
+      ## R1 numbers: is-one-of ["1", "1.5", "1234567"] on user.n
+      - name: returns true for PROP_IS_ONE_OF number strings when the context value is the integer 1
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 1
+        input:
+          flag: "feature-flag.is-one-of.number"
+        expected:
+          value: true
+
+      - name: returns true for PROP_IS_ONE_OF number strings when the context value is the number 1.5
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 1.5
+        input:
+          flag: "feature-flag.is-one-of.number"
+        expected:
+          value: true
+
+      - name: returns true for PROP_IS_ONE_OF number strings when the context value is the integer 1234567
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 1234567
+        input:
+          flag: "feature-flag.is-one-of.number"
+        expected:
+          value: true
+
+      - name: returns false for PROP_IS_ONE_OF number strings when the context value is the integer 2
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 2
+        input:
+          flag: "feature-flag.is-one-of.number"
+        expected:
+          value: false
+
+      ## R2 string ops stringify: ends-with-one-of ["3"] on user.n
+      - name: returns true for PROP_ENDS_WITH_ONE_OF ["3"] when the context value is the integer 123
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 123
+        input:
+          flag: "feature-flag.ends-with-one-of.number"
+        expected:
+          value: true
+
+      - name: returns false for PROP_ENDS_WITH_ONE_OF ["3"] when the context value is the integer 124
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 124
+        input:
+          flag: "feature-flag.ends-with-one-of.number"
+        expected:
+          value: false
+
+      ## R3 IN_INT_RANGE {start 0, end 10} = [0, 10)
+      - name: returns true for IN_INT_RANGE [0, 10) when the context value is the start bound 0
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 0
+        input:
+          flag: "feature-flag.in-int-range"
+        expected:
+          value: true
+
+      - name: returns true for IN_INT_RANGE [0, 10) when the context value is 9
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 9
+        input:
+          flag: "feature-flag.in-int-range"
+        expected:
+          value: true
+
+      - name: returns false for IN_INT_RANGE [0, 10) when the context value is the end bound 10
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 10
+        input:
+          flag: "feature-flag.in-int-range"
+        expected:
+          value: false
+
+      - name: returns false for IN_INT_RANGE [0, 10) when the context value is -1
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: -1
+        input:
+          flag: "feature-flag.in-int-range"
+        expected:
+          value: false
+
+      ## R3 a missing bound is unbounded
+      - name: returns true for IN_INT_RANGE with no end when the context value is 5000000000
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: 5000000000
+        input:
+          flag: "feature-flag.in-int-range.open-end"
+        expected:
+          value: true
+
+      - name: returns true for IN_INT_RANGE with no start when the context value is -5
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              n: -5
+        input:
+          flag: "feature-flag.in-int-range.open-start"
+        expected:
+          value: true
+
+      ## R4 SemVer 2.0 precedence (flags at 2.0.0 unless noted)
+      - name: returns false for PROP_SEMVER_EQUAL 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0-beta.1"
+        input:
+          flag: "feature-flag.semver-equal"
+        expected:
+          value: false
+
+      - name: returns true for PROP_SEMVER_LESS_THAN 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0-beta.1"
+        input:
+          flag: "feature-flag.semver-less-than"
+        expected:
+          value: true
+
+      - name: returns false for PROP_SEMVER_GREATER_THAN 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0-beta.1"
+        input:
+          flag: "feature-flag.semver-greater-than"
+        expected:
+          value: false
+
+      - name: returns true for PROP_SEMVER_EQUAL 2.0.0 when the given prop differs only by build metadata
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0+build.5"
+        input:
+          flag: "feature-flag.semver-equal"
+        expected:
+          value: true
+
+      - name: returns true for PROP_SEMVER_LESS_THAN 2.0.0-beta when the given prop is the prerelease 2.0.0-alpha
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2.0.0-alpha"
+        input:
+          flag: "feature-flag.semver-less-than.prerelease"
+        expected:
+          value: true
+
+      ## Q5 abbreviated versions ("2.0" = 2.0.0 is pinned in the PROP_SEMVER_EQUAL block above)
+      - name: returns true for PROP_SEMVER_EQUAL 2.0.0 when the given prop is the abbreviated major version 2
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "2"
+        input:
+          flag: "feature-flag.semver-equal"
+        expected:
+          value: true
+
+      - name: returns false for PROP_SEMVER_EQUAL 2.0.0 when the given prop has a v prefix
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            app:
+              version: "v2.0.0"
+        input:
+          flag: "feature-flag.semver-equal"
+        expected:
+          value: false
+
+      ## R5 context side: feature-flag.before is int 1733011200000 (2024-12-01T00:00:00Z)
+      - name: returns false for PROP_BEFORE when the given prop is a date-only string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2024-11-01"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: false
+
+      - name: returns false for PROP_BEFORE when the given prop is an RFC3339 string without an offset
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2024-11-01T00:00:00"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: false
+
+      - name: returns false for PROP_BEFORE when the given prop is a free-form date string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "Nov 1 2024"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: false
+
+      - name: returns true for PROP_BEFORE when the given prop is an RFC3339 string with a numeric offset
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2024-11-01T02:00:00+02:00"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: true
+
+      - name: returns true for PROP_BEFORE when the given prop is an all-digit epoch-ms string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "1730419200000"
+        input:
+          flag: "feature-flag.before"
+        expected:
+          value: true
+
+      ## R5 criterion side: string criteria "2024-12-01T00:00:00Z" and "999" (epoch ms)
+      - name: returns true for PROP_BEFORE an RFC3339 criterion when the given prop is an earlier epoch-ms number
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: 1730419200000
+        input:
+          flag: "feature-flag.before.rfc3339-criterion"
+        expected:
+          value: true
+
+      - name: returns false for PROP_BEFORE an RFC3339 criterion when the given prop is a later RFC3339 string
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: "2025-01-01T00:00:00Z"
+        input:
+          flag: "feature-flag.before.rfc3339-criterion"
+        expected:
+          value: false
+
+      - name: returns false for PROP_AFTER an all-digit criterion "999" when the given prop is 500
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: 500
+        input:
+          flag: "feature-flag.after.numeric-string-criterion"
+        expected:
+          value: false
+
+      - name: returns true for PROP_AFTER an all-digit criterion "999" when the given prop is 1000
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              creation_date: 1000
+        input:
+          flag: "feature-flag.after.numeric-string-criterion"
+        expected:
+          value: true
+
+      ## R6 numeric operators need a numeric context value
+      - name: returns false for PROP_GREATER_THAN 30 when the given prop is a numeric string above the threshold
+        client: feature_flag_client
+        function: enabled
+        contexts:
+          block:
+            user:
+              age: "35"
+        input:
+          flag: "feature-flag.greater-than"
         expected:
           value: false
