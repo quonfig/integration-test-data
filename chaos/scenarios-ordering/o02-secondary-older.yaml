@@ -27,5 +27,6 @@ tests:
       - within_ms: 4000
         assert: "client.ready() == true AND client.heldGeneration() == 42"
       - within_ms: 20000
-        must_hold_for_ms: 8000
+        after_ms: 5000
+        must_hold_for_ms: 14000
         assert: "client.heldGeneration() == 42"

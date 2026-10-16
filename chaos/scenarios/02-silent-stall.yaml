@@ -25,4 +25,5 @@ tests:
       - within_ms: 95000
         assert: "client.connectionState() == 'reconnecting' OR client.connectionState() == 'connected'"
       - within_ms: 180000
+        after_ms: 125000
         assert: "client.connectionState() == 'connected' AND server_metric('quonfig_subscriber_lag_seconds') == 0"

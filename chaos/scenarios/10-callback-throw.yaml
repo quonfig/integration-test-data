@@ -18,6 +18,7 @@ tests:
       - within_ms: 45000
         assert: "client.connectionState() == 'connected'"
       - within_ms: 45000
+        must_hold_for_ms: 40000
         assert: "client.processStillAlive() == true"
       - within_ms: 45000
         assert: "client.sdkLog('error', /callback|onConfigUpdate/i) >= 1"

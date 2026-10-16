@@ -266,7 +266,12 @@
           "minLength": 1
         },
         "must_hold_for_ms": {
-          "description": "Optional: once the assertion first holds, it must continue to hold for N ms (used for null-hypothesis steady-state assertions).",
+          "description": "Optional: once the assertion first holds, it must continue to hold for N ms (used for null-hypothesis steady-state assertions). The hold must finish by within_ms: after_ms + must_hold_for_ms <= within_ms (checked by the validator, not expressible in draft-07).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "after_ms": {
+          "description": "Optional: do not evaluate before this many ms from t=0 (absolute, like at_ms). Before it there is no evaluation, no PASS, no hold start, and the expectation is not terminal; holds start at or after it. within_ms is unchanged. Default 0. Must be < within_ms (checked by the validator). Harness loaders reject unknown expectation keys so a harness that predates this field fails loudly instead of ignoring it.",
           "type": "integer",
           "minimum": 0
         }

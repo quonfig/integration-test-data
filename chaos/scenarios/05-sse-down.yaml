@@ -1,6 +1,6 @@
 function: sse_resilience
 tests:
-  - name: "05 SSE down for 180s — Layer 2 fallback engages and recovers"
+  - name: "05 SSE down for 300s — Layer 2 fallback engages and recovers"
     description: |
       Hard SSE outage with HTTP still healthy. After 120s of disconnect Layer 2
       fallback polling MUST engage (default 60s). When SSE returns, Layer 2 MUST
@@ -9,13 +9,13 @@ tests:
       sdk: any
       sse_endpoint: chaos
       http_endpoint: direct
-      wall_clock_seconds: 260
+      wall_clock_seconds: 380
     chaos:
       - at_ms: 5000
         inject:
           name: sse_dead
-          sse_down_ms: 180000
-      - at_ms: 185000
+          sse_down_ms: 300000
+      - at_ms: 305000
         clear: sse_dead
     expectations:
       - within_ms: 5000
@@ -33,8 +33,15 @@ tests:
       # fallback_poll_interval_ms (test_chaos.py), so it is 70s (poll interval +
       # 10s margin) — a smaller window (e.g. 40s) cannot hold continuously against
       # a 60s poll cadence.
-      - within_ms: 200000
-        must_hold_for_ms: 60000
-        assert: "client.lastSuccessfulRefresh() >= (now() - 70000)"
+      # Anchored (qfg-goi1.7): no evaluation before 125s (fallback engages ~125s,
+      # 05[1] by 135s), and the 90s hold is longer than the 70s window, so a
+      # post-engagement fallback poll (30s/60s rig intervals) MUST stamp. The
+      # outage is 300s so the hold (latest start 140s) ends before SSE returns.
       - within_ms: 230000
+        after_ms: 125000
+        must_hold_for_ms: 90000
+        assert: "client.lastSuccessfulRefresh() >= (now() - 70000)"
+      # Recovery: only meaningful after the 305s clear (true at tick 0 otherwise).
+      - within_ms: 350000
+        after_ms: 305000
         assert: "client.connectionState() == 'connected' AND client.fallbackPollerActive() == false"

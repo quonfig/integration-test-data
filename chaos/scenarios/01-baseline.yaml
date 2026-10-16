@@ -17,6 +17,8 @@ tests:
         must_hold_for_ms: 25000
         assert: "client.connectionState() == 'connected' AND client.fallbackPollerActive() == false"
       - within_ms: 30000
+        must_hold_for_ms: 25000
         assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"
       - within_ms: 30000
+        must_hold_for_ms: 25000
         assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') == 0"

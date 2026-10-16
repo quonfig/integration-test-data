@@ -22,6 +22,8 @@ tests:
       - within_ms: 15000
         assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"
       - within_ms: 60000
+        after_ms: 30000
         assert: "client.connectionState() == 'connected'"
       - within_ms: 60000
+        after_ms: 30000
         assert: "server_metric('quonfig_subscriber_lag_seconds') == 0"

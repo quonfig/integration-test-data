@@ -103,7 +103,7 @@ The plan's Tier 2 table, one YAML per scenario. Most live in `scenarios/` (the d
 | `02-silent-stall.yaml`          | Silent SSE socket stall — Layer 1 must trip.       |
 | `03-latency.yaml`               | 5s SSE latency — no fallback, no false trip.       |
 | `04-bandwidth.yaml`             | 1 KB/s SSE — survive or trip cleanly.              |
-| `05-sse-down.yaml`              | SSE down 180s — Layer 2 fallback engages.          |
+| `05-sse-down.yaml`              | SSE down 300s — Layer 2 fallback engages.          |
 | `06-total-partition.yaml`       | SSE + HTTP down — both layers fail clean, recover. |
 | `07-half-open.yaml`             | 200 then close after 1 byte — no deadlock.         |
 | `09-flapping.yaml`              | Toxiproxy killed 5x in 30s — eventual stability.   |
@@ -164,9 +164,40 @@ expectations:
   - within_ms: 90000
     assert: "client.connectionState() == 'disconnected' OR client.connectionState() == 'falling_back'"
   - within_ms: 180000
+    after_ms: 125000          # optional: no evaluation before this (absolute ms from t=0)
     must_hold_for_ms: 30000   # optional: must keep holding for N ms after first true
     assert: "client.connectionState() == 'connected' AND server_metric('quonfig_subscriber_lag_seconds') == 0"
 ```
+
+#### Timeline rules (every harness, qfg-goi1.7)
+
+Each tick, per non-terminal expectation: the first true sample starts the hold, a false sample
+resets it, the expectation PASSES once the hold completes and FAILS past `within_ms`. PASS and
+SKIPPED (a whole-expression `server_metric(...)`) are terminal once reached. On top of that:
+
+1. **`after_ms`** (optional integer, ms from t=0, default 0; absolute, like `at_ms`). Before it
+   the harness does not evaluate the expectation at all: no PASS, no hold start, not terminal.
+   Holds start at or after it. `within_ms` is unchanged (PASS, including any hold, by then).
+   SKIPPED depends on the expression's shape, not time, so `after_ms` does not affect it. Use it
+   on recovery and detection checks that are already true on the healthy pre-chaos client
+   (e.g. "connected" after an outage clears): without it they pass at tick 0 and test nothing.
+2. **t=0** is the baseline that puts the initial fetch inside the window: taken before a
+   blocking constructor, and at or right after a background-fetching constructor or a
+   non-blocking `init()`. Pre-init injects (`at_ms <= 0`) are applied before the first fetch.
+   All `at_ms`, `after_ms` and `within_ms` count from it.
+3. **Always/never assertions hold to the end of their window.** A row that asserts a state stays
+   true (`restart == 0`, `attempts < 100`, `processStillAlive()`, "stays connected", "never
+   regresses") carries a `must_hold_for_ms` so that the hold, started at the earliest point the
+   state can hold (`after_ms`, or the expected convergence), ends no more than 5s short of
+   `within_ms`. A monotone counter true at the end of its hold was true throughout, so it needs no
+   `after_ms`. Enforced by review, not by the validator (it cannot tell an always-row from an
+   eventually-row in a free-form `assert`).
+4. **Harness loaders reject unknown expectation keys**, naming the key, exactly as the schema
+   does (`additionalProperties: false`). A harness pinned to a newer ITD than it implements must
+   fail loudly, not silently drop a timing field such as `after_ms`.
+
+The validator also rejects `after_ms >= within_ms` and `after_ms + must_hold_for_ms > within_ms`
+(with `after_ms` defaulting to 0, so a hold longer than its window is rejected too).
 
 ### Chaos blocks
 
