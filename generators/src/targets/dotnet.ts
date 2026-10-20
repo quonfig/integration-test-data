@@ -45,6 +45,13 @@ import {
   redactedRowKeys,
   REDACTED_SELECTED_VALUE_PATTERN,
 } from '../shared/message-and-redaction.js';
+import {
+  assertGetterAfterContinue,
+  initFailureClient,
+  initRaiseExpectation,
+  isInitFailureCase,
+  type InitFailureClient,
+} from '../shared/init-failure.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -582,14 +589,13 @@ function renderEvalBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
   // Rejects message_contains/message_excludes on a non-raise case.
   messageExpectations(expected);
+  if (isInitFailureCase(kase)) {
+    return renderInitFailureBody(kase);
+  }
   const overrides = kase.client_overrides ?? {};
   const envVars = kase.env_vars ?? {};
   const isRaise = expected.status === 'raise';
   const key = caseKey(kase);
-
-  if (hasHttpOverrides(overrides)) {
-    return renderHttpClientBody(kase, key);
-  }
 
   const opts = datadirOptionInits();
   const global = kase.contexts?.global;
@@ -656,53 +662,80 @@ function renderRaiseAssertion(kase: YamlCase, cls: string, call: string): string
   return out;
 }
 
-function hasHttpOverrides(overrides: unknown): boolean {
-  if (!overrides || typeof overrides !== 'object') return false;
-  const o = overrides as Record<string, unknown>;
-  return 'initialization_timeout_sec' in o || 'prefab_api_url' in o || 'on_init_failure' in o;
+/** YAML on_init_failure spelling -> sdk-net enum member (B.1, B.2 aliases). */
+function onInitFailureEnum(v: string): string {
+  switch (v) {
+    case 'fail':
+      return 'OnInitFailure.Fail';
+    case 'wait':
+      return 'OnInitFailure.Wait';
+    case 'continue':
+      return 'OnInitFailure.Continue';
+    case 'raise':
+      return 'OnInitFailure.Throw'; // [Obsolete] alias of Fail
+    case 'return':
+      return 'OnInitFailure.ReturnDefaults'; // [Obsolete] alias of Continue
+    default:
+      throw new Error(`unsupported on_init_failure=${v}`);
+  }
 }
 
 /**
- * client_overrides with an init timeout / unreachable API URL: build a real
- * delivery-mode client and drive InitAsync + the getter exactly as a
- * customer would.
+ * Init-failure case body (qfg-9p4i.6; shared/init-failure.ts): a real
+ * delivery-mode client, InitAsync as the init call. function: init asserts
+ * the QuonfigInitException family (B.4), split on QuonfigInitTimeoutException.
+ * A getter case runs on a continue client. api_status = two WireMock servers
+ * answering every request with that status, used as the legs.
  */
-function renderHttpClientBody(kase: YamlCase, key: string): string {
-  const expected = kase.expected ?? {};
-  const overrides = kase.client_overrides ?? {};
-  const isRaise = expected.status === 'raise';
-  const errKey = (expected.error ?? '').toString();
-
-  const onInit = typeof overrides.on_init_failure === 'string' ? overrides.on_init_failure.replace(/^:/, '') : 'raise';
-  if (onInit !== 'raise' && onInit !== 'return') {
-    throw new Error(`unsupported on_init_failure=${onInit}`);
+function renderInitFailureBody(kase: YamlCase): string {
+  const ic: InitFailureClient = initFailureClient(kase);
+  const fn = (kase.function ?? 'get').toString();
+  if (Object.keys(kase.env_vars ?? {}).length > 0) throw new Error('env_vars on an init-failure case is unsupported');
+  let body = '';
+  let urls: string;
+  if (ic.apiStatus !== null) {
+    for (const n of [0, 1]) {
+      body += `${I}using var leg${n} = WireMockServer.Start();\n`;
+      body += `${I}leg${n}.Given(Request.Create().UsingAnyMethod()).RespondWith(Response.Create().WithStatusCode(${ic.apiStatus}));\n`;
+    }
+    urls = 'new[] { leg0.Urls[0], leg1.Urls[0] }';
+  } else {
+    urls = `new[] { ${ic.apiUrls.map(csStringLiteral).join(', ')} }`;
   }
-  const timeoutSec =
-    typeof overrides.initialization_timeout_sec === 'number' ? overrides.initialization_timeout_sec : 0.01;
-  const apiURL = typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : 'http://10.255.255.1:8080';
-
   const opts = [
-    'SdkKey = "integration-tests"',
-    `ApiUrls = new[] { ${csStringLiteral(apiURL)} }`,
-    // No SSE / fallback polling against the unreachable URL.
+    'SdkKey = "itd-init-failure"',
+    `ApiUrls = ${urls}`,
+    // No SSE / fallback polling against the unreachable legs.
     'StreamUrls = Array.Empty<string>()',
     'FallbackPollEnabled = false',
-    `InitTimeout = TimeSpan.FromMilliseconds(${Math.max(1, Math.round(timeoutSec * 1000))})`,
-    `OnInitFailure = ${onInit === 'return' ? 'OnInitFailure.ReturnDefaults' : 'OnInitFailure.Throw'}`,
+    `InitTimeout = TimeSpan.FromMilliseconds(${ic.initTimeoutMs})`,
   ];
-
-  let body = renderNewClient(opts);
-  const recv = receiverFor(kase);
-  if (isRaise && errKey === 'initialization_timeout') {
-    rejectMessageExpectations(kase, 'an initialization_timeout case');
-    body += `${I}await Assert.ThrowsAsync<${errorClass(errKey)}>(() => client.InitAsync());\n`;
+  if (ic.onInitFailure !== null) opts.push(`OnInitFailure = ${onInitFailureEnum(ic.onInitFailure)}`);
+  body += renderNewClient(opts);
+  if (fn === 'init') {
+    const want = initRaiseExpectation(kase);
+    if (kase.input && Object.keys(kase.input).length > 0) throw new Error('function: init cases take no input');
+    rejectMessageExpectations(kase, 'an init case');
+    body += `${I}var stopwatch = System.Diagnostics.Stopwatch.StartNew();\n`;
+    body += `${I}var raised = await Assert.ThrowsAnyAsync<QuonfigInitException>(() => client.InitAsync());\n`;
+    body += `${I}stopwatch.Stop();\n`;
+    if (want.error === 'initialization_timeout') {
+      body += `${I}Assert.IsAssignableFrom<QuonfigInitTimeoutException>(raised);\n`;
+    } else {
+      body += `${I}Assert.False(raised is QuonfigInitTimeoutException, ${csStringLiteral(`reason ${want.reason}, not the init timeout`)});\n`;
+    }
+    if (want.raisesWithinMs !== null) {
+      body += `${I}Assert.True(stopwatch.ElapsedMilliseconds < ${want.raisesWithinMs}, $"InitAsync raised after {stopwatch.ElapsedMilliseconds}ms");\n`;
+    }
     return body;
   }
+  assertGetterAfterContinue(ic);
+  const key = caseKey(kase);
+  const recv = receiverFor(kase);
   body += `${I}await client.InitAsync();\n`;
   body += recv.setup;
-  if (isRaise) {
-    body += renderRaiseAssertion(kase, errorClass(errKey), getterCall(kase, recv, key));
-    return body;
+  if ((kase.expected ?? {}).status === 'raise') {
+    return body + renderRaiseAssertion(kase, errorClass((kase.expected?.error ?? '').toString()), getterCall(kase, recv, key));
   }
   return body + renderValueAssertion(kase, getterCall(kase, recv, key));
 }

@@ -45,9 +45,12 @@ export interface ClientOverrides {
   on_no_default?: number;
   datadir?: string;
   environment?: string;
-  initialization_timeout_sec?: number;
+  // Init-failure keys (qfg-9p4i.6); see shared/init-failure.ts. The
+  // Prefab-era initialization_timeout_sec / prefab_api_url are gone.
   on_init_failure?: string;
-  prefab_api_url?: string;
+  init_timeout_ms?: number;
+  api_urls?: string[];
+  api_status?: number;
   context_upload_mode?: string;
   collect_evaluation_summaries?: boolean;
   [k: string]: unknown;

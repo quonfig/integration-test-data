@@ -32,6 +32,13 @@ import {
   REDACTED_SELECTED_VALUE_PATTERN,
 } from '../shared/message-and-redaction.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
+import {
+  assertGetterAfterContinue,
+  initFailureClient,
+  initRaiseExpectation,
+  isInitFailureCase,
+  type InitFailureClient,
+} from '../shared/init-failure.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -98,10 +105,10 @@ const GENERATOR_PATH = 'integration-test-data/generators/src/targets/node.ts';
  * A key listed here that no longer matches a case fails the generator.
  */
 const UNSUPPORTED: Record<string, string> = {
-  "get_or_raise.yaml::get_or_raise raises the correct error if it doesn't raise on init timeout":
-    'sdk-node has no on_init_failure option: init() always rejects when initTimeout elapses and ' +
-    'the client stays uninitialized, so a getter throws "Not initialized", never the ' +
-    ':return-mode missing_default error',
+  'get_or_raise.yaml::deprecated on_init_failure raise behaves as fail when every delivery leg refuses the connection':
+    'sdk-node has no legacy on_init_failure spellings to keep as aliases (init-failure design B.2: "node: none")',
+  'get_or_raise.yaml::deprecated on_init_failure return behaves as continue when every delivery leg refuses the connection':
+    'sdk-node has no legacy on_init_failure spellings to keep as aliases (init-failure design B.2: "node: none")',
 };
 
 class GeneratorError extends Error {
@@ -197,8 +204,11 @@ function renderCases(
   for (const nc of cases) {
     const kase = nc.raw;
     let body: string;
+    let testTimeout = '';
     try {
-      body = renderBody(yamlBasename, kase).body;
+      const r = renderBody(yamlBasename, kase);
+      body = r.body;
+      testTimeout = r.timeoutMs ? `, ${r.timeoutMs}` : '';
     } catch (e) {
       throw new GeneratorError(
         `[${yamlBasename}] case "${kase.name ?? ''}": ${(e as Error).message}`,
@@ -213,7 +223,7 @@ function renderCases(
       prefix = `\n  // unsupported by sdk-node: ${UNSUPPORTED[unsupportedKey]}`;
       itFn = 'it.skip';
     }
-    const block = `${prefix}\n  ${itFn}(${describeLabel(kase.name ?? '')}, async () => {\n${body}  });\n`;
+    const block = `${prefix}\n  ${itFn}(${describeLabel(kase.name ?? '')}, async () => {\n${body}  }${testTimeout});\n`;
     rendered.push({ source: block });
   }
 
@@ -222,6 +232,8 @@ function renderCases(
 
 interface RenderedBody {
   body: string;
+  /** vitest per-test timeout, ms (init-failure cases). */
+  timeoutMs?: number;
 }
 
 /**
@@ -255,11 +267,11 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
     return renderTelemetryBody(kase);
   }
 
-  // Cases that override real-client-construction params (init timeout,
-  // fake api URL, init-failure policy) need a real `new Quonfig({...})`
-  // so the SDK's init/timeout path actually runs.
-  if (hasClientConstructionOverrides(kase.client_overrides)) {
-    return renderClientConstructionBody(kase, expected);
+  // Init-failure cases (qfg-9p4i.6) build a real `new Quonfig({...})` with
+  // the onInitFailure / initTimeout / apiUrls options so the SDK's own init
+  // path runs; see shared/init-failure.ts.
+  if (isInitFailureCase(kase) && (kase.function ?? '').toString() === 'init') {
+    return renderInitFailureInitBody(kase);
   }
 
   return renderEvalBody(kase);
@@ -384,7 +396,9 @@ function renderEvalBody(kase: YamlCase): RenderedBody {
   const { block } = contextTiers(kase);
   const recv = block ? 'scope' : 'client';
   const call = publicCall(kase, recv, key);
-  const optsLit = evalClientOptions(kase);
+  const initClient = isInitFailureCase(kase) ? initFailureClient(kase) : null;
+  if (initClient) assertGetterAfterContinue(initClient);
+  const optsLit = initClient ? '' : evalClientOptions(kase);
 
   let assertion: (indent: string) => string;
   const rspec = repeatSpec(kase);
@@ -436,6 +450,24 @@ function renderEvalBody(kase: YamlCase): RenderedBody {
     throw new Error('case has no expected.value, expected.millis or raise expectation');
   }
 
+  if (initClient) {
+    if (contextTiers(kase).global) throw new Error('global context on an init-failure client is unsupported');
+    const body = wrapEnv(kase, '    ', (i) => {
+      const j = i + '  ';
+      let out = `${i}const init = await initFailureClient(${initFailureArgs(initClient)});\n`;
+      out += `${i}try {\n`;
+      out += `${j}expect(init.error, "on_init_failure continue: init() must resolve").toBeUndefined();\n`;
+      out += `${j}const client = init.client;\n`;
+      if (block) out += `${j}const scope = client.withContext(${tsLiteral(block)});\n`;
+      out += assertion(j);
+      out += `${i}} finally {\n`;
+      out += `${j}await init.close();\n`;
+      out += `${i}}\n`;
+      return out;
+    });
+    return { body, timeoutMs: INIT_FAILURE_TEST_TIMEOUT_MS };
+  }
+
   const body = wrapEnv(kase, '    ', (i) => {
     let out = `${i}await withClient(${optsLit}, (client) => {\n`;
     const j = i + '  ';
@@ -447,65 +479,37 @@ function renderEvalBody(kase: YamlCase): RenderedBody {
   return { body };
 }
 
-function hasClientConstructionOverrides(overrides: unknown): boolean {
-  if (!overrides || typeof overrides !== 'object') return false;
-  const o = overrides as Record<string, unknown>;
+const INIT_FAILURE_TEST_TIMEOUT_MS = 20000;
+
+function initFailureArgs(ic: InitFailureClient): string {
   return (
-    'initialization_timeout_sec' in o ||
-    'prefab_api_url' in o ||
-    'on_init_failure' in o
+    `${ic.onInitFailure === null ? 'undefined' : tsStringLiteral(ic.onInitFailure)}, ` +
+    `${tsLiteral(ic.apiUrls)}, ${ic.apiStatus ?? 0}, ${ic.initTimeoutMs}`
   );
 }
 
 /**
- * Render a body that constructs a real `new Quonfig({...})` with init-timeout
- * / fake api-url overrides. Asserts the expected raise (e.g.
- * initialization_timeout) or value depending on the YAML.
+ * function: init on an init-failure client. sdk-node keeps the client object
+ * after a rejected init() (Decisions 4), so the rejection is caught and
+ * checked: a QuonfigInitError (B.4) whose .reason is the YAML reason.
  */
-function renderClientConstructionBody(kase: YamlCase, expected: { status?: string; error?: string; value?: unknown }): RenderedBody {
-  const input = kase.input ?? {};
-  const overrides = kase.client_overrides ?? {};
-  const fn = (kase.function ?? 'get').toString();
-  const key = (input.key ?? input.flag) as string | undefined;
-  if (!key || key.toString().length === 0) {
-    throw new Error('client-construction case has no input.key/flag');
-  }
-  const keyLit = tsStringLiteral(key);
-  const errKey = (expected.error ?? '').toString();
-  const onInit = (() => {
-    const v = overrides.on_init_failure;
-    if (typeof v !== 'string') return 'raise';
-    return v.replace(/^:/, '');
-  })();
-  const timeout =
-    typeof overrides.initialization_timeout_sec === 'number'
-      ? overrides.initialization_timeout_sec
-      : 0.01;
-  const apiURL =
-    typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : 'http://127.0.0.1:1';
-
-  const isRaise = expected.status === 'raise';
+function renderInitFailureInitBody(kase: YamlCase): RenderedBody {
+  const ic = initFailureClient(kase);
+  const want = initRaiseExpectation(kase);
+  if (kase.input && Object.keys(kase.input).length > 0) throw new Error('function: init cases take no input');
   let body = '';
-  if (isRaise && errKey === 'initialization_timeout') {
-    body += `    await assertInitializationTimeoutError(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)});\n`;
-    return { body };
+  body += `    const init = await initFailureClient(${initFailureArgs(ic)});\n`;
+  body += `    try {\n`;
+  body += `      expect(init.error, "init() must reject (on_init_failure ${ic.onInitFailure ?? 'default = fail'})").toBeDefined();\n`;
+  body += `      expect((init.error as Error).name).toBe("QuonfigInitError");\n`;
+  body += `      expect((init.error as { reason?: unknown }).reason).toBe(${tsStringLiteral(want.reason)});\n`;
+  if (want.raisesWithinMs !== null) {
+    body += `      expect(init.elapsedMs).toBeLessThan(${want.raisesWithinMs});\n`;
   }
-  if (isRaise) {
-    const errClass = lookupErrorClass('node', errKey);
-    if (!errClass) {
-      throw new Error(
-        `no Node error mapping for expected.error="${errKey}" in client-construction case.`,
-      );
-    }
-    body += `    await assertClientConstructionRaises(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)}, ${tsStringLiteral(fn)}, ${errClass});\n`;
-    return { body };
-  }
-  // happy path
-  if (Object.prototype.hasOwnProperty.call(expected, 'value')) {
-    body += `    expect(await assertClientConstructionValue(${keyLit}, ${timeout}, ${tsStringLiteral(apiURL)}, ${tsStringLiteral(onInit)}, ${tsStringLiteral(fn)})).toEqual(${tsLiteral(expected.value)});\n`;
-    return { body };
-  }
-  throw new Error('client-construction case has no expected.value or expected.error');
+  body += `    } finally {\n`;
+  body += `      await init.close();\n`;
+  body += `    }\n`;
+  return { body, timeoutMs: INIT_FAILURE_TEST_TIMEOUT_MS };
 }
 
 /**
@@ -838,13 +842,9 @@ function renderTelemetryBody(kase: YamlCase): RenderedBody {
   return { body };
 }
 
-/** Returns true iff any rendered case body uses a client-construction helper. */
-function suiteUsesClientConstruction(_suite: SuiteEntry, rendered: RenderedCase[]): boolean {
-  return rendered.some((r) =>
-    r.source.includes('assertInitializationTimeoutError(') ||
-    r.source.includes('assertClientConstructionRaises(') ||
-    r.source.includes('assertClientConstructionValue('),
-  );
+/** Returns true iff any rendered case body uses the init-failure helper. */
+function suiteUsesInitFailureClient(rendered: RenderedCase[]): boolean {
+  return rendered.some((r) => r.source.includes('await initFailureClient('));
 }
 
 function stringifyEnvVars(env: Record<string, unknown>): Record<string, string> {
@@ -941,35 +941,7 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `\n`;
 
   if (!isPost) {
-    if (suiteUsesClientConstruction(suite, result.rendered)) {
-      out += `async function assertInitializationTimeoutError(key: string, timeoutSec: number, apiURL: string, onInitFailure: string): Promise<void> {\n`;
-      out += `  // sdk-node has no on_init_failure option; its only behaviour is :raise (init() rejects).\n`;
-      out += `  expect(onInitFailure).toBe("raise");\n`;
-      out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
-      out += `  // Use 10.255.255.1 (RFC5737-style unreachable IP) so the fetch hangs and the init timer wins.\n`;
-      out += `  const targetURL = "http://10.255.255.1:8080";\n`;
-      out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)) });\n`;
-      out += `  await expect(client.init()).rejects.toThrow(${lookupErrorClass('node', 'initialization_timeout')});\n`;
-      out += `}\n\n`;
-      out += `async function assertClientConstructionRaises(key: string, timeoutSec: number, apiURL: string, onInitFailure: string, _fn: string, errMatcher: RegExp): Promise<void> {\n`;
-      out += `  // sdk-node has no on_init_failure option, so :return (init failure -> keep\n`;
-      out += `  // going and evaluate with no config) cannot be expressed. Fail loudly\n`;
-      out += `  // rather than assert on whatever an uninitialized client throws.\n`;
-      out += `  if (onInitFailure !== "raise") throw new Error(\`sdk-node has no on_init_failure=\${onInitFailure} option\`);\n`;
-      out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
-      out += `  const targetURL = "http://10.255.255.1:8080";\n`;
-      out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)), onNoDefault: "error" });\n`;
-      out += `  await expect(client.init()).rejects.toThrow();\n`;
-      out += `  expect(() => client.get(key)).toThrow(errMatcher);\n`;
-      out += `}\n\n`;
-      out += `async function assertClientConstructionValue(key: string, timeoutSec: number, apiURL: string, _onInitFailure: string, _fn: string): Promise<unknown> {\n`;
-      out += `  const { Quonfig } = await import("../../src/quonfig");\n`;
-      out += `  const targetURL = "http://10.255.255.1:8080";\n`;
-      out += `  const client = new Quonfig({ sdkKey: "test-unused", apiUrls: [targetURL], enableSSE: false, enablePolling: false, initTimeout: Math.max(1, Math.floor(timeoutSec * 1000)) });\n`;
-      out += `  try { await client.init(); } catch {}\n`;
-      out += `  return client.get(key);\n`;
-      out += `}\n\n`;
-    }
+    if (suiteUsesInitFailureClient(result.rendered)) out += NODE_INIT_FAILURE_HELPER;
   }
 
   out += `describe(${tsStringLiteral(suite.describe)}, () => {\n`;
@@ -979,6 +951,62 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `});\n`;
   return out;
 }
+
+// Self-contained: the public Quonfig options from the init-failure spec
+// (B.1: onInitFailure, initTimeout, apiUrls). onInitFailure undefined = not
+// passed (the SDK default). apiStatus != 0 = two local servers answering every
+// request with that status, used as the legs. The rejection of init() is
+// caught and returned; the client object survives it (Decisions 4).
+const NODE_INIT_FAILURE_HELPER = `async function initFailureClient(
+  onInitFailure: string | undefined,
+  apiUrls: string[],
+  apiStatus: number,
+  initTimeoutMs: number,
+): Promise<{ client: any; error: unknown; elapsedMs: number; close: () => Promise<void> }> {
+  const { Quonfig } = await import("../../src/quonfig");
+  const http = await import("node:http");
+  const servers: import("node:http").Server[] = [];
+  let urls = apiUrls;
+  if (apiStatus !== 0) {
+    urls = [];
+    for (let i = 0; i < 2; i++) {
+      const server = http.createServer((_req, res) => {
+        res.writeHead(apiStatus);
+        res.end();
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+      servers.push(server);
+      urls.push(\`http://127.0.0.1:\${(server.address() as import("node:net").AddressInfo).port}\`);
+    }
+  }
+  const opts: Record<string, unknown> = {
+    sdkKey: "itd-init-failure",
+    apiUrls: urls,
+    initTimeout: initTimeoutMs,
+    enableSSE: false,
+    enablePolling: false,
+    collectEvaluationSummaries: false,
+    contextUploadMode: "none",
+    onNoDefault: "error",
+  };
+  if (onInitFailure !== undefined) opts.onInitFailure = onInitFailure;
+  const client = new Quonfig(opts as ConstructorParameters<typeof Quonfig>[0]);
+  const start = Date.now();
+  let error: unknown;
+  try {
+    await client.init();
+  } catch (e) {
+    error = e;
+  }
+  const elapsedMs = Date.now() - start;
+  const close = async (): Promise<void> => {
+    await client.close();
+    for (const s of servers) await new Promise<void>((r) => s.close(() => r()));
+  };
+  return { client, error, elapsedMs, close };
+}
+
+`;
 
 export interface NodeRunResult {
   written: { path: string; cases: number }[];

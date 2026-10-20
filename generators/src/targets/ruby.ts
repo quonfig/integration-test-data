@@ -23,6 +23,13 @@ import { resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
 import { rubyMethodSuffix, uniqueSuffix } from '../shared/case-id.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import {
+  assertGetterAfterContinue,
+  initFailureClient,
+  initRaiseExpectation,
+  isInitFailureCase,
+  type InitFailureClient,
+} from '../shared/init-failure.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import {
   isRedactedMatcher,
@@ -359,8 +366,8 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   // Cases that override real-client-construction params (init timeout, fake
   // api URL, init-failure policy) need a network-mode client so the SDK's
   // init/timeout/error path actually runs.
-  if (hasClientConstructionOverrides(kase.client_overrides)) {
-    return renderClientConstructionBody(kase);
+  if (isInitFailureCase(kase)) {
+    return renderInitFailureBody(kase);
   }
 
   if (yamlBasename === 'post.yaml' || yamlBasename === 'telemetry.yaml') {
@@ -379,7 +386,7 @@ function isPlainEvalCase(yamlBasename: string, kase: YamlCase): boolean {
     'post.yaml',
     'telemetry.yaml',
   ];
-  return !routedElsewhere.includes(yamlBasename) && !hasClientConstructionOverrides(kase.client_overrides);
+  return !routedElsewhere.includes(yamlBasename) && !isInitFailureCase(kase);
 }
 
 /**
@@ -532,66 +539,94 @@ function renderEvalBody(kase: YamlCase): string {
   return body;
 }
 
-/** True iff client_overrides contains keys that drive Client construction. */
-function hasClientConstructionOverrides(overrides: unknown): boolean {
-  if (!overrides || typeof overrides !== 'object') return false;
-  const o = overrides as Record<string, unknown>;
-  return (
-    'initialization_timeout_sec' in o ||
-    'prefab_api_url' in o ||
-    'on_init_failure' in o
-  );
+function initFailureArgs(ic: InitFailureClient): string {
+  const mode = ic.onInitFailure === null ? 'nil' : `:${ic.onInitFailure}`;
+  const urls = `[${ic.apiUrls.map(rubyStringLiteral).join(', ')}]`;
+  return `${mode}, ${urls}, ${ic.apiStatus ?? 0}, ${ic.initTimeoutMs}`;
 }
 
 /**
- * Render a body for a case that constructs a network-mode Quonfig::Client
- * (init timeout, fake api url, init-failure policy) and calls the YAML's
- * function on it. With on_init_failure: :raise the constructor itself may
- * raise the expected error, so construction sits inside the assert_raises.
+ * Init-failure case body (qfg-9p4i.6; shared/init-failure.ts). Under fail,
+ * Client.new raises and there is no client object (Decisions 4); the error
+ * is the Quonfig::Errors::InitializationError family (B.4), split on
+ * InitializationTimeoutError. A getter case runs on a continue client. The
+ * SDK logs the init failure on purpose; that log line IS the behavior, so
+ * the teardown's unexpected-log check is disarmed with `$logs = nil`.
  */
-function renderClientConstructionBody(kase: YamlCase): string {
-  const expected = kase.expected ?? {};
-  const overrides = kase.client_overrides ?? {};
+function renderInitFailureBody(kase: YamlCase): string {
+  const ic = initFailureClient(kase);
+  const fn = (kase.function ?? 'get').toString();
   const indent = '    ';
-
-  const onInitFailure = (() => {
-    const v = overrides.on_init_failure;
-    if (typeof v !== 'string') return 'raise';
-    return v.replace(/^:/, '');
-  })();
-  const timeout =
-    typeof overrides.initialization_timeout_sec === 'number'
-      ? overrides.initialization_timeout_sec
-      : 0.01;
-  const apiURL = typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
   if (tier(kase, 'global') || tier(kase, 'block') || tier(kase, 'local')) {
-    throw new Error('client-construction cases do not support contexts');
+    throw new Error('init-failure cases do not support contexts');
   }
-
-  const build =
-    `IntegrationTestHelpers.build_network_client(api_url: ${rubyLiteral(apiURL)}, ` +
-    `timeout_sec: ${timeout}, on_init_failure: :${onInitFailure})`;
-  const plan = planCall(kase);
-
-  let body = '';
-  if (expected.status === 'raise') {
-    body += `${indent}client = nil\n`;
-    body += `${indent}assert_raises(${raiseClass(kase)}) do\n`;
-    body += `${indent}  client = ${build}\n`;
-    body += `${indent}  ${plan.call}\n`;
-    body += `${indent}end\n`;
+  const elapsedVar = fn === 'init' ? 'elapsed_ms' : '_elapsed_ms';
+  let body = `${indent}client, err, ${elapsedVar}, servers = init_failure_client(${initFailureArgs(ic)})\n`;
+  if (fn === 'init') {
+    const want = initRaiseExpectation(kase);
+    if (kase.input && Object.keys(kase.input).length > 0) throw new Error('function: init cases take no input');
+    body += `${indent}refute_nil err, ${rubyStringLiteral(`Client.new must raise (on_init_failure ${ic.onInitFailure ?? 'default = fail'})`)}\n`;
+    body += `${indent}assert_nil client, 'on_init_failure fail returns no client'\n`;
+    body += `${indent}assert_kind_of Quonfig::Errors::InitializationError, err\n`;
+    if (want.error === 'initialization_timeout') {
+      body += `${indent}assert_kind_of Quonfig::Errors::InitializationTimeoutError, err\n`;
+    } else {
+      body += `${indent}refute_kind_of Quonfig::Errors::InitializationTimeoutError, err, ${rubyStringLiteral(`reason ${want.reason}, not the init timeout`)}\n`;
+    }
+    if (want.raisesWithinMs !== null) {
+      body += `${indent}assert_operator elapsed_ms, :<, ${want.raisesWithinMs}\n`;
+    }
   } else {
-    body += `${indent}client = ${build}\n`;
-    body += `${indent}actual = ${plan.call}\n`;
-    for (const l of valueAssertion(kase, plan.call)) body += `${indent}${l}\n`;
+    assertGetterAfterContinue(ic);
+    const plan = planCall(kase);
+    body += `${indent}assert_nil err, 'on_init_failure continue: Client.new must return'\n`;
+    body += `${indent}refute_nil client\n`;
+    if ((kase.expected ?? {}).status === 'raise') {
+      body += `${indent}assert_raises(${raiseClass(kase)}) { ${plan.call} }\n`;
+    } else {
+      body += `${indent}actual = ${plan.call}\n`;
+      for (const l of valueAssertion(kase, plan.call)) body += `${indent}${l}\n`;
+    }
   }
-  // on_init_failure: :return logs the init failure on purpose; that log line
-  // IS the behavior the case asks for.
   body += `${indent}$logs = nil\n`;
   body += `  ensure\n`;
   body += `${indent}client&.stop\n`;
+  body += `${indent}servers&.each(&:shutdown)\n`;
   return body;
 }
+
+// Nested in the test class. The public Client options from the init-failure
+// spec (B.1: on_init_failure, init_timeout_ms, api_urls); on_init_failure nil
+// = not passed (the SDK default). api_status != 0 = two local WEBrick servers
+// answering every request with that status, used as the legs. Client.new is
+// the init call; its error is rescued and returned.
+const RUBY_INIT_FAILURE_HELPER =
+  `  def init_failure_client(on_init_failure, api_urls, api_status, init_timeout_ms)\n` +
+  `    servers = []\n` +
+  `    if api_status.positive?\n` +
+  `      api_urls = Array.new(2) do\n` +
+  `        server = WEBrick::HTTPServer.new(Port: 0, Logger: WEBrick::Log.new(StringIO.new), AccessLog: [])\n` +
+  `        server.mount_proc('/') { |_req, res| res.status = api_status }\n` +
+  `        Thread.new { server.start }\n` +
+  `        servers << server\n` +
+  `        "http://127.0.0.1:#{server.config[:Port]}"\n` +
+  `      end\n` +
+  `    end\n` +
+  `    opts = { sdk_key: 'itd-init-failure', api_urls: api_urls, init_timeout_ms: init_timeout_ms,\n` +
+  `             enable_sse: false, enable_polling: false, enable_quonfig_user_context: false,\n` +
+  `             context_upload_mode: :none, collect_evaluation_summaries: false }\n` +
+  `    opts[:on_init_failure] = on_init_failure unless on_init_failure.nil?\n` +
+  `    start = Process.clock_gettime(Process::CLOCK_MONOTONIC)\n` +
+  `    client = nil\n` +
+  `    err = nil\n` +
+  `    begin\n` +
+  `      client = Quonfig::Client.new(**opts)\n` +
+  `    rescue StandardError => e\n` +
+  `      err = e\n` +
+  `    end\n` +
+  `    elapsed_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start) * 1000\n` +
+  `    [client, err, elapsed_ms, servers]\n` +
+  `  end\n`;
 
 /**
  * Typed getter for the datadir / delivery suites, which have no contexts.
@@ -964,16 +999,19 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   out += `# Source: ${GENERATOR_PATH}\n`;
   out += `# Do NOT edit by hand — changes will be overwritten.\n`;
   out += `\n`;
+  const usesInitFailure = rendered.some((r) => r.source.includes('= init_failure_client('));
   out += `require 'test_helper'\n`;
   out += `require 'integration/test_helpers'\n`;
+  if (usesInitFailure) out += `require 'stringio'\nrequire 'webrick'\n`;
   out += `\n`;
   out += `class ${suite.className} < Minitest::Test\n`;
+  if (usesInitFailure) out += RUBY_INIT_FAILURE_HELPER;
   // Nested in the test class: Style/OneClassPerFile allows one top-level class.
   const usesMatcher = rendered.some((r) => r.source.includes(`${RUBY_REDACTED_MATCHER}.new`));
   if (usesMatcher) out += rubyRedactedMatcherClass();
   rendered.forEach((r, i) => {
     // Layout/EmptyLinesAroundClassBody: no blank line right after `class`.
-    out += i === 0 && !usesMatcher ? r.source.replace(/^\n/, '') : r.source;
+    out += i === 0 && !usesMatcher && !usesInitFailure ? r.source.replace(/^\n/, '') : r.source;
   });
   out += `end\n`;
   return out;
