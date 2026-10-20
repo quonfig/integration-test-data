@@ -25,3 +25,8 @@ tests:
         after_ms: 4000
         must_hold_for_ms: 15000
         assert: "client.ready() == true"
+      # Init-failure log contract (qfg-9p4i.6; design section C and D case 9):
+      # no init WARN or ERROR while the secondary carries the boot.
+      - within_ms: 20000
+        must_hold_for_ms: 19000
+        assert: "client.sdkLog('warn', /\\[quonfig\\] init/) == 0 AND client.sdkLog('error', /\\[quonfig\\] init/) == 0"

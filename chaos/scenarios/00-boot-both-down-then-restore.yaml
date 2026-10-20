@@ -1,0 +1,116 @@
+# Init failure at boot (qfg-9p4i.6). Spec: project/plans/2026-10-05-init-failure-design.md
+# section D cases 6-8 (its Decisions section wins). Delivery (SSE + HTTP) is
+# down from before the first fetch until t=5000ms, longer than the 2000ms
+# init_timeout_ms. Each test is one on_init_failure mode.
+#
+# t=0 (README "Timeline rules" 2) is taken BEFORE the init call. The runner
+# makes the init call (go NewClient, node/js init(), python init(), ruby
+# Client.new, net InitAsync, java constructor) on a separate thread/task so it
+# can tick while init blocks, and reports it through client.initState().
+#
+# Fixture key: config.with.only.default.env.row has only a default row, so it
+# resolves to "hello from no env row" whatever environment the SDK key maps to.
+function: init_failure
+tests:
+  - name: "00 boot both down then restore — wait blocks until delivery returns"
+    description: |
+      onInitFailure=wait keeps blocking startup past initTimeout and retries.
+      Init returns only after delivery comes back, and the first evaluation
+      returns the real value (case 6).
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 45
+      on_init_failure: wait
+      init_timeout_ms: 2000
+    chaos:
+      - at_ms: 0
+        inject:
+          name: boot_outage
+          both_down_ms: 5000
+      - at_ms: 5000
+        clear: boot_outage
+    expectations:
+      # Still blocked past the 2s timeout, for the whole outage.
+      - within_ms: 5000
+        must_hold_for_ms: 4500
+        assert: "client.initState() == 'pending'"
+      # The retry after the restore lands inside the backoff cap (30s).
+      - within_ms: 40000
+        after_ms: 5000
+        assert: "client.initState() == 'returned' AND client.getString('config.with.only.default.env.row', 'CODE-DEFAULT') == 'hello from no env row'"
+
+  - name: "00 boot both down then restore — continue starts on code defaults, then heals"
+    description: |
+      onInitFailure=continue returns at initTimeout with code defaults (a
+      server keeps no cache). The client keeps retrying in the background:
+      after the restore the real value arrives and a ready event fires (case 7).
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 75
+      on_init_failure: continue
+      init_timeout_ms: 2000
+    chaos:
+      - at_ms: 0
+        inject:
+          name: boot_outage
+          both_down_ms: 5000
+      - at_ms: 5000
+        clear: boot_outage
+    expectations:
+      # Retries through the blip until the timeout, then returns.
+      - within_ms: 1800
+        must_hold_for_ms: 1500
+        assert: "client.initState() == 'pending'"
+      - within_ms: 4500
+        after_ms: 1500
+        assert: "client.initState() == 'returned' AND client.getString('config.with.only.default.env.row', 'CODE-DEFAULT') == 'CODE-DEFAULT'"
+      # Not ready while delivery is still down.
+      - within_ms: 4900
+        after_ms: 2500
+        must_hold_for_ms: 2000
+        assert: "client.ready() == false"
+      # Heals within the SSE reconnect / poll interval after the restore.
+      - within_ms: 65000
+        after_ms: 5000
+        assert: "client.ready() == true AND client.readyEventCount() >= 1 AND client.getString('config.with.only.default.env.row', 'CODE-DEFAULT') == 'hello from no env row'"
+
+  - name: "00 boot both down then restore — caught fail keeps a live client that heals"
+    description: |
+      onInitFailure=fail raises at initTimeout. The runner catches the error
+      and keeps the client object; that object keeps retrying and becomes ready
+      after the restore (case 8, the no-dead-clients rule). go and ruby return
+      no client object under fail (Decisions 4): their runners report this
+      test SKIPPED with that reason.
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      wall_clock_seconds: 75
+      on_init_failure: fail
+      init_timeout_ms: 2000
+      catch_init_failure: true
+    chaos:
+      - at_ms: 0
+        inject:
+          name: boot_outage
+          both_down_ms: 5000
+      - at_ms: 5000
+        clear: boot_outage
+    expectations:
+      - within_ms: 1800
+        must_hold_for_ms: 1500
+        assert: "client.initState() == 'pending'"
+      - within_ms: 4500
+        after_ms: 1500
+        assert: "client.initState() == 'raised'"
+      - within_ms: 4900
+        after_ms: 2500
+        must_hold_for_ms: 2000
+        assert: "client.ready() == false"
+      - within_ms: 65000
+        after_ms: 5000
+        assert: "client.ready() == true AND client.getString('config.with.only.default.env.row', 'CODE-DEFAULT') == 'hello from no env row'"

@@ -99,6 +99,7 @@ The plan's Tier 2 table, one YAML per scenario. Most live in `scenarios/` (the d
 
 | File                            | What it stresses                                   |
 | ------------------------------- | -------------------------------------------------- |
+| `00-boot-both-down-then-restore.yaml` | Delivery down at boot past initTimeout: `wait` blocks, `continue` starts on defaults, a caught `fail` keeps a client; all heal after the restore. |
 | `01-baseline.yaml`              | Healthy server + network. Null baseline.           |
 | `02-silent-stall.yaml`          | Silent SSE socket stall — Layer 1 must trip.       |
 | `03-latency.yaml`               | 5s SSE latency — no fallback, no false trip.       |
@@ -247,6 +248,29 @@ The failover and ordering suites add these expressions (still free-form strings 
 - `client.sdkMetricRise(name)` — how much the SDK metric `name` has risen since the start of the expectation's `must_hold_for_ms` window. `== 0` held over the window asserts the counter stopped. Used by `08-auth-failure.yaml` (SSE attempts and fallback polls stop while auth-failed). A runner whose SDK lacks the metric reports that expectation as an explicit SKIPPED with a reason.
 - `client.configInstallCount()` — how many times the SDK has installed a config payload. Used by `o04` to assert a same-generation second leg is a no-op (no flap).
 - `client.sseFailedOverToSecondary()` — whether the SSE stream silently repointed to the secondary host. Must stay `false` (`f05`): SSE does not fail over.
+
+### Init-failure vocabulary (`00-boot-both-down-then-restore.yaml`)
+
+Spec: `project/plans/2026-10-05-init-failure-design.md` (Decisions, B.3, D cases 6-8). These tests set
+`setup.on_init_failure` (`fail` | `wait` | `continue`, canonical spellings only) and `setup.init_timeout_ms`;
+`setup.catch_init_failure: true` (only with `fail`) means the runner catches the init error and keeps the
+client object. When `on_init_failure` is set, t=0 is taken before the init call, the runner makes the
+init call on a separate thread/task so the tick loop keeps running while init blocks, and the `at_ms: 0`
+outage is applied before the first fetch (Timeline rule 2).
+
+- `client.initState()` — `'pending'` (the init call has not returned), `'returned'` (it returned without
+  raising) or `'raised'` (it raised and the runner caught it).
+- `client.getString(key, default)` — the SDK's public string getter with a caller default: the live value,
+  or `default` when the SDK has no value for the key.
+- `client.readyEventCount()` — how many ready/update events (or `OnConfigUpdate`-style callbacks) the SDK
+  fired after the init call returned. `>= 1` after the restore asserts the heal is announced.
+- `client.sdkLog(level, /re/)` — how many SDK log lines at exactly `level` match `re`. `f01`/`f04` assert
+  `client.sdkLog('warn', /\[quonfig\] init/) == 0` (and the same for `'error'`): a boot the secondary rescues
+  logs no init WARN or ERROR (design section C, D case 9).
+
+An SDK whose `fail` mode returns no client object (go, ruby; Decisions 4) reports the `catch_init_failure`
+test SKIPPED with that reason. A runner that does not implement `setup.on_init_failure` must fail the
+scenario rather than run it with its usual client setup.
 
 ## SDK CI wiring (one-time per SDK)
 

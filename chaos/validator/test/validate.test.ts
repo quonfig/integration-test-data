@@ -99,6 +99,34 @@ test('rejects after_ms + must_hold_for_ms > within_ms', () => {
   );
 });
 
+test('accepts the init-failure setup keys (scenario 00)', () => {
+  const result = validateYaml(load(join(SCENARIOS, '00-boot-both-down-then-restore.yaml')));
+  assert.equal(result.valid, true, `expected valid, got errors: ${JSON.stringify(result.errors)}`);
+});
+
+test('rejects catch_init_failure outside on_init_failure fail', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-catch-without-fail.yaml')));
+  assert.equal(result.valid, false);
+  assert.ok(
+    result.errors!.some((e) => /catch_init_failure/.test(e)),
+    `expected a catch_init_failure error, got: ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('rejects a deprecated alias as the chaos on_init_failure (canonical values only)', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-init-failure-mode.yaml')));
+  assert.equal(result.valid, false);
+});
+
+test('rejects init_timeout_ms without on_init_failure', () => {
+  const result = validateYaml(load(join(FIXTURES, 'bad-init-timeout-without-mode.yaml')));
+  assert.equal(result.valid, false);
+  assert.ok(
+    result.errors!.some((e) => /init_timeout_ms/.test(e) && /on_init_failure/.test(e)),
+    `expected an init_timeout_ms/on_init_failure error, got: ${JSON.stringify(result.errors)}`,
+  );
+});
+
 test('every default-suite scenario in chaos/scenarios/*.yaml validates', () => {
   const files = readdirSync(SCENARIOS).filter((f) => f.endsWith('.yaml'));
   assert.ok(files.length >= 10, `expected at least 10 default scenarios, found ${files.length}`);
