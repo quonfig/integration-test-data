@@ -30,6 +30,13 @@ import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import {
+  assertGetterAfterContinue,
+  initFailureClient,
+  initRaiseExpectation,
+  isInitFailureCase,
+  type InitFailureClient,
+} from '../shared/init-failure.js';
+import {
   isRedactedMatcher,
   messageExpectations,
   redactedRowKeys,
@@ -271,6 +278,16 @@ function renderCase(
     );
   }
 
+  // Init-failure cases (qfg-9p4i.6): a network-mode client built by the
+  // file-level _init_failure_client helper; see shared/init-failure.ts.
+  if (isInitFailureCase(kase)) {
+    const body = renderInitFailureBody(kase, exceptions);
+    return {
+      source: header + `def ${fnName}() -> None:\n${body}`,
+      usesFixture: false,
+    };
+  }
+
   // Eval-style cases: pick fixture vs fresh-client based on whether the
   // YAML overrides client construction (env_vars, custom datadir, custom
   // environment, on_no_default override, or get_or_raise function).
@@ -286,7 +303,6 @@ function renderCase(
     'datadir' in overrides ||
     'environment' in overrides ||
     'on_no_default' in overrides ||
-    'initialization_timeout_sec' in overrides ||
     func === 'get_or_raise' ||
     isRaise;
 
@@ -456,15 +472,8 @@ function buildClientArgs(kase: YamlCase): string {
 
   // datadir — either the default integration-tests dir or a YAML override
   // (currently only "integration-tests" is referenced, but support arbitrary
-  // names so future YAML can flex). Suppressed when `prefab_api_url` is set
-  // so HTTP-mode tests don't get short-circuited by a synchronous datadir
-  // load. (sdk-python removed the `prefab_api_url` kwarg in qfg-l3xp; the
-  // URL is now passed via `api_urls=[...]` below, which only spins up a
-  // transport when no datadir is configured.)
-  const hasHttpOverride = typeof overrides.prefab_api_url === 'string';
-  if (hasHttpOverride) {
-    // skip datadir
-  } else if (
+  // names so future YAML can flex). Init-failure cases never reach here.
+  if (
     'datadir' in overrides &&
     typeof overrides.datadir === 'string' &&
     overrides.datadir !== 'integration-tests'
@@ -490,23 +499,135 @@ function buildClientArgs(kase: YamlCase): string {
     parts.push(`on_init_failure="return_zero_value"`);
   }
 
-  if (typeof overrides.initialization_timeout_sec === 'number') {
-    // The Python SDK's option name might be `init_timeout` or
-    // `initialization_timeout`. Use the YAML name verbatim — if the SDK
-    // doesn't accept it, the constructor will raise and the test will
-    // fail loudly (correctly surfacing the gap).
-    parts.push(`initialization_timeout_sec=${overrides.initialization_timeout_sec}`);
-  }
-  if (typeof overrides.on_init_failure === 'string') {
-    const onInit = overrides.on_init_failure.replace(/^:/, '');
-    parts.push(`on_init_failure=${pyStringLiteral(onInit)}`);
-  }
-  if (typeof overrides.prefab_api_url === 'string') {
-    parts.push(`api_urls=[${pyStringLiteral(overrides.prefab_api_url)}]`);
-  }
-
   return parts.join(', ');
 }
+
+function initFailureArgs(ic: InitFailureClient): string {
+  const mode = ic.onInitFailure === null ? 'None' : pyStringLiteral(ic.onInitFailure);
+  const urls = `[${ic.apiUrls.map(pyStringLiteral).join(', ')}]`;
+  return `${mode}, ${urls}, ${ic.apiStatus ?? 0}, ${ic.initTimeoutMs}`;
+}
+
+/**
+ * Init-failure case body. function: init asserts the init() raise: the
+ * QuonfigInitError family (B.4; checked by MRO name so the module still
+ * imports on an SDK that predates the class), split on
+ * QuonfigInitTimeoutError. A getter case runs on a continue client.
+ */
+function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string {
+  const ic = initFailureClient(kase);
+  const fn = (kase.function ?? 'get').toString();
+  const i = '    ';
+  let body = '';
+  body += `${i}c, err, elapsed_ms, close = _init_failure_client(${initFailureArgs(ic)})\n`;
+  body += `${i}try:\n`;
+  const j = i + '    ';
+  if (fn === 'init') {
+    const want = initRaiseExpectation(kase);
+    if (kase.input && Object.keys(kase.input).length > 0) throw new Error('function: init cases take no input');
+    exceptions.add('QuonfigInitTimeoutError');
+    body += `${j}assert err is not None, "init() must raise (on_init_failure ${ic.onInitFailure ?? 'default = fail'})"\n`;
+    body += `${j}assert "QuonfigInitError" in [k.__name__ for k in type(err).__mro__], repr(err)\n`;
+    if (want.error === 'initialization_timeout') {
+      body += `${j}assert isinstance(err, QuonfigInitTimeoutError), repr(err)\n`;
+    } else {
+      body += `${j}assert not isinstance(err, QuonfigInitTimeoutError), "reason ${want.reason}, not the init timeout"\n`;
+    }
+    if (want.raisesWithinMs !== null) {
+      body += `${j}assert elapsed_ms < ${want.raisesWithinMs}, f"init() raised after {elapsed_ms:.0f}ms"\n`;
+    }
+  } else {
+    assertGetterAfterContinue(ic);
+    if (Object.keys(kase.env_vars ?? {}).length > 0) throw new Error('env_vars on an init-failure case is unsupported');
+    const expected = kase.expected ?? {};
+    const msg = messageExpectations(expected);
+    const input = kase.input ?? {};
+    const key = (input.key ?? input.flag) as string | undefined;
+    if (!key) throw new Error('case has no input.key/flag');
+    const getterCall = makeGetterCall(kase, key, mergeContexts(kase.contexts));
+    body += `${j}assert err is None, f"on_init_failure continue: init() must return, raised {err!r}"\n`;
+    if (expected.status === 'raise') {
+      const errKey = (expected.error ?? '').toString();
+      const errClass = lookupErrorClass('python', errKey);
+      if (!errClass) throw new Error(`no Python error mapping for expected.error="${errKey}"`);
+      if (errClass.startsWith('Quonfig')) exceptions.add(errClass);
+      const hasMsg = msg.contains.length > 0 || msg.excludes.length > 0;
+      body += `${j}with pytest.raises(${errClass})${hasMsg ? ' as excinfo' : ''}:\n`;
+      body += `${j}    ${getterCall}\n`;
+      if (hasMsg) {
+        body += `${j}message = str(excinfo.value)\n`;
+        for (const sub of msg.contains) body += `${j}assert ${pyStringLiteral(sub)} in message\n`;
+        for (const sub of msg.excludes) body += `${j}assert ${pyStringLiteral(sub)} not in message\n`;
+      }
+    } else {
+      body += `${j}result = ${getterCall}\n`;
+      body += renderAssertion(j, expected);
+    }
+  }
+  body += `${i}finally:\n`;
+  body += `${i}    close()\n`;
+  return body;
+}
+
+// Self-contained: the public Quonfig kwargs from the init-failure spec (B.1:
+// on_init_failure, init_timeout_ms, api_urls). on_init_failure None = not
+// passed (the SDK default). api_status != 0 = two local servers answering every
+// request with that status, used as the legs. init() is the init call; its
+// exception is caught and returned with the client.
+const PY_INIT_FAILURE_HELPER = `def _init_failure_client(
+    on_init_failure: "str | None",
+    api_urls: "list[str]",
+    api_status: int,
+    init_timeout_ms: int,
+) -> "tuple[Quonfig, BaseException | None, float, Callable[[], None]]":
+    servers: "list[ThreadingHTTPServer]" = []
+    if api_status:
+
+        class _StatusHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(api_status)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return
+
+        api_urls = []
+        for _ in range(2):
+            server = ThreadingHTTPServer(("127.0.0.1", 0), _StatusHandler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            servers.append(server)
+            api_urls.append(f"http://127.0.0.1:{server.server_address[1]}")
+    kwargs: "dict[str, Any]" = {
+        "sdk_key": "itd-init-failure",
+        "api_urls": api_urls,
+        "init_timeout_ms": init_timeout_ms,
+        "enable_sse": False,
+        "fallback_poll_enabled": False,
+        "collect_evaluation_summaries": False,
+        "context_upload_mode": "none",
+        "on_no_default": "error",
+    }
+    if on_init_failure is not None:
+        kwargs["on_init_failure"] = on_init_failure
+    client = Quonfig(**kwargs)
+    start = time.monotonic()
+    err: "BaseException | None" = None
+    try:
+        client.init()
+    except Exception as e:  # noqa: BLE001 - the case asserts the class
+        err = e
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    def close() -> None:
+        client.close()
+        for s in servers:
+            s.shutdown()
+
+    return client, err, elapsed_ms, close
+
+
+`;
 
 /**
  * Map the cross-SDK `on_no_default` integer to the Python SDK string
@@ -981,8 +1102,13 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   // neither, so emit `import pytest` only when something references it, to
   // keep ruff (F401) happy without a post-format pass.
   const usesPytest = result.rendered.some((r) => /\bpytest\b/.test(r.source));
+  const usesInitFailure = result.rendered.some((r) => r.source.includes('_init_failure_client('));
   if (!isPost) {
-    out += `import os\n\n`;
+    if (usesInitFailure) {
+      out += `import os\nimport threading\nimport time\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom typing import Any, Callable\n\n`;
+    } else {
+      out += `import os\n\n`;
+    }
     if (usesPytest || result.needsFixture) {
       out += `import pytest\n\n`;
     }
@@ -1014,6 +1140,7 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     out += `    os.path.dirname(__file__),\n`;
     out += `    "../../../integration-test-data/data/integration-tests",\n`;
     out += `)\n\n`;
+    if (usesInitFailure) out += `\n` + PY_INIT_FAILURE_HELPER;
   }
 
   if (result.needsFixture && !isPost && !isDatadir) {

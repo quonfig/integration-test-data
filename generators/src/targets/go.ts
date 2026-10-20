@@ -30,6 +30,13 @@ import {
 } from '../shared/case-id.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import {
+  assertGetterAfterContinue,
+  initFailureClient,
+  initRaiseExpectation,
+  isInitFailureCase,
+  type InitFailureClient,
+} from '../shared/init-failure.js';
+import {
   messageExpectations,
   redactedRowKeys,
   REDACTED_SELECTED_VALUE_PATTERN,
@@ -254,23 +261,17 @@ function getterCallExpr(method: string, keyLit: string, tiers: Tiers): string {
  */
 function clientSetup(kase: YamlCase, tiers: Tiers): string {
   const overrides = kase.client_overrides ?? {};
-  if (hasClientConstructionOverridesGo(overrides)) {
+  if (isInitFailureCase(kase)) {
     if (tiers.global) {
-      throw new Error('global context with init-timeout client overrides is unsupported');
+      throw new Error('global context with init-failure client overrides is unsupported');
     }
-    const timeoutSec =
-      typeof overrides.initialization_timeout_sec === 'number'
-        ? overrides.initialization_timeout_sec
-        : 0.01;
-    const apiURL = typeof overrides.prefab_api_url === 'string' ? overrides.prefab_api_url : '';
-    if (apiURL.length === 0) {
-      throw new Error('init-timeout case needs client_overrides.prefab_api_url');
-    }
-    const onInit =
-      typeof overrides.on_init_failure === 'string'
-        ? overrides.on_init_failure.replace(/^:/, '')
-        : 'raise';
-    return `\tc := newInitTimeoutClient(t, ${formatDouble(timeoutSec)}, ${goStringLiteral(apiURL)}, ${goStringLiteral(onInit)})\n`;
+    const ic = initFailureClient(kase);
+    assertGetterAfterContinue(ic);
+    return (
+      `\tc, err := ${initFailureClientCall(ic)}\n` +
+      `\trequire.NoError(t, err, "on_init_failure continue: init must return")\n` +
+      `\trequire.NotNil(t, c)\n`
+    );
   }
   for (const k of Object.keys(overrides)) {
     // on_no_default only selects which YAML expectation applies (absent
@@ -446,6 +447,9 @@ function renderBody(
 }
 
 function renderEvalBody(kase: YamlCase, features: Set<string>): string {
+  if ((kase.function ?? '').toString() === 'init') {
+    return renderInitFailureInitBody(kase, features);
+  }
   const expected = kase.expected ?? {};
   // Rejects message_contains/message_excludes on a non-raise case.
   messageExpectations(expected);
@@ -465,6 +469,7 @@ function renderEvalBody(kase: YamlCase, features: Set<string>): string {
   }
 
   features.add('assert');
+  if (isInitFailureCase(kase)) features.add('require');
   if (tiers.global) features.add('quonfig');
 
   let body = '';
@@ -520,27 +525,11 @@ function renderEvalBody(kase: YamlCase, features: Set<string>): string {
     }
     const getter = goGetterFor(yamlType === '' ? 'STRING' : yamlType, undefined);
     features.add('quonfig');
-    const onInit = (kase.client_overrides ?? {}).on_init_failure;
-    const zeroValuePolicy =
-      typeof onInit === 'string' && onInit.replace(/^:/, '') === 'return';
     body += `\t_, ok, err := ${getterCallExpr(getter.method, keyLit, tiers)}\n`;
     body += `\tassert.False(t, ok, "%q must have no value", ${keyLit})\n`;
-    if (zeroValuePolicy) {
-      // on_init_failure :return maps to quonfig.ReturnZeroValue, documented
-      // as "getters return zero values" — no error. The init timeout must
-      // not surface; "no value" is ok=false.
-      if (errKey !== 'missing_default') {
-        throw new Error(`on_init_failure :return with expected.error=${errKey} is unsupported`);
-      }
-      body += `\tassert.NotErrorIs(t, err, quonfig.ErrInitializationTimeout, "ReturnZeroValue must not surface the init timeout")\n`;
-    } else {
-      features.add('require');
-      body += `\trequire.ErrorIs(t, err, ${sentinel})\n`;
-    }
+    features.add('require');
+    body += `\trequire.ErrorIs(t, err, ${sentinel})\n`;
     const msg = messageExpectations(expected);
-    if ((msg.contains.length > 0 || msg.excludes.length > 0) && zeroValuePolicy) {
-      throw new Error('message_contains/message_excludes need a raised error');
-    }
     for (const sub of msg.contains) {
       body += `\tassert.Contains(t, err.Error(), ${goStringLiteral(sub)})\n`;
     }
@@ -1009,14 +998,54 @@ function goRedactedHelper(): string {
   );
 }
 
-function hasClientConstructionOverridesGo(overrides: unknown): boolean {
-  if (!overrides || typeof overrides !== 'object') return false;
-  const o = overrides as Record<string, unknown>;
+/**
+ * `newInitFailureClient(t, onInitFailure, apiURLs, apiStatus, initTimeoutMs)`
+ * is hand-written in sdk-go/internal/fixtures (test_helpers_test.go). Contract:
+ * build the client with quonfig.NewClient and return NewClient's (client, err)
+ * unchanged. onInitFailure "" = do not pass WithOnInitFailure (the SDK
+ * default); any other value is mapped verbatim to the option of that name,
+ * aliases included (raise, return). apiStatus != 0 = stand up two httptest
+ * servers answering every request with that status and use them as the
+ * legs; otherwise use apiURLs. initTimeoutMs -> WithInitTimeout. SSE, the
+ * fallback poller and telemetry off. Registers Close on a non-nil client.
+ */
+function initFailureClientCall(ic: InitFailureClient): string {
+  const urls = `[]string{${ic.apiUrls.map(goStringLiteral).join(', ')}}`;
   return (
-    'initialization_timeout_sec' in o ||
-    'prefab_api_url' in o ||
-    'on_init_failure' in o
+    `newInitFailureClient(t, ${goStringLiteral(ic.onInitFailure ?? '')}, ${urls}, ` +
+    `${ic.apiStatus ?? 0}, ${ic.initTimeoutMs})`
   );
+}
+
+/**
+ * function: init on an init-failure client. Go has no client object under
+ * fail (Decisions 4): NewClient returns (nil, err).
+ */
+function renderInitFailureInitBody(kase: YamlCase, features: Set<string>): string {
+  const ic = initFailureClient(kase);
+  const want = initRaiseExpectation(kase);
+  if (kase.input && Object.keys(kase.input).length > 0) {
+    throw new Error('function: init cases take no input');
+  }
+  features.add('assert');
+  features.add('require');
+  features.add('quonfig');
+  features.add('time');
+  let body = '';
+  body += `\tstart := time.Now()\n`;
+  body += `\tc, err := ${initFailureClientCall(ic)}\n`;
+  body += `\telapsed := time.Since(start)\n`;
+  body += `\trequire.Error(t, err, "init must fail (on_init_failure ${ic.onInitFailure ?? 'default = fail'})")\n`;
+  body += `\tassert.Nil(t, c, "on_init_failure fail returns no client")\n`;
+  if (want.error === 'initialization_timeout') {
+    body += `\tassert.ErrorIs(t, err, quonfig.ErrInitializationTimeout)\n`;
+  } else {
+    body += `\tassert.NotErrorIs(t, err, quonfig.ErrInitializationTimeout, "reason ${want.reason}, not the init timeout")\n`;
+  }
+  if (want.raisesWithinMs !== null) {
+    body += `\tassert.Less(t, elapsed, ${want.raisesWithinMs}*time.Millisecond, "init must raise within ${want.raisesWithinMs}ms")\n`;
+  }
+  return body;
 }
 
 function formatDouble(n: number): string {

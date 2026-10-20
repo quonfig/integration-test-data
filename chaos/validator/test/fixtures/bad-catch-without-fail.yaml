@@ -1,0 +1,13 @@
+function: init_failure
+tests:
+  - name: "bad-catch-without-fail"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      on_init_failure: continue
+      init_timeout_ms: 2000
+      catch_init_failure: true
+    expectations:
+      - within_ms: 5000
+        assert: "client.initState() == 'returned'"

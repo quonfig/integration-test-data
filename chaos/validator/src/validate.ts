@@ -64,6 +64,22 @@ function timingErrors(doc: unknown): string[] {
   return errs;
 }
 
+type Setup = { on_init_failure?: string; catch_init_failure?: boolean };
+
+// catch_init_failure only means something under fail (draft-07 if/then would
+// report it without naming the key).
+function setupErrors(doc: unknown): string[] {
+  const errs: string[] = [];
+  const tests = (doc as { tests?: { setup?: Setup }[] }).tests ?? [];
+  tests.forEach((t, ti) => {
+    const s = t.setup ?? {};
+    if (s.catch_init_failure !== undefined && s.on_init_failure !== 'fail') {
+      errs.push(`/tests/${ti}/setup catch_init_failure needs on_init_failure: fail (got ${String(s.on_init_failure)})`);
+    }
+  });
+  return errs;
+}
+
 export function validateObject(doc: unknown): ValidationResult {
   const validate = getValidator();
   const ok = validate(doc);
@@ -71,7 +87,7 @@ export function validateObject(doc: unknown): ValidationResult {
     const errs = (validate.errors ?? []).map(formatError);
     return { valid: false, errors: errs.length > 0 ? errs : ['unknown validation error'] };
   }
-  const timing = timingErrors(doc);
+  const timing = [...timingErrors(doc), ...setupErrors(doc)];
   if (timing.length > 0) return { valid: false, errors: timing };
   return { valid: true, errors: null };
 }

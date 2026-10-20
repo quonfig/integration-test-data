@@ -97,7 +97,25 @@
         "expected_state_on_start": {
           "description": "Sanity assertion before chaos injection. Optional.",
           "type": "string"
+        },
+        "on_init_failure": {
+          "description": "Init-failure scenarios (00-*): the SDK's onInitFailure for this test, canonical spelling only (the eval corpus covers the deprecated aliases). When set, t=0 is taken before the init call, the runner makes the init call on a separate thread/task, and client.initState() reports 'pending' | 'returned' | 'raised'. Absent: the runner's usual client setup.",
+          "type": "string",
+          "enum": ["fail", "wait", "continue"]
+        },
+        "init_timeout_ms": {
+          "description": "The SDK's initTimeout for this test, in ms. Requires on_init_failure.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "catch_init_failure": {
+          "description": "With on_init_failure: fail only. The runner catches the init error and keeps the client object, which must keep retrying and heal (no dead clients). An SDK whose fail mode returns no client object (go, ruby) reports the test SKIPPED with that reason.",
+          "type": "boolean"
         }
+      },
+      "dependencies": {
+        "init_timeout_ms": ["on_init_failure"],
+        "catch_init_failure": ["on_init_failure"]
       }
     },
     "chaosStep": {

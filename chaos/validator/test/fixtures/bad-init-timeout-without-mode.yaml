@@ -1,0 +1,11 @@
+function: init_failure
+tests:
+  - name: "bad-init-timeout-without-mode"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      init_timeout_ms: 2000
+    expectations:
+      - within_ms: 5000
+        assert: "client.initState() == 'returned'"

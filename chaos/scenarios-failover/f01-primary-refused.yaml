@@ -26,3 +26,9 @@ tests:
         after_ms: 4000
         must_hold_for_ms: 10000
         assert: "client.ready() == true"
+      # Init-failure log contract (qfg-9p4i.6; design section C and D case 9):
+      # a boot the secondary rescues is a healthy boot, so no init WARN or
+      # ERROR is logged. sdkLog(level, re) counts lines at exactly that level.
+      - within_ms: 15000
+        must_hold_for_ms: 14000
+        assert: "client.sdkLog('warn', /\\[quonfig\\] init/) == 0 AND client.sdkLog('error', /\\[quonfig\\] init/) == 0"

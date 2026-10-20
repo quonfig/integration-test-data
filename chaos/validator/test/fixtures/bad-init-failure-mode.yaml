@@ -1,0 +1,12 @@
+function: init_failure
+tests:
+  - name: "bad-init-failure-mode"
+    setup:
+      sdk: any
+      sse_endpoint: chaos
+      http_endpoint: chaos
+      on_init_failure: raise
+      init_timeout_ms: 2000
+    expectations:
+      - within_ms: 5000
+        assert: "client.initState() == 'raised'"

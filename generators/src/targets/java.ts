@@ -44,6 +44,13 @@ import {
   redactedRowKeys,
   REDACTED_SELECTED_VALUE_PATTERN,
 } from '../shared/message-and-redaction.js';
+import {
+  assertGetterAfterContinue,
+  initFailureClient,
+  initRaiseExpectation,
+  isInitFailureCase,
+  type InitFailureClient,
+} from '../shared/init-failure.js';
 import type { CaseContexts, ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -118,9 +125,10 @@ const CONTEXT_PROBE_KEY = 'brand.new.string';
  * A key listed here that no longer matches a case fails the generator.
  */
 const UNSUPPORTED: Record<string, string> = {
-  'get_or_raise.yaml::get_or_raise raises the correct error if it doesn\'t raise on init timeout':
-    'sdk-java has no on_init_failure option: a client that misses initTimeout always throws ' +
-    'QuonfigInitTimeoutException from get*OrThrow, never the :return-mode missing_default error',
+  'get_or_raise.yaml::deprecated on_init_failure raise behaves as fail when every delivery leg refuses the connection':
+    'sdk-java has no legacy on_init_failure spellings to keep as aliases (init-failure design B.2: "java: none")',
+  'get_or_raise.yaml::deprecated on_init_failure return behaves as continue when every delivery leg refuses the connection':
+    'sdk-java has no legacy on_init_failure spellings to keep as aliases (init-failure design B.2: "java: none")',
 };
 
 class GeneratorError extends Error {
@@ -554,12 +562,10 @@ const EVAL_OVERRIDE_KEYS = new Set([
   // sdk-java has no on_no_default knob: a typed getter called without a
   // default returns null, which is what every on_no_default case expects.
   'on_no_default',
-  'initialization_timeout_sec',
-  'prefab_api_url',
-  'on_init_failure',
 ]);
 
 function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
+  if (isInitFailureCase(kase)) return renderInitFailureBody(kase, exceptions);
   const expected = kase.expected ?? {};
   // Rejects message_contains/message_excludes on a non-raise case.
   messageExpectations(expected);
@@ -587,10 +593,6 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
 
   const indent = '    ';
   const hasEnv = Object.keys(envVars).length > 0;
-  const isInitCase =
-    'initialization_timeout_sec' in overrides ||
-    'prefab_api_url' in overrides ||
-    'on_init_failure' in overrides;
 
   let body = '';
   if (hasEnv) {
@@ -598,9 +600,7 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
   }
   const inner = hasEnv ? indent + '  ' : indent;
 
-  if (isInitCase) {
-    body += renderInitTimeoutBody(kase, keyLit, tiers, exceptions, inner);
-  } else {
+  {
     const { open, close, recv, inner: ci } = openClient(tiers, inner);
     body += open;
     body += renderEvalCall(kase, fn, keyLit, recv, exceptions, ci);
@@ -750,42 +750,97 @@ function renderEvalCall(
   return `${indent}assertEquals(${javaLiteral(v)}, ${call});\n`;
 }
 
+const INIT_EXC = 'com.quonfig.sdk.exceptions.QuonfigInitException';
+const INIT_TIMEOUT_EXC = 'com.quonfig.sdk.exceptions.QuonfigInitTimeoutException';
+
 /**
- * client_overrides with initialization_timeout_sec / prefab_api_url /
- * on_init_failure: a real SDK-key client pointed at prefab_api_url with
- * initTimeout = initialization_timeout_sec, then the public getter.
+ * Init-failure case body (qfg-9p4i.6; shared/init-failure.ts): a real
+ * SDK-key client built from the public Options (B.1: onInitFailure,
+ * initTimeout, apiUrls). The constructor is the init call (B.6: "throws
+ * QuonfigInitException"). function: init asserts the QuonfigInitException
+ * family, split on QuonfigInitTimeoutException. A getter case runs on a
+ * continue client. api_status = two local HttpServers answering every
+ * request with that status, used as the legs.
  */
-function renderInitTimeoutBody(
-  kase: YamlCase,
-  keyLit: string,
-  tiers: Tiers,
-  exceptions: Set<string>,
-  indent: string,
-): string {
-  const overrides = (kase.client_overrides ?? {}) as Record<string, unknown>;
-  if (tiers.global || tiers.block || tiers.local) {
-    throw new Error('init-timeout cases do not take contexts');
-  }
-  const timeoutSec = overrides.initialization_timeout_sec;
-  if (typeof timeoutSec !== 'number') {
-    throw new Error('init case needs a numeric client_overrides.initialization_timeout_sec');
-  }
-  const apiURL = overrides.prefab_api_url;
-  if (typeof apiURL !== 'string') {
-    throw new Error('init case needs client_overrides.prefab_api_url');
-  }
+function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string {
+  const ic: InitFailureClient = initFailureClient(kase);
+  const fn = (kase.function ?? 'get').toString();
+  const tiers = tiersOf(kase.contexts);
+  if (tiers.global || tiers.block || tiers.local) throw new Error('init-failure cases do not take contexts');
+  if (Object.keys(kase.env_vars ?? {}).length > 0) throw new Error('env_vars on an init-failure case is unsupported');
+  const ind = '    ';
   let b = '';
-  b += `${indent}try (Quonfig client =\n`;
-  b += `${indent}    TestSetup.httpClient(${javaStringLiteral(apiURL)}, ${formatJavaNumber(timeoutSec)})) {\n`;
-  b += renderEvalCall(
-    kase,
-    (kase.function ?? 'get').toString(),
-    keyLit,
-    { name: 'client', bound: false, local: null },
-    exceptions,
-    indent + '  ',
-  );
-  b += `${indent}}\n`;
+  let urls: string;
+  if (ic.apiStatus !== null) {
+    b += `${ind}java.util.List<com.sun.net.httpserver.HttpServer> legs = new java.util.ArrayList<>();\n`;
+    b += `${ind}for (int i = 0; i < 2; i++) {\n`;
+    b += `${ind}  com.sun.net.httpserver.HttpServer leg =\n`;
+    b += `${ind}      com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);\n`;
+    b += `${ind}  leg.createContext("/", ex -> {\n`;
+    b += `${ind}    ex.sendResponseHeaders(${ic.apiStatus}, -1);\n`;
+    b += `${ind}    ex.close();\n`;
+    b += `${ind}  });\n`;
+    b += `${ind}  leg.start();\n`;
+    b += `${ind}  legs.add(leg);\n`;
+    b += `${ind}}\n`;
+    urls = `java.util.List.of(\n${ind}            "http://127.0.0.1:" + legs.get(0).getAddress().getPort(),\n${ind}            "http://127.0.0.1:" + legs.get(1).getAddress().getPort())`;
+  } else {
+    urls = `java.util.List.of(${ic.apiUrls.map(javaStringLiteral).join(', ')})`;
+  }
+  const builder = [
+    `.sdkKey("itd-init-failure")`,
+    `.apiUrls(${urls})`,
+    // Stream legs = the same unreachable legs (TestSetup.httpClient's shape).
+    `.streamUrls(${urls})`,
+    `.initTimeout(java.time.Duration.ofMillis(${ic.initTimeoutMs}))`,
+    `.fallbackPollEnabled(false)`,
+    `.enableQuonfigUserContext(false)`,
+    `.disableTelemetry(true)`,
+  ];
+  if (ic.onInitFailure !== null) {
+    // Java has no legacy spellings (B.2), so the alias cases are @Disabled via
+    // UNSUPPORTED; their bodies still render, on the canonical member.
+    const member = ({ fail: 'FAIL', wait: 'WAIT', continue: 'CONTINUE' } as Record<string, string>)[ic.mode];
+    if (!member) throw new Error(`no sdk-java OnInitFailure member for ${ic.mode}`);
+    builder.push(`.onInitFailure(com.quonfig.sdk.OnInitFailure.${member})`);
+  }
+  const inner = ic.apiStatus !== null ? ind + '  ' : ind;
+  let t = '';
+  t += `${inner}com.quonfig.sdk.Options o =\n`;
+  t += `${inner}    com.quonfig.sdk.Options.builder()\n`;
+  for (const line of builder) t += `${inner}        ${line}\n`;
+  t += `${inner}        .build();\n`;
+  if (fn === 'init') {
+    const want = initRaiseExpectation(kase);
+    if (kase.input && Object.keys(kase.input).length > 0) throw new Error('function: init cases take no input');
+    exceptions.add(INIT_EXC);
+    exceptions.add(INIT_TIMEOUT_EXC);
+    t += `${inner}long start = System.nanoTime();\n`;
+    t += `${inner}QuonfigInitException raised =\n`;
+    t += `${inner}    assertThrows(QuonfigInitException.class, () -> new Quonfig(o).close());\n`;
+    t += `${inner}long elapsedMs = (System.nanoTime() - start) / 1_000_000L;\n`;
+    if (want.error === 'initialization_timeout') {
+      t += `${inner}assertTrue(raised instanceof QuonfigInitTimeoutException, raised.toString());\n`;
+    } else {
+      t += `${inner}assertFalse(raised instanceof QuonfigInitTimeoutException, ${javaStringLiteral(`reason ${want.reason}, not the init timeout`)});\n`;
+    }
+    if (want.raisesWithinMs !== null) {
+      t += `${inner}assertTrue(elapsedMs < ${want.raisesWithinMs}, "init raised after " + elapsedMs + "ms");\n`;
+    }
+  } else {
+    assertGetterAfterContinue(ic);
+    const input = kase.input ?? {};
+    const key = (input.key ?? input.flag) as string | undefined;
+    if (!key) throw new Error('case has no input.key/flag');
+    t += `${inner}try (Quonfig client = new Quonfig(o)) {\n`;
+    t += renderEvalCall(kase, fn, javaStringLiteral(key), { name: 'client', bound: false, local: null }, exceptions, inner + '  ');
+    t += `${inner}}\n`;
+  }
+  if (ic.apiStatus !== null) {
+    b += `${ind}try {\n${t}${ind}} finally {\n${ind}  for (com.sun.net.httpserver.HttpServer leg : legs) leg.stop(0);\n${ind}}\n`;
+  } else {
+    b += t;
+  }
   return b;
 }
 

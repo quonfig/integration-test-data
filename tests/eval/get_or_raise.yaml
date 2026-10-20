@@ -24,10 +24,100 @@ tests:
       expected:
         value: "DEFAULT"
 
-    # The two init-timeout cases below point at 192.0.2.1 (TEST-NET-1, RFC 5737):
-    # it never answers, so the SDK hits its init TIMEOUT rather than a fast
-    # connection-refused, and CI never contacts a third-party host (qfg-goi1.6).
-    - name: get_or_raise raises the correct error if it doesn't raise on init timeout
+    # Init failure (qfg-9p4i.6). Spec: project/plans/2026-10-05-init-failure-design.md
+    # (its Decisions section wins), sections B.1-B.4 and D. Parsed for every
+    # target by generators/src/shared/init-failure.ts, which documents the keys:
+    #   on_init_failure: fail | wait | continue, or the deprecated aliases
+    #     raise (= fail) and return (= continue), passed to the SDK verbatim.
+    #     Absent = the SDK default, which is fail in every SDK.
+    #   init_timeout_ms: the SDK's initTimeout.
+    #   api_urls: every delivery leg. 127.0.0.1:1 and :2 refuse at once;
+    #     192.0.2.1 (TEST-NET-1, RFC 5737) never answers, so the SDK hangs
+    #     until its init timeout. CI never contacts a third-party host.
+    #   api_status: in place of api_urls, one local server per leg (two legs)
+    #     answering every request with this status.
+    # function: init asserts the init call itself (go NewClient, node init(),
+    # python init(), ruby Client.new, net InitAsync, java init):
+    #   error initialization_timeout: the SDK's init-timeout error (go:
+    #     errors.Is ErrInitializationTimeout; elsewhere the QuonfigInitTimeout*
+    #     subclass of the init error).
+    #   error init_failed: the SDK's init error (QuonfigInitError family; go: a
+    #     non-nil error and no client) that is NOT the timeout error.
+    #   reason: unavailable | unauthorized | timeout (B.4). Asserted where the
+    #     SDK exposes a reason; the error key carries the timeout split for all.
+    #   raises_within_ms: wall-clock bound on the init call, start to raise.
+    # fail retries through blips until init_timeout_ms (B.3), so refused legs
+    # raise at the timeout with reason unavailable; only 401/403 on every leg
+    # raises at once. A getter case on one of these clients uses continue: init
+    # returns and the getter answers as an empty store would.
+    - name: init fails by default when every delivery leg refuses the connection
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 5000
+      client_overrides:
+        init_timeout_ms: 500
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
+
+    - name: init with on_init_failure fail raises when every delivery leg refuses the connection
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 5000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 500
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
+
+    - name: init with on_init_failure fail raises the init timeout when every delivery leg hangs
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: initialization_timeout
+        reason: timeout
+        raises_within_ms: 2000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 200
+        api_urls: ["http://192.0.2.1:1", "http://192.0.2.1:2"]
+
+    - name: init with on_init_failure fail raises at once when every delivery leg answers 401
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unauthorized
+        # Well inside init_timeout_ms: an SDK that waits out the timeout on a
+        # rejected key fails this bound.
+        raises_within_ms: 4000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 8000
+        api_status: 401
+
+    - name: get_or_raise returns the default after init continues past refused delivery legs
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "any-key"
+        default: "DEFAULT"
+      expected:
+        value: "DEFAULT"
+      client_overrides:
+        on_init_failure: continue
+        init_timeout_ms: 500
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
+
+    - name: get_or_raise raises missing_default after init continues past refused delivery legs
       client: config_client
       function: get_or_raise
       type: STRING
@@ -38,11 +128,24 @@ tests:
         error: missing_default
         message: "No value found for key 'any-key'"
       client_overrides:
-        initialization_timeout_sec: 0.01
-        prefab_api_url: "http://192.0.2.1:1"
-        on_init_failure: :return
+        on_init_failure: continue
+        init_timeout_ms: 500
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
 
-    - name: get_or_raise can raise an error if the client does not initialize in time
+    - name: deprecated on_init_failure raise behaves as fail when every delivery leg refuses the connection
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 5000
+      client_overrides:
+        on_init_failure: raise
+        init_timeout_ms: 500
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
+
+    - name: deprecated on_init_failure return behaves as continue when every delivery leg refuses the connection
       client: config_client
       function: get_or_raise
       type: STRING
@@ -50,12 +153,12 @@ tests:
         key: "any-key"
       expected:
         status: raise
-        error: initialization_timeout
-        message: "Prefab couldn't initialize in 0.01 second timeout. Trying to fetch key `any-key`."
+        error: missing_default
+        message: "No value found for key 'any-key'"
       client_overrides:
-        initialization_timeout_sec: 0.01
-        prefab_api_url: "http://192.0.2.1:1"
-        on_init_failure: :raise
+        on_init_failure: return
+        init_timeout_ms: 500
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
 
     - name: raises an error if a config is provided by a missing environment variable
       client: config_client

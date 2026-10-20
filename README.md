@@ -117,6 +117,27 @@ tests:
           on_no_default: 2
 ```
 
+### Init-failure cases (`get_or_raise.yaml`, `function: init`)
+
+The SDK's own init path against unreachable delivery legs. The keys and the expected errors are
+documented once, in `generators/src/shared/init-failure.ts` (spec:
+`project/plans/2026-10-05-init-failure-design.md`). Every target except go emits a self-contained
+client builder; sdk-go supplies `newInitFailureClient` by hand (contract in `generators/src/targets/go.ts`).
+
+```yaml
+      - name: "init with on_init_failure fail raises when every delivery leg refuses the connection"
+        function: init
+        expected:
+          status: raise
+          error: init_failed             # or initialization_timeout
+          reason: unavailable            # unavailable | unauthorized | timeout
+          raises_within_ms: 5000         # Optional bound on the init call
+        client_overrides:
+          on_init_failure: fail          # fail | wait | continue; raise/return = deprecated aliases; absent = SDK default (fail)
+          init_timeout_ms: 500
+          api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]   # or api_status: 401
+```
+
 ### Telemetry tests (`function: post`)
 
 ```yaml
