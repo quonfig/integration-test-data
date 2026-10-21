@@ -57,8 +57,10 @@ tests:
     # the getter answers as an empty store would.
     #
     # Timing (Decision 12: every case holds on every CI platform, no skips).
-    # Every backend SDK hedges each attempt: primary first, secondary when the
-    # primary errors or after 2s, each leg aborted 6s after it starts. Between
+    # Every backend SDK hedges the first attempt: primary first, secondary when
+    # the primary errors or after 2s, each leg aborted 6s after it starts (java
+    # also bounds each request by its 3s configFetchTimeout, and its later
+    # attempts walk primary then secondary sequentially). Between
     # attempts it backs off 0.5s, 1s, 2s, 4s, ... with jitter: x[0.8, 1.2] in
     # go, ruby and net, x[0.5, 1.0] in node, python and java. So attempt 2
     # starts 0.25-0.6s after attempt 1 ends, attempt 3 0.75-1.8s, attempt 4
@@ -229,16 +231,24 @@ tests:
 
     # The same rule with a real deadline: fail keeps retrying until
     # init_timeout_ms and then raises unavailable, because the primary answers
-    # in every attempt (Decisions 6 and 10). The secondary hangs (TEST-NET),
-    # so every attempt lasts until its 6s per-leg abort:
-    #   attempt 1: primary 401 at once (under 1s even on a cold JVM); the
-    #     secondary fires on that fast error, or at the 2s hedge delay, and is
-    #     aborted 6s later, so attempt 1 ends between 6s and about 8.7s.
-    #   attempt 2 starts 0.25-0.6s later (6.25s to about 9.3s) and its primary
-    #     answers at once; it cannot end before 12.25s.
-    # The 10000ms deadline therefore always lands inside attempt 2 after its
-    # primary answered: one leg failed fast and one hung, which is
-    # unavailable (Decision 10), never timeout.
+    # in every attempt (Decisions 6 and 10). The secondary hangs (TEST-NET).
+    # The deadline must land inside an attempt after its primary answered, or
+    # between attempts, never at an attempt start before the primary answered
+    # (that cut attempt has no answered leg: timeout). Primary 401 takes under
+    # ~0.7s even on a cold JVM; every SDK fires the secondary on that error.
+    #   go, node, python, ruby, net: the secondary is aborted 6s after it
+    #     starts, so attempt 1 ends at 6s to ~6.7s; attempt 2 starts 0.25-0.6s
+    #     later (by ~7.3s), its primary answers at once, and it cannot end
+    #     before 12.25s.
+    #   java: requests time out at 3s (configFetchTimeout) and retries are
+    #     sequential, so each attempt is ~3s: attempt 1 ends at 3s to ~3.7s,
+    #     attempt 2 at 6.25s to ~7.2s, attempt 3 starts 0.5-1s later (by
+    #     ~8.2s) and cannot end before 9.75s.
+    # 9000ms sits inside attempt 2 (java: attempt 3) after its primary
+    # answered in every SDK, with ~0.75s or more on each side: one leg failed
+    # fast and one hung, which is unavailable (Decision 10), never timeout.
+    # The java bound (attempt 3 cannot end before 9.75s) is a hard floor that
+    # a slow runner only pushes later.
     - name: init with on_init_failure fail raises unavailable at the deadline when the primary answers 401 and the secondary hangs
       client: config_client
       function: init
@@ -246,10 +256,10 @@ tests:
         status: raise
         error: init_failed
         reason: unavailable
-        raises_within_ms: 13000
+        raises_within_ms: 12000
       client_overrides:
         on_init_failure: fail
-        init_timeout_ms: 10000
+        init_timeout_ms: 9000
         api_status: [401, "http://192.0.2.1:8002"]
 
     # init_timeout_ms 0 runs one attempt, then applies on_init_failure. An SDK
