@@ -695,13 +695,15 @@ function renderInitFailureBody(kase: YamlCase): string {
   let urls: string;
   if (ic.apiStatuses !== null) {
     ic.apiStatuses.forEach((status, n) => {
+      if (status === 0) return; // the verbatim leg ic.apiUrls[n]
       const respond = ic.apiBody === null
         ? `Response.Create().WithStatusCode(${status})`
         : `Response.Create().WithStatusCode(${status}).WithBody(${csStringLiteral(ic.apiBody)})`;
       body += `${I}using var leg${n} = WireMockServer.Start();\n`;
       body += `${I}leg${n}.Given(Request.Create().UsingAnyMethod()).RespondWith(${respond});\n`;
     });
-    urls = `new[] { ${ic.apiStatuses.map((_, n) => `leg${n}.Urls[0]`).join(', ')} }`;
+    const legs = ic.apiStatuses.map((status, n) => (status === 0 ? csStringLiteral(ic.apiUrls[n] as string) : `leg${n}.Urls[0]`));
+    urls = `new[] { ${legs.join(', ')} }`;
   } else {
     urls = `new[] { ${ic.apiUrls.map(csStringLiteral).join(', ')} }`;
   }

@@ -10,6 +10,7 @@ import { runNodeTarget } from './targets/node.js';
 import { runPythonTarget } from './targets/python.js';
 import { runJavaTarget } from './targets/java.js';
 import { runDotnetTarget } from './targets/dotnet.js';
+import { wroteLine } from './shared/progress.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -83,7 +84,7 @@ async function main(): Promise<void> {
           console.log(`[ruby] writing to ${outDir}`);
           const result = runRubyTarget(dataRoot, outDir);
           for (const w of result.written) {
-            console.log(`[ruby] wrote ${w.path}: ${w.cases} cases`);
+            console.log(wroteLine('ruby', w.path, w.cases));
           }
           break;
         }
@@ -93,7 +94,7 @@ async function main(): Promise<void> {
           console.log(`[node] writing to ${outDir}`);
           const result = runNodeTarget(dataRoot, outDir);
           for (const w of result.written) {
-            console.log(`[node] wrote ${w.path}: ${w.cases} cases`);
+            console.log(wroteLine('node', w.path, w.cases));
           }
           break;
         }
@@ -103,7 +104,7 @@ async function main(): Promise<void> {
           console.log(`[go] writing to ${outDir}`);
           const result = runGoTarget(dataRoot, outDir);
           for (const w of result.written) {
-            console.log(`[go] wrote ${w.path}: ${w.cases} cases`);
+            console.log(wroteLine('go', w.path, w.cases));
           }
           break;
         }
@@ -113,7 +114,7 @@ async function main(): Promise<void> {
           console.log(`[python] writing to ${outDir}`);
           const result = runPythonTarget(dataRoot, outDir);
           for (const w of result.written) {
-            console.log(`[python] wrote ${w.path}: ${w.cases} cases`);
+            console.log(wroteLine('python', w.path, w.cases));
           }
           break;
         }
@@ -135,7 +136,7 @@ async function main(): Promise<void> {
           console.log(`[java] writing to ${outDir}`);
           const result = runJavaTarget(dataRoot, outDir);
           for (const w of result.written) {
-            console.log(`[java] wrote ${w.path}: ${w.cases} cases`);
+            console.log(wroteLine('java', w.path, w.cases));
           }
           break;
         }
@@ -152,7 +153,7 @@ async function main(): Promise<void> {
           console.log(`[dotnet] writing to ${outDir}`);
           const result = runDotnetTarget(dataRoot, outDir);
           for (const w of result.written) {
-            console.log(`[dotnet] wrote ${w.path}: ${w.cases} cases`);
+            console.log(wroteLine('dotnet', w.path, w.cases));
           }
           break;
         }

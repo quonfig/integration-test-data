@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { YamlCase } from '../types.js';
-import { initFailureClient, initRaiseExpectation, isInitFailureCase, uniformStatus } from './init-failure.js';
+import { hasUrlLegs, initFailureClient, initRaiseExpectation, isInitFailureCase, uniformStatus } from './init-failure.js';
 
 const refused = ['http://127.0.0.1:1', 'http://127.0.0.1:2'];
 
@@ -48,6 +48,24 @@ test('api_status list sets one status per leg, in order', () => {
   assert.throws(() => initFailureClient(kase({ api_status: [], init_timeout_ms: 1 })), /at least one leg/);
   assert.throws(() => initFailureClient(kase({ api_status: [401, 200], init_timeout_ms: 1 })), /HTTP error status/);
   assert.throws(() => initFailureClient(kase({ api_status: [401, '503'], init_timeout_ms: 1 })), /HTTP error status/);
+});
+
+test('api_status list may mix a local status leg with a verbatim URL leg', () => {
+  const hung = 'http://192.0.2.1:8002';
+  const c = initFailureClient(kase({ api_status: [401, hung], init_timeout_ms: 10000 }));
+  assert.deepEqual(c.apiStatuses, [401, 0]);
+  assert.deepEqual(c.apiUrls, ['', hung]);
+  assert.equal(hasUrlLegs(c), true);
+  assert.equal(uniformStatus(c), null);
+  const r = initFailureClient(kase({ api_status: [hung, 503], init_timeout_ms: 1 }));
+  assert.deepEqual(r.apiStatuses, [0, 503]);
+  assert.deepEqual(r.apiUrls, [hung, '']);
+  // Pure status lists keep apiUrls empty and have no URL legs.
+  const p = initFailureClient(kase({ api_status: [401, 503], init_timeout_ms: 1 }));
+  assert.deepEqual(p.apiUrls, []);
+  assert.equal(hasUrlLegs(p), false);
+  assert.throws(() => initFailureClient(kase({ api_status: [hung, hung], init_timeout_ms: 1 })), /at least one status leg/);
+  assert.throws(() => initFailureClient(kase({ api_status: [401, 'ftp://x'], init_timeout_ms: 1 })), /HTTP error status/);
 });
 
 test('api_body is the local legs\' body and needs api_status', () => {

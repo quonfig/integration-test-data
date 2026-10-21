@@ -588,7 +588,7 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
 // on_init_failure, init_timeout_ms, api_urls). on_init_failure None = not
 // passed (the SDK default). api_statuses non-empty = one local server per
 // entry answering every request with that status (and api_body, if set),
-// used as the legs in order. init() is the init call; its exception is caught
+// used as the legs in order; a 0 entry is the verbatim leg api_urls[i]. init() is the init call; its exception is caught
 // and returned with the client.
 const PY_INIT_FAILURE_HELPER = `def _init_failure_client(
     on_init_failure: "str | None",
@@ -614,8 +614,12 @@ const PY_INIT_FAILURE_HELPER = `def _init_failure_client(
 
             return _StatusHandler
 
+        fixed_urls = api_urls
         api_urls = []
-        for status in api_statuses:
+        for i, status in enumerate(api_statuses):
+            if status == 0:
+                api_urls.append(fixed_urls[i])
+                continue
             server = ThreadingHTTPServer(("127.0.0.1", 0), _status_handler(status))
             threading.Thread(target=server.serve_forever, daemon=True).start()
             servers.append(server)
