@@ -58,9 +58,9 @@ tests:
     #
     # Timing (Decision 12: every case holds on every CI platform, no skips).
     # Every backend SDK hedges the first attempt: primary first, secondary when
-    # the primary errors or after 2s, each leg aborted 6s after it starts (java
-    # also bounds each request by its 3s configFetchTimeout, and its later
-    # attempts walk primary then secondary sequentially). Between
+    # the primary errors or after 2s, each leg aborted 6s after it starts
+    # (java's later attempts walk primary then secondary sequentially, each
+    # request bounded by its 3s configFetchTimeout). Between
     # attempts it backs off 0.5s, 1s, 2s, 4s, ... with jitter: x[0.8, 1.2] in
     # go, ruby and net, x[0.5, 1.0] in node, python and java. So attempt 2
     # starts 0.25-0.6s after attempt 1 ends, attempt 3 0.75-1.8s, attempt 4
@@ -240,15 +240,15 @@ tests:
     #     starts, so attempt 1 ends at 6s to ~6.7s; attempt 2 starts 0.25-0.6s
     #     later (by ~7.3s), its primary answers at once, and it cannot end
     #     before 12.25s.
-    #   java: requests time out at 3s (configFetchTimeout) and retries are
-    #     sequential, so each attempt is ~3s: attempt 1 ends at 3s to ~3.7s,
-    #     attempt 2 at 6.25s to ~7.2s, attempt 3 starts 0.5-1s later (by
-    #     ~8.2s) and cannot end before 9.75s.
-    # 9000ms sits inside attempt 2 (java: attempt 3) after its primary
-    # answered in every SDK, with ~0.75s or more on each side: one leg failed
-    # fast and one hung, which is unavailable (Decision 10), never timeout.
-    # The java bound (attempt 3 cannot end before 9.75s) is a hard floor that
-    # a slow runner only pushes later.
+    #   java: attempt 1 is hedged like the others (secondary aborted at 6s,
+    #     sdk-java#47), so it ends at 6s to ~6.7s. Retries are sequential with
+    #     the secondary bounded by the 3s configFetchTimeout, so attempt 2
+    #     starts 6.25s to ~7.2s and cannot end before 9.25s.
+    # 9000ms sits inside attempt 2 after its primary answered in every SDK:
+    # one leg failed fast and one hung, which is unavailable (Decision 10),
+    # never timeout. A slow runner only pushes attempt boundaries later, and
+    # even a deadline in a backoff gap would see a completed attempt whose
+    # primary answered (also unavailable).
     - name: init with on_init_failure fail raises unavailable at the deadline when the primary answers 401 and the secondary hangs
       client: config_client
       function: init
