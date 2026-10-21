@@ -771,19 +771,30 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
   const ind = '    ';
   let b = '';
   let urls: string;
-  if (ic.apiStatus !== null) {
+  if (ic.apiStatuses !== null) {
+    const statuses = ic.apiStatuses.join(', ');
     b += `${ind}java.util.List<com.sun.net.httpserver.HttpServer> legs = new java.util.ArrayList<>();\n`;
-    b += `${ind}for (int i = 0; i < 2; i++) {\n`;
+    b += `${ind}java.util.List<String> legUrls = new java.util.ArrayList<>();\n`;
+    if (ic.apiBody !== null) {
+      b += `${ind}byte[] legBody = ${javaStringLiteral(ic.apiBody)}.getBytes(java.nio.charset.StandardCharsets.UTF_8);\n`;
+    }
+    b += `${ind}for (int status : new int[] {${statuses}}) {\n`;
     b += `${ind}  com.sun.net.httpserver.HttpServer leg =\n`;
     b += `${ind}      com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);\n`;
     b += `${ind}  leg.createContext("/", ex -> {\n`;
-    b += `${ind}    ex.sendResponseHeaders(${ic.apiStatus}, -1);\n`;
+    if (ic.apiBody !== null) {
+      b += `${ind}    ex.sendResponseHeaders(status, legBody.length);\n`;
+      b += `${ind}    ex.getResponseBody().write(legBody);\n`;
+    } else {
+      b += `${ind}    ex.sendResponseHeaders(status, -1);\n`;
+    }
     b += `${ind}    ex.close();\n`;
     b += `${ind}  });\n`;
     b += `${ind}  leg.start();\n`;
     b += `${ind}  legs.add(leg);\n`;
+    b += `${ind}  legUrls.add("http://127.0.0.1:" + leg.getAddress().getPort());\n`;
     b += `${ind}}\n`;
-    urls = `java.util.List.of(\n${ind}            "http://127.0.0.1:" + legs.get(0).getAddress().getPort(),\n${ind}            "http://127.0.0.1:" + legs.get(1).getAddress().getPort())`;
+    urls = 'legUrls';
   } else {
     urls = `java.util.List.of(${ic.apiUrls.map(javaStringLiteral).join(', ')})`;
   }
@@ -804,7 +815,7 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
     if (!member) throw new Error(`no sdk-java OnInitFailure member for ${ic.mode}`);
     builder.push(`.onInitFailure(com.quonfig.sdk.OnInitFailure.${member})`);
   }
-  const inner = ic.apiStatus !== null ? ind + '  ' : ind;
+  const inner = ic.apiStatuses !== null ? ind + '  ' : ind;
   let t = '';
   t += `${inner}com.quonfig.sdk.Options o =\n`;
   t += `${inner}    com.quonfig.sdk.Options.builder()\n`;
@@ -824,8 +835,19 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
     } else {
       t += `${inner}assertFalse(raised instanceof QuonfigInitTimeoutException, ${javaStringLiteral(`reason ${want.reason}, not the init timeout`)});\n`;
     }
+    t += `${inner}assertEquals(QuonfigInitException.Reason.${want.reason.toUpperCase()}, raised.reason());\n`;
     if (want.raisesWithinMs !== null) {
       t += `${inner}assertTrue(elapsedMs < ${want.raisesWithinMs}, "init raised after " + elapsedMs + "ms");\n`;
+    }
+    if (want.messageExcludes.length > 0) {
+      // The message and every Throwable down getCause() (Decision 9).
+      t += `${inner}java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());\n`;
+      t += `${inner}for (Throwable e = raised; e != null && seen.add(e); e = e.getCause()) {\n`;
+      t += `${inner}  String m = String.valueOf(e.getMessage());\n`;
+      for (const sub of want.messageExcludes) {
+        t += `${inner}  assertFalse(m.contains(${javaStringLiteral(sub)}), e.toString());\n`;
+      }
+      t += `${inner}}\n`;
     }
   } else {
     assertGetterAfterContinue(ic);
@@ -836,7 +858,7 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
     t += renderEvalCall(kase, fn, javaStringLiteral(key), { name: 'client', bound: false, local: null }, exceptions, inner + '  ');
     t += `${inner}}\n`;
   }
-  if (ic.apiStatus !== null) {
+  if (ic.apiStatuses !== null) {
     b += `${ind}try {\n${t}${ind}} finally {\n${ind}  for (com.sun.net.httpserver.HttpServer leg : legs) leg.stop(0);\n${ind}}\n`;
   } else {
     b += t;

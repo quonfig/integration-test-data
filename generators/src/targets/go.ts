@@ -35,6 +35,7 @@ import {
   initRaiseExpectation,
   isInitFailureCase,
   type InitFailureClient,
+  uniformStatus,
 } from '../shared/init-failure.js';
 import {
   messageExpectations,
@@ -259,7 +260,7 @@ function getterCallExpr(method: string, keyLit: string, tiers: Tiers): string {
  * global tier via quonfig.WithGlobalContext, or an init-timeout client for
  * the client-construction overrides.
  */
-function clientSetup(kase: YamlCase, tiers: Tiers): string {
+function clientSetup(kase: YamlCase, tiers: Tiers, features: Set<string>): string {
   const overrides = kase.client_overrides ?? {};
   if (isInitFailureCase(kase)) {
     if (tiers.global) {
@@ -268,6 +269,7 @@ function clientSetup(kase: YamlCase, tiers: Tiers): string {
     const ic = initFailureClient(kase);
     assertGetterAfterContinue(ic);
     return (
+      initFailureLegs(ic, features) +
       `\tc, err := ${initFailureClientCall(ic)}\n` +
       `\trequire.NoError(t, err, "on_init_failure continue: init must return")\n` +
       `\trequire.NotNil(t, c)\n`
@@ -474,7 +476,7 @@ function renderEvalBody(kase: YamlCase, features: Set<string>): string {
 
   let body = '';
   body += envVarLines(kase);
-  body += clientSetup(kase, tiers);
+  body += clientSetup(kase, tiers, features);
 
   // repeat + values_seen (qfg-t9wo): evaluate N times through the public
   // getter and assert the SET of values seen.
@@ -1006,20 +1008,47 @@ function goRedactedHelper(): string {
  * default); any other value is mapped verbatim to the option of that name,
  * aliases included (raise, return). apiStatus != 0 = stand up two httptest
  * servers answering every request with that status and use them as the
- * legs; otherwise use apiURLs. initTimeoutMs -> WithInitTimeout. SSE, the
- * fallback poller and telemetry off. Registers Close on a non-nil client.
+ * legs; otherwise use apiURLs. initTimeoutMs -> WithInitTimeout (0 is passed
+ * through: one attempt, Decision 8). SSE, the fallback poller and telemetry
+ * off. Registers Close on a non-nil client.
+ *
+ * Legs the contract's apiStatus cannot express (a per-leg status list, or a
+ * response body) are stood up in the generated test itself
+ * (initFailureLegs) and passed as apiURLs with apiStatus 0, so the
+ * hand-written half stays unchanged.
  */
 function initFailureClientCall(ic: InitFailureClient): string {
-  const urls = `[]string{${ic.apiUrls.map(goStringLiteral).join(', ')}}`;
+  const status = uniformStatus(ic);
+  let urls: string;
+  if (ic.apiStatuses !== null && status === null) urls = 'legURLs';
+  else urls = `[]string{${ic.apiUrls.map(goStringLiteral).join(', ')}}`;
   return (
     `newInitFailureClient(t, ${goStringLiteral(ic.onInitFailure ?? '')}, ${urls}, ` +
-    `${ic.apiStatus ?? 0}, ${ic.initTimeoutMs})`
+    `${status ?? 0}, ${ic.initTimeoutMs})`
   );
+}
+
+/** The inline local legs (legURLs) for a per-leg status list or a body; '' otherwise. */
+function initFailureLegs(ic: InitFailureClient, features: Set<string>): string {
+  if (ic.apiStatuses === null || uniformStatus(ic) !== null) return '';
+  features.add('http');
+  features.add('httptest');
+  let out = `\tvar legURLs []string\n`;
+  out += `\tfor _, status := range []int{${ic.apiStatuses.join(', ')}} {\n`;
+  out += `\t\tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {\n`;
+  out += `\t\t\tw.WriteHeader(status)\n`;
+  if (ic.apiBody !== null) out += `\t\t\t_, _ = w.Write([]byte(${goStringLiteral(ic.apiBody)}))\n`;
+  out += `\t\t}))\n`;
+  out += `\t\tt.Cleanup(srv.Close)\n`;
+  out += `\t\tlegURLs = append(legURLs, srv.URL)\n`;
+  out += `\t}\n`;
+  return out;
 }
 
 /**
  * function: init on an init-failure client. Go has no client object under
- * fail (Decisions 4): NewClient returns (nil, err).
+ * fail (Decisions 4): NewClient returns (nil, err), a *quonfig.InitError
+ * whose Reason is the YAML reason.
  */
 function renderInitFailureInitBody(kase: YamlCase, features: Set<string>): string {
   const ic = initFailureClient(kase);
@@ -1031,7 +1060,8 @@ function renderInitFailureInitBody(kase: YamlCase, features: Set<string>): strin
   features.add('require');
   features.add('quonfig');
   features.add('time');
-  let body = '';
+  features.add('errors');
+  let body = initFailureLegs(ic, features);
   body += `\tstart := time.Now()\n`;
   body += `\tc, err := ${initFailureClientCall(ic)}\n`;
   body += `\telapsed := time.Since(start)\n`;
@@ -1042,8 +1072,20 @@ function renderInitFailureInitBody(kase: YamlCase, features: Set<string>): strin
   } else {
     body += `\tassert.NotErrorIs(t, err, quonfig.ErrInitializationTimeout, "reason ${want.reason}, not the init timeout")\n`;
   }
+  body += `\tvar initErr *quonfig.InitError\n`;
+  body += `\tif assert.True(t, errors.As(err, &initErr), "init error is a *quonfig.InitError: %v", err) {\n`;
+  body += `\t\tassert.Equal(t, quonfig.InitErrorReason(${goStringLiteral(want.reason)}), initErr.Reason)\n`;
+  body += `\t}\n`;
   if (want.raisesWithinMs !== null) {
     body += `\tassert.Less(t, elapsed, ${want.raisesWithinMs}*time.Millisecond, "init must raise within ${want.raisesWithinMs}ms")\n`;
+  }
+  if (want.messageExcludes.length > 0) {
+    // The message and every error in the Unwrap chain (Decision 9).
+    body += `\tfor e := err; e != nil; e = errors.Unwrap(e) {\n`;
+    for (const sub of want.messageExcludes) {
+      body += `\t\tassert.NotContains(t, e.Error(), ${goStringLiteral(sub)})\n`;
+    }
+    body += `\t}\n`;
   }
   return body;
 }

@@ -505,7 +505,9 @@ function buildClientArgs(kase: YamlCase): string {
 function initFailureArgs(ic: InitFailureClient): string {
   const mode = ic.onInitFailure === null ? 'None' : pyStringLiteral(ic.onInitFailure);
   const urls = `[${ic.apiUrls.map(pyStringLiteral).join(', ')}]`;
-  return `${mode}, ${urls}, ${ic.apiStatus ?? 0}, ${ic.initTimeoutMs}`;
+  const statuses = `[${(ic.apiStatuses ?? []).join(', ')}]`;
+  const apiBody = ic.apiBody === null ? 'None' : pyStringLiteral(ic.apiBody);
+  return `${mode}, ${urls}, ${statuses}, ${apiBody}, ${ic.initTimeoutMs}`;
 }
 
 /**
@@ -533,8 +535,21 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
     } else {
       body += `${j}assert not isinstance(err, QuonfigInitTimeoutError), "reason ${want.reason}, not the init timeout"\n`;
     }
+    body += `${j}assert getattr(err, "reason", None) == ${pyStringLiteral(want.reason)}, f"reason {getattr(err, 'reason', None)!r}"\n`;
     if (want.raisesWithinMs !== null) {
       body += `${j}assert elapsed_ms < ${want.raisesWithinMs}, f"init() raised after {elapsed_ms:.0f}ms"\n`;
+    }
+    if (want.messageExcludes.length > 0) {
+      // The message and every exception down __cause__/__context__ (Decision 9).
+      body += `${j}chain: "list[BaseException]" = []\n`;
+      body += `${j}e: "BaseException | None" = err\n`;
+      body += `${j}while e is not None and e not in chain:\n`;
+      body += `${j}    chain.append(e)\n`;
+      body += `${j}    e = e.__cause__ or e.__context__\n`;
+      body += `${j}for link in chain:\n`;
+      for (const sub of want.messageExcludes) {
+        body += `${j}    assert ${pyStringLiteral(sub)} not in str(link), repr(link)\n`;
+      }
     }
   } else {
     assertGetterAfterContinue(ic);
@@ -571,30 +586,37 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
 
 // Self-contained: the public Quonfig kwargs from the init-failure spec (B.1:
 // on_init_failure, init_timeout_ms, api_urls). on_init_failure None = not
-// passed (the SDK default). api_status != 0 = two local servers answering every
-// request with that status, used as the legs. init() is the init call; its
-// exception is caught and returned with the client.
+// passed (the SDK default). api_statuses non-empty = one local server per
+// entry answering every request with that status (and api_body, if set),
+// used as the legs in order. init() is the init call; its exception is caught
+// and returned with the client.
 const PY_INIT_FAILURE_HELPER = `def _init_failure_client(
     on_init_failure: "str | None",
     api_urls: "list[str]",
-    api_status: int,
+    api_statuses: "list[int]",
+    api_body: "str | None",
     init_timeout_ms: int,
 ) -> "tuple[Quonfig, BaseException | None, float, Callable[[], None]]":
     servers: "list[ThreadingHTTPServer]" = []
-    if api_status:
+    if api_statuses:
+        payload = (api_body or "").encode("utf-8")
 
-        class _StatusHandler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:  # noqa: N802
-                self.send_response(api_status)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+        def _status_handler(status: int) -> "type[BaseHTTPRequestHandler]":
+            class _StatusHandler(BaseHTTPRequestHandler):
+                def do_GET(self) -> None:  # noqa: N802
+                    self.send_response(status)
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
 
-            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
-                return
+                def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                    return
+
+            return _StatusHandler
 
         api_urls = []
-        for _ in range(2):
-            server = ThreadingHTTPServer(("127.0.0.1", 0), _StatusHandler)
+        for status in api_statuses:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), _status_handler(status))
             threading.Thread(target=server.serve_forever, daemon=True).start()
             servers.append(server)
             api_urls.append(f"http://127.0.0.1:{server.server_address[1]}")
