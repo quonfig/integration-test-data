@@ -968,7 +968,7 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
 // (B.1: onInitFailure, initTimeout, apiUrls). onInitFailure undefined = not
 // passed (the SDK default). apiStatuses non-empty = one local server per
 // entry answering every request with that status (and apiBody, if set), used
-// as the legs in order. The rejection of init() is caught and returned; the
+// as the legs in order; a 0 entry is the verbatim leg apiUrls[i]. The rejection of init() is caught and returned; the
 // client object survives it (Decisions 4).
 const NODE_INIT_FAILURE_HELPER = `async function initFailureClient(
   onInitFailure: string | undefined,
@@ -983,7 +983,11 @@ const NODE_INIT_FAILURE_HELPER = `async function initFailureClient(
   let urls = apiUrls;
   if (apiStatuses.length > 0) {
     urls = [];
-    for (const status of apiStatuses) {
+    for (const [i, status] of apiStatuses.entries()) {
+      if (status === 0) {
+        urls.push(apiUrls[i]);
+        continue;
+      }
       const server = http.createServer((_req, res) => {
         res.writeHead(status);
         res.end(apiBody);

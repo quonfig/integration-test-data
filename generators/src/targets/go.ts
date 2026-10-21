@@ -31,6 +31,7 @@ import {
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import {
   assertGetterAfterContinue,
+  hasUrlLegs,
   initFailureClient,
   initRaiseExpectation,
   isInitFailureCase,
@@ -1012,10 +1013,10 @@ function goRedactedHelper(): string {
  * through: one attempt, Decision 8). SSE, the fallback poller and telemetry
  * off. Registers Close on a non-nil client.
  *
- * Legs the contract's apiStatus cannot express (a per-leg status list, or a
- * response body) are stood up in the generated test itself
- * (initFailureLegs) and passed as apiURLs with apiStatus 0, so the
- * hand-written half stays unchanged.
+ * Legs the contract's apiStatus cannot express (a per-leg status list, a
+ * response body, or a list mixing status legs with verbatim URL legs) are
+ * stood up in the generated test itself (initFailureLegs) and passed as
+ * apiURLs with apiStatus 0, so the hand-written half stays unchanged.
  */
 function initFailureClientCall(ic: InitFailureClient): string {
   const status = uniformStatus(ic);
@@ -1033,6 +1034,22 @@ function initFailureLegs(ic: InitFailureClient, features: Set<string>): string {
   if (ic.apiStatuses === null || uniformStatus(ic) !== null) return '';
   features.add('http');
   features.add('httptest');
+  if (hasUrlLegs(ic)) {
+    // A 0 status is the verbatim leg already in legURLs[i].
+    let out = `\tlegURLs := []string{${ic.apiUrls.map(goStringLiteral).join(', ')}}\n`;
+    out += `\tfor i, status := range []int{${ic.apiStatuses.join(', ')}} {\n`;
+    out += `\t\tif status == 0 {\n`;
+    out += `\t\t\tcontinue\n`;
+    out += `\t\t}\n`;
+    out += `\t\tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {\n`;
+    out += `\t\t\tw.WriteHeader(status)\n`;
+    if (ic.apiBody !== null) out += `\t\t\t_, _ = w.Write([]byte(${goStringLiteral(ic.apiBody)}))\n`;
+    out += `\t\t}))\n`;
+    out += `\t\tt.Cleanup(srv.Close)\n`;
+    out += `\t\tlegURLs[i] = srv.URL\n`;
+    out += `\t}\n`;
+    return out;
+  }
   let out = `\tvar legURLs []string\n`;
   out += `\tfor _, status := range []int{${ic.apiStatuses.join(', ')}} {\n`;
   out += `\t\tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {\n`;

@@ -546,7 +546,7 @@ function initFailureArgs(ic: InitFailureClient): string {
   const urls = `[${ic.apiUrls.map(rubyStringLiteral).join(', ')}]`;
   const statuses = `[${(ic.apiStatuses ?? []).join(', ')}]`;
   const apiBody = ic.apiBody === null ? 'nil' : rubyStringLiteral(ic.apiBody);
-  return `${mode}, ${urls}, ${statuses}, ${apiBody}, ${ic.initTimeoutMs}`;
+  return `${mode}, ${urls}, ${statuses}, ${apiBody}, ${formatRubyInt(ic.initTimeoutMs)}`;
 }
 
 /**
@@ -579,7 +579,7 @@ function renderInitFailureBody(kase: YamlCase): string {
     }
     body += `${indent}assert_equal :${want.reason}, err.reason\n`;
     if (want.raisesWithinMs !== null) {
-      body += `${indent}assert_operator elapsed_ms, :<, ${want.raisesWithinMs}\n`;
+      body += `${indent}assert_operator elapsed_ms, :<, ${formatRubyInt(want.raisesWithinMs)}\n`;
     }
     if (want.messageExcludes.length > 0) {
       // The message and every exception down #cause (Decision 9).
@@ -618,13 +618,17 @@ function renderInitFailureBody(kase: YamlCase): string {
 // spec (B.1: on_init_failure, init_timeout_ms, api_urls); on_init_failure nil
 // = not passed (the SDK default). api_statuses non-empty = one local WEBrick
 // server per entry answering every request with that status (and api_body,
-// if set), used as the legs in order. Client.new is
+// if set), used as the legs in order; a 0 entry is the verbatim leg
+// api_urls[i]. Client.new is
 // the init call; its error is rescued and returned.
 const RUBY_INIT_FAILURE_HELPER =
   `  def init_failure_client(on_init_failure, api_urls, api_statuses, api_body, init_timeout_ms)\n` +
   `    servers = []\n` +
   `    unless api_statuses.empty?\n` +
-  `      api_urls = api_statuses.map do |status|\n` +
+  `      fixed_urls = api_urls\n` +
+  `      api_urls = api_statuses.each_with_index.map do |status, i|\n` +
+  `        next fixed_urls[i] if status.zero?\n` +
+  `\n` +
   `        server = WEBrick::HTTPServer.new(Port: 0, Logger: WEBrick::Log.new(StringIO.new), AccessLog: [])\n` +
   `        server.mount_proc('/') do |_req, res|\n` +
   `          res.status = status\n` +

@@ -46,6 +46,7 @@ import {
 } from '../shared/message-and-redaction.js';
 import {
   assertGetterAfterContinue,
+  hasUrlLegs,
   initFailureClient,
   initRaiseExpectation,
   isInitFailureCase,
@@ -778,7 +779,19 @@ function renderInitFailureBody(kase: YamlCase, exceptions: Set<string>): string 
     if (ic.apiBody !== null) {
       b += `${ind}byte[] legBody = ${javaStringLiteral(ic.apiBody)}.getBytes(java.nio.charset.StandardCharsets.UTF_8);\n`;
     }
-    b += `${ind}for (int status : new int[] {${statuses}}) {\n`;
+    if (hasUrlLegs(ic)) {
+      // A 0 status is the verbatim leg legFixed[i].
+      b += `${ind}String[] legFixed = {${ic.apiUrls.map(javaStringLiteral).join(', ')}};\n`;
+      b += `${ind}int[] legStatus = {${statuses}};\n`;
+      b += `${ind}for (int i = 0; i < legStatus.length; i++) {\n`;
+      b += `${ind}  if (legStatus[i] == 0) {\n`;
+      b += `${ind}    legUrls.add(legFixed[i]);\n`;
+      b += `${ind}    continue;\n`;
+      b += `${ind}  }\n`;
+      b += `${ind}  final int status = legStatus[i];\n`;
+    } else {
+      b += `${ind}for (int status : new int[] {${statuses}}) {\n`;
+    }
     b += `${ind}  com.sun.net.httpserver.HttpServer leg =\n`;
     b += `${ind}      com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);\n`;
     b += `${ind}  leg.createContext("/", ex -> {\n`;

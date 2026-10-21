@@ -38,7 +38,8 @@ tests:
     #     list, so node's fetch would fail it at once instead of hanging.
     #   api_status: in place of api_urls, one local server per leg answering
     #     every request with this status (a number = two legs; a list = one
-    #     leg per entry). api_body: the body those legs send.
+    #     leg per entry, and a URL entry is that leg verbatim). api_body: the
+    #     body those legs send.
     # function: init asserts the init call itself (go NewClient, node init(),
     # python init(), ruby Client.new, net InitAsync, java init):
     #   error initialization_timeout: the SDK's init-timeout error (go:
@@ -50,10 +51,33 @@ tests:
     #     init error's reason in every SDK; the error key carries the timeout
     #     split as well.
     #   raises_within_ms: wall-clock bound on the init call, start to raise.
-    # fail retries through blips until init_timeout_ms (B.3), so refused legs
-    # raise at the timeout with reason unavailable; only an auth-class status
-    # (401/403/404/410) on every leg raises at once. A getter case on one of these clients uses continue: init
-    # returns and the getter answers as an empty store would.
+    # fail retries through blips until init_timeout_ms (B.3) and then raises;
+    # only an auth-class status (401/403/404/410) on every leg raises at once.
+    # A getter case on one of these clients uses continue: init returns and
+    # the getter answers as an empty store would.
+    #
+    # Timing (Decision 12: every case holds on every CI platform, no skips).
+    # Every backend SDK hedges the first attempt: primary first, secondary when
+    # the primary errors or after 2s, each leg aborted 6s after it starts (java
+    # also bounds each request by its 3s configFetchTimeout, and its later
+    # attempts walk primary then secondary sequentially). Between
+    # attempts it backs off 0.5s, 1s, 2s, 4s, ... with jitter: x[0.8, 1.2] in
+    # go, ruby and net, x[0.5, 1.0] in node, python and java. So attempt 2
+    # starts 0.25-0.6s after attempt 1 ends, attempt 3 0.75-1.8s, attempt 4
+    # 1.75-4.2s: these windows overlap, and no fixed deadline is clear of
+    # every attempt start. When the deadline cuts an attempt before any leg
+    # answered, the reason is timeout (Decision 10), so a fail case whose
+    # reason is unavailable must not let the deadline race an attempt start.
+    # Two shapes are deterministic:
+    #   - init_timeout_ms 0: exactly one attempt, run to completion (Decision
+    #     8). Used for every fail case on refused legs: a refused connect is
+    #     instant on Linux and macOS but takes about 2s per leg on Windows,
+    #     which retries a connect that gets RST, so one attempt there takes
+    #     about 4s (raises_within_ms 8000 leaves room for it).
+    #   - a primary that answers at once and a secondary that hangs (TEST-NET),
+    #     with the deadline inside the second attempt: see that case below.
+    # Getter cases under continue have no reason to race, so they keep a short
+    # timeout on refused legs.
     - name: init fails by default when every delivery leg refuses the connection
       client: config_client
       function: init
@@ -61,22 +85,9 @@ tests:
         status: raise
         error: init_failed
         reason: unavailable
-        raises_within_ms: 5000
+        raises_within_ms: 8000
       client_overrides:
-        init_timeout_ms: 500
-        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
-
-    - name: init with on_init_failure fail raises when every delivery leg refuses the connection
-      client: config_client
-      function: init
-      expected:
-        status: raise
-        error: init_failed
-        reason: unavailable
-        raises_within_ms: 5000
-      client_overrides:
-        on_init_failure: fail
-        init_timeout_ms: 500
+        init_timeout_ms: 0
         api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
 
     - name: init with on_init_failure fail raises the init timeout when every delivery leg hangs
@@ -143,10 +154,10 @@ tests:
         status: raise
         error: init_failed
         reason: unavailable
-        raises_within_ms: 5000
+        raises_within_ms: 8000
       client_overrides:
         on_init_failure: raise
-        init_timeout_ms: 500
+        init_timeout_ms: 0
         api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
 
     - name: deprecated on_init_failure return behaves as continue when every delivery leg refuses the connection
@@ -203,19 +214,53 @@ tests:
         api_status: 410
 
     # Only the primary rejects the key: not every leg is auth-class, so init
-    # keeps retrying and raises unavailable at the timeout (Decision 6).
-    - name: init with on_init_failure fail raises unavailable when only the primary answers 401 and the secondary 503
+    # does not fast-fail it as unauthorized (Decision 6). One attempt
+    # (init_timeout_ms 0) keeps the reason deterministic.
+    - name: init with on_init_failure fail raises unavailable after one attempt when only the primary answers 401 and the secondary 503
       client: config_client
       function: init
       expected:
         status: raise
         error: init_failed
         reason: unavailable
-        raises_within_ms: 6000
+        raises_within_ms: 5000
       client_overrides:
         on_init_failure: fail
-        init_timeout_ms: 1500
+        init_timeout_ms: 0
         api_status: [401, 503]
+
+    # The same rule with a real deadline: fail keeps retrying until
+    # init_timeout_ms and then raises unavailable, because the primary answers
+    # in every attempt (Decisions 6 and 10). The secondary hangs (TEST-NET).
+    # The deadline must land inside an attempt after its primary answered, or
+    # between attempts, never at an attempt start before the primary answered
+    # (that cut attempt has no answered leg: timeout). Primary 401 takes under
+    # ~0.7s even on a cold JVM; every SDK fires the secondary on that error.
+    #   go, node, python, ruby, net: the secondary is aborted 6s after it
+    #     starts, so attempt 1 ends at 6s to ~6.7s; attempt 2 starts 0.25-0.6s
+    #     later (by ~7.3s), its primary answers at once, and it cannot end
+    #     before 12.25s.
+    #   java: requests time out at 3s (configFetchTimeout) and retries are
+    #     sequential, so each attempt is ~3s: attempt 1 ends at 3s to ~3.7s,
+    #     attempt 2 at 6.25s to ~7.2s, attempt 3 starts 0.5-1s later (by
+    #     ~8.2s) and cannot end before 9.75s.
+    # 9000ms sits inside attempt 2 (java: attempt 3) after its primary
+    # answered in every SDK, with ~0.75s or more on each side: one leg failed
+    # fast and one hung, which is unavailable (Decision 10), never timeout.
+    # The java bound (attempt 3 cannot end before 9.75s) is a hard floor that
+    # a slow runner only pushes later.
+    - name: init with on_init_failure fail raises unavailable at the deadline when the primary answers 401 and the secondary hangs
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 12000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 9000
+        api_status: [401, "http://192.0.2.1:8002"]
 
     # init_timeout_ms 0 runs one attempt, then applies on_init_failure. An SDK
     # that treats 0 as "no deadline" blocks forever and fails the bound.
@@ -226,7 +271,7 @@ tests:
         status: raise
         error: init_failed
         reason: unavailable
-        raises_within_ms: 5000
+        raises_within_ms: 8000
       client_overrides:
         on_init_failure: fail
         init_timeout_ms: 0
@@ -273,13 +318,13 @@ tests:
         status: raise
         error: init_failed
         reason: unavailable
-        raises_within_ms: 5000
+        raises_within_ms: 8000
         message_excludes:
           - "qfgsecret"
           - "qfguser"
       client_overrides:
         on_init_failure: fail
-        init_timeout_ms: 500
+        init_timeout_ms: 0
         api_urls: ["http://qfguser:qfgsecret@127.0.0.1:1", "http://qfguser:qfgsecret@127.0.0.1:2"]
 
     - name: init error never carries an upstream response body
@@ -294,7 +339,9 @@ tests:
           - "qfg-upstream-body-marker"
       client_overrides:
         on_init_failure: fail
-        init_timeout_ms: 500
+        # One attempt: a cold JVM can spend ~500ms on its first request, so a
+        # short deadline could cut attempt 1 before it completes (timeout).
+        init_timeout_ms: 0
         api_status: 503
         api_body: "upstream exploded: qfg-upstream-body-marker"
 

@@ -22,7 +22,11 @@
 //                    server per leg that answers EVERY request with a status.
 //                    A number = two legs answering that status (e.g. 401). A
 //                    list = one leg per entry, in order, e.g. [401, 503] =
-//                    primary 401, secondary 503.
+//                    primary 401, secondary 503. A list entry may instead be
+//                    an http(s) URL, used as that leg verbatim, to mix a
+//                    local status leg with an unreachable one: [401,
+//                    "http://192.0.2.1:8002"] = primary 401, secondary hangs.
+//                    The list needs at least one status entry.
 //   api_body         with api_status only: the response body every local leg
 //                    sends (e.g. a marker the init error must not echo).
 //
@@ -58,12 +62,16 @@ export interface InitFailureClient {
   onInitFailure: string | null;
   /** Canonical behavior the case expects (alias resolved; null spelling = fail). */
   mode: InitFailureMode;
-  /** Delivery legs, in order. Empty when apiStatuses is set. */
+  /**
+   * Delivery legs, in order. When apiStatuses is set this is empty, or (a
+   * mixed list) the same length as apiStatuses with the verbatim URL of each
+   * leg whose status is 0 and '' for each local status leg.
+   */
   apiUrls: string[];
   /**
    * One local leg per entry, answering every request with that status, in
-   * leg order; null when apiUrls is used. A scalar api_status is two equal
-   * entries.
+   * leg order; 0 = the leg is apiUrls[i] instead. null when apiUrls alone
+   * is used. A scalar api_status is two equal entries.
    */
   apiStatuses: number[] | null;
   /** Response body of every local leg (api_body), or null for an empty body. */
@@ -75,8 +83,13 @@ export interface InitFailureClient {
 /** The single status every local leg answers when they all agree and send no body, else null. */
 export function uniformStatus(ic: InitFailureClient): number | null {
   const s = ic.apiStatuses;
-  if (s === null || ic.apiBody !== null || s.length !== 2) return null;
+  if (s === null || ic.apiBody !== null || s.length !== 2 || s[0] === 0) return null;
   return s.every((v) => v === s[0]) ? (s[0] as number) : null;
+}
+
+/** True when an api_status list mixes local status legs with verbatim URL legs. */
+export function hasUrlLegs(ic: InitFailureClient): boolean {
+  return ic.apiStatuses !== null && ic.apiStatuses.some((v) => v === 0);
 }
 
 export type InitErrorKey = 'init_failed' | 'initialization_timeout';
@@ -118,6 +131,8 @@ function httpErrorStatus(s: unknown): number {
   return s;
 }
 
+const HTTP_URL = /^https?:\/\//;
+
 /** Parse and validate an init-failure case's client_overrides. */
 export function initFailureClient(kase: YamlCase): InitFailureClient {
   const o = (kase.client_overrides ?? {}) as Record<string, unknown>;
@@ -155,7 +170,7 @@ export function initFailureClient(kase: YamlCase): InitFailureClient {
   let apiBody: string | null = null;
   if (hasUrls) {
     const u = o.api_urls;
-    if (!Array.isArray(u) || u.length === 0 || u.some((s) => typeof s !== 'string' || !/^https?:\/\//.test(s))) {
+    if (!Array.isArray(u) || u.length === 0 || u.some((s) => typeof s !== 'string' || !HTTP_URL.test(s))) {
       throw new Error('client_overrides.api_urls must be a non-empty list of http(s) URLs');
     }
     apiUrls = u as string[];
@@ -164,7 +179,12 @@ export function initFailureClient(kase: YamlCase): InitFailureClient {
     const s = o.api_status;
     if (Array.isArray(s)) {
       if (s.length === 0) throw new Error('client_overrides.api_status list must name at least one leg');
-      apiStatuses = s.map(httpErrorStatus);
+      const isUrl = (v: unknown): v is string => typeof v === 'string' && HTTP_URL.test(v);
+      apiStatuses = s.map((v) => (isUrl(v) ? 0 : httpErrorStatus(v)));
+      if (apiStatuses.every((v) => v === 0)) {
+        throw new Error('client_overrides.api_status list needs at least one status leg (use api_urls for URLs only)');
+      }
+      if (apiStatuses.some((v) => v === 0)) apiUrls = s.map((v) => (isUrl(v) ? v : ''));
     } else {
       const v = httpErrorStatus(s);
       apiStatuses = [v, v];
