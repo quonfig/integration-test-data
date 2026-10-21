@@ -33,9 +33,12 @@ tests:
     #   init_timeout_ms: the SDK's initTimeout.
     #   api_urls: every delivery leg. 127.0.0.1:1 and :2 refuse at once;
     #     192.0.2.1 (TEST-NET-1, RFC 5737) never answers, so the SDK hangs
-    #     until its init timeout. CI never contacts a third-party host.
-    #   api_status: in place of api_urls, one local server per leg (two legs)
-    #     answering every request with this status.
+    #     until its init timeout. CI never contacts a third-party host. Hung
+    #     legs use ports 8001/8002: port 1 is on the WHATWG fetch bad-ports
+    #     list, so node's fetch would fail it at once instead of hanging.
+    #   api_status: in place of api_urls, one local server per leg answering
+    #     every request with this status (a number = two legs; a list = one
+    #     leg per entry). api_body: the body those legs send.
     # function: init asserts the init call itself (go NewClient, node init(),
     # python init(), ruby Client.new, net InitAsync, java init):
     #   error initialization_timeout: the SDK's init-timeout error (go:
@@ -43,12 +46,13 @@ tests:
     #     subclass of the init error).
     #   error init_failed: the SDK's init error (QuonfigInitError family; go: a
     #     non-nil error and no client) that is NOT the timeout error.
-    #   reason: unavailable | unauthorized | timeout (B.4). Asserted where the
-    #     SDK exposes a reason; the error key carries the timeout split for all.
+    #   reason: unavailable | unauthorized | timeout (B.4), asserted on the
+    #     init error's reason in every SDK; the error key carries the timeout
+    #     split as well.
     #   raises_within_ms: wall-clock bound on the init call, start to raise.
     # fail retries through blips until init_timeout_ms (B.3), so refused legs
-    # raise at the timeout with reason unavailable; only 401/403 on every leg
-    # raises at once. A getter case on one of these clients uses continue: init
+    # raise at the timeout with reason unavailable; only an auth-class status
+    # (401/403/404/410) on every leg raises at once. A getter case on one of these clients uses continue: init
     # returns and the getter answers as an empty store would.
     - name: init fails by default when every delivery leg refuses the connection
       client: config_client
@@ -86,7 +90,7 @@ tests:
       client_overrides:
         on_init_failure: fail
         init_timeout_ms: 200
-        api_urls: ["http://192.0.2.1:1", "http://192.0.2.1:2"]
+        api_urls: ["http://192.0.2.1:8001", "http://192.0.2.1:8002"]
 
     - name: init with on_init_failure fail raises at once when every delivery leg answers 401
       client: config_client
@@ -159,6 +163,140 @@ tests:
         on_init_failure: return
         init_timeout_ms: 500
         api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
+
+    # Cross-SDK conformance (qfg-9p4i.17; design doc "Decisions (Jeff,
+    # 2026-10-21)", items 6-9):
+    #   6. "unauthorized" (fast-fail) only when EVERY leg answers auth-class,
+    #      and the auth-class set is 401/403/404/410.
+    #   7. reason timeout iff the last attempt hung (every leg timed out or
+    #      was aborted) or no attempt completed; otherwise unavailable.
+    #   8. init_timeout_ms <= 0 = exactly one attempt, then on_init_failure.
+    #   9. The init error (and its cause chain) never carries URL userinfo or
+    #      an upstream response body.
+    # api_status as a list sets one local leg per entry (primary, secondary);
+    # api_body is the body every local leg sends. message_excludes on an init
+    # case covers the error message and every message in its cause chain.
+    - name: init with on_init_failure fail raises at once when every delivery leg answers 404
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unauthorized
+        raises_within_ms: 4000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 8000
+        api_status: 404
+
+    - name: init with on_init_failure fail raises at once when every delivery leg answers 410
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unauthorized
+        raises_within_ms: 4000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 8000
+        api_status: 410
+
+    # Only the primary rejects the key: not every leg is auth-class, so init
+    # keeps retrying and raises unavailable at the timeout (Decision 6).
+    - name: init with on_init_failure fail raises unavailable when only the primary answers 401 and the secondary 503
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 6000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 1500
+        api_status: [401, 503]
+
+    # init_timeout_ms 0 runs one attempt, then applies on_init_failure. An SDK
+    # that treats 0 as "no deadline" blocks forever and fails the bound.
+    - name: init with init_timeout_ms 0 and on_init_failure fail raises after one attempt when every delivery leg refuses the connection
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 5000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 0
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
+
+    - name: get_or_raise returns the default after init with init_timeout_ms 0 continues past refused delivery legs
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "any-key"
+        default: "DEFAULT"
+      expected:
+        value: "DEFAULT"
+      client_overrides:
+        on_init_failure: continue
+        init_timeout_ms: 0
+        api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]
+
+    # The per-leg aborts fire before the deadline here, so the first attempt
+    # completes with every leg aborted: still a hang, reason timeout
+    # (Decision 7). Every backend SDK (go, node, python, ruby, java, net)
+    # defaults to hedge delay 2s and per-leg abort 6s measured from the leg's
+    # start, so attempt 1 ends at about 2 + 6 = 8s. 10000ms (the server
+    # default initTimeout) clears that with 2s of margin; the next attempt is
+    # still hanging when the deadline hits.
+    - name: init with on_init_failure fail raises the init timeout when every delivery leg hangs past its per-leg abort
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: initialization_timeout
+        reason: timeout
+        raises_within_ms: 14000
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 10000
+        api_urls: ["http://192.0.2.1:8001", "http://192.0.2.1:8002"]
+
+    - name: init error never carries the userinfo of a delivery URL
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 5000
+        message_excludes:
+          - "qfgsecret"
+          - "qfguser"
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 500
+        api_urls: ["http://qfguser:qfgsecret@127.0.0.1:1", "http://qfguser:qfgsecret@127.0.0.1:2"]
+
+    - name: init error never carries an upstream response body
+      client: config_client
+      function: init
+      expected:
+        status: raise
+        error: init_failed
+        reason: unavailable
+        raises_within_ms: 5000
+        message_excludes:
+          - "qfg-upstream-body-marker"
+      client_overrides:
+        on_init_failure: fail
+        init_timeout_ms: 500
+        api_status: 503
+        api_body: "upstream exploded: qfg-upstream-body-marker"
 
     - name: raises an error if a config is provided by a missing environment variable
       client: config_client

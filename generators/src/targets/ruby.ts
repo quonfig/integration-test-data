@@ -338,9 +338,11 @@ function raiseClass(kase: YamlCase): string {
 function renderBody(yamlBasename: string, kase: YamlCase): string {
   const expected = kase.expected ?? {};
   // message_contains / message_excludes: rejected on non-raise cases here, and
-  // honoured only by renderEvalBody. Any other body would silently drop them.
+  // honoured only by renderEvalBody and (message_excludes on function: init)
+  // renderInitFailureBody. Any other body would silently drop them.
   const msg = messageExpectations(expected);
-  if ((msg.contains.length > 0 || msg.excludes.length > 0) && !isPlainEvalCase(yamlBasename, kase)) {
+  const initRaise = isInitFailureCase(kase) && (kase.function ?? '').toString() === 'init';
+  if ((msg.contains.length > 0 || msg.excludes.length > 0) && !isPlainEvalCase(yamlBasename, kase) && !initRaise) {
     throw new Error('message_contains/message_excludes are only supported on eval (get/get_or_raise) cases');
   }
 
@@ -542,7 +544,9 @@ function renderEvalBody(kase: YamlCase): string {
 function initFailureArgs(ic: InitFailureClient): string {
   const mode = ic.onInitFailure === null ? 'nil' : `:${ic.onInitFailure}`;
   const urls = `[${ic.apiUrls.map(rubyStringLiteral).join(', ')}]`;
-  return `${mode}, ${urls}, ${ic.apiStatus ?? 0}, ${ic.initTimeoutMs}`;
+  const statuses = `[${(ic.apiStatuses ?? []).join(', ')}]`;
+  const apiBody = ic.apiBody === null ? 'nil' : rubyStringLiteral(ic.apiBody);
+  return `${mode}, ${urls}, ${statuses}, ${apiBody}, ${ic.initTimeoutMs}`;
 }
 
 /**
@@ -573,8 +577,23 @@ function renderInitFailureBody(kase: YamlCase): string {
     } else {
       body += `${indent}refute_kind_of Quonfig::Errors::InitializationTimeoutError, err, ${rubyStringLiteral(`reason ${want.reason}, not the init timeout`)}\n`;
     }
+    body += `${indent}assert_equal :${want.reason}, err.reason\n`;
     if (want.raisesWithinMs !== null) {
       body += `${indent}assert_operator elapsed_ms, :<, ${want.raisesWithinMs}\n`;
+    }
+    if (want.messageExcludes.length > 0) {
+      // The message and every exception down #cause (Decision 9).
+      body += `${indent}chain = []\n`;
+      body += `${indent}e = err\n`;
+      body += `${indent}while e && !chain.include?(e)\n`;
+      body += `${indent}  chain << e\n`;
+      body += `${indent}  e = e.cause\n`;
+      body += `${indent}end\n`;
+      body += `${indent}chain.each do |link|\n`;
+      for (const sub of want.messageExcludes) {
+        body += `${indent}  refute_includes link.message, ${rubyStringLiteral(sub)}\n`;
+      }
+      body += `${indent}end\n`;
     }
   } else {
     assertGetterAfterContinue(ic);
@@ -597,16 +616,20 @@ function renderInitFailureBody(kase: YamlCase): string {
 
 // Nested in the test class. The public Client options from the init-failure
 // spec (B.1: on_init_failure, init_timeout_ms, api_urls); on_init_failure nil
-// = not passed (the SDK default). api_status != 0 = two local WEBrick servers
-// answering every request with that status, used as the legs. Client.new is
+// = not passed (the SDK default). api_statuses non-empty = one local WEBrick
+// server per entry answering every request with that status (and api_body,
+// if set), used as the legs in order. Client.new is
 // the init call; its error is rescued and returned.
 const RUBY_INIT_FAILURE_HELPER =
-  `  def init_failure_client(on_init_failure, api_urls, api_status, init_timeout_ms)\n` +
+  `  def init_failure_client(on_init_failure, api_urls, api_statuses, api_body, init_timeout_ms)\n` +
   `    servers = []\n` +
-  `    if api_status.positive?\n` +
-  `      api_urls = Array.new(2) do\n` +
+  `    unless api_statuses.empty?\n` +
+  `      api_urls = api_statuses.map do |status|\n` +
   `        server = WEBrick::HTTPServer.new(Port: 0, Logger: WEBrick::Log.new(StringIO.new), AccessLog: [])\n` +
-  `        server.mount_proc('/') { |_req, res| res.status = api_status }\n` +
+  `        server.mount_proc('/') do |_req, res|\n` +
+  `          res.status = status\n` +
+  `          res.body = api_body unless api_body.nil?\n` +
+  `        end\n` +
   `        Thread.new { server.start }\n` +
   `        servers << server\n` +
   `        "http://127.0.0.1:#{server.config[:Port]}"\n` +

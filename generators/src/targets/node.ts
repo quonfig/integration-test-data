@@ -484,7 +484,8 @@ const INIT_FAILURE_TEST_TIMEOUT_MS = 20000;
 function initFailureArgs(ic: InitFailureClient): string {
   return (
     `${ic.onInitFailure === null ? 'undefined' : tsStringLiteral(ic.onInitFailure)}, ` +
-    `${tsLiteral(ic.apiUrls)}, ${ic.apiStatus ?? 0}, ${ic.initTimeoutMs}`
+    `${tsLiteral(ic.apiUrls)}, ${tsLiteral(ic.apiStatuses ?? [])}, ` +
+    `${ic.apiBody === null ? 'undefined' : tsStringLiteral(ic.apiBody)}, ${ic.initTimeoutMs}`
   );
 }
 
@@ -505,6 +506,17 @@ function renderInitFailureInitBody(kase: YamlCase): RenderedBody {
   body += `      expect((init.error as { reason?: unknown }).reason).toBe(${tsStringLiteral(want.reason)});\n`;
   if (want.raisesWithinMs !== null) {
     body += `      expect(init.elapsedMs).toBeLessThan(${want.raisesWithinMs});\n`;
+  }
+  if (want.messageExcludes.length > 0) {
+    // The message and every message down the .cause chain (Decision 9).
+    body += `      const messages: string[] = [];\n`;
+    body += `      for (let e: unknown = init.error; e !== undefined && e !== null; e = (e as { cause?: unknown }).cause) {\n`;
+    body += `        messages.push(e instanceof Error ? e.message : String(e));\n`;
+    body += `        if (messages.length > 20) break;\n`;
+    body += `      }\n`;
+    body += `      for (const m of messages) {\n`;
+    for (const sub of want.messageExcludes) body += `        expect(m).not.toContain(${tsStringLiteral(sub)});\n`;
+    body += `      }\n`;
   }
   body += `    } finally {\n`;
   body += `      await init.close();\n`;
@@ -954,25 +966,27 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
 
 // Self-contained: the public Quonfig options from the init-failure spec
 // (B.1: onInitFailure, initTimeout, apiUrls). onInitFailure undefined = not
-// passed (the SDK default). apiStatus != 0 = two local servers answering every
-// request with that status, used as the legs. The rejection of init() is
-// caught and returned; the client object survives it (Decisions 4).
+// passed (the SDK default). apiStatuses non-empty = one local server per
+// entry answering every request with that status (and apiBody, if set), used
+// as the legs in order. The rejection of init() is caught and returned; the
+// client object survives it (Decisions 4).
 const NODE_INIT_FAILURE_HELPER = `async function initFailureClient(
   onInitFailure: string | undefined,
   apiUrls: string[],
-  apiStatus: number,
+  apiStatuses: number[],
+  apiBody: string | undefined,
   initTimeoutMs: number,
 ): Promise<{ client: any; error: unknown; elapsedMs: number; close: () => Promise<void> }> {
   const { Quonfig } = await import("../../src/quonfig");
   const http = await import("node:http");
   const servers: import("node:http").Server[] = [];
   let urls = apiUrls;
-  if (apiStatus !== 0) {
+  if (apiStatuses.length > 0) {
     urls = [];
-    for (let i = 0; i < 2; i++) {
+    for (const status of apiStatuses) {
       const server = http.createServer((_req, res) => {
-        res.writeHead(apiStatus);
-        res.end();
+        res.writeHead(status);
+        res.end(apiBody);
       });
       await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
       servers.push(server);

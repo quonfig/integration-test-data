@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { YamlCase } from '../types.js';
-import { initFailureClient, initRaiseExpectation, isInitFailureCase } from './init-failure.js';
+import { initFailureClient, initRaiseExpectation, isInitFailureCase, uniformStatus } from './init-failure.js';
 
 const refused = ['http://127.0.0.1:1', 'http://127.0.0.1:2'];
 
@@ -18,7 +18,7 @@ test('init-failure overrides mark a case; plain eval cases are not', () => {
 
 test('canonical values pass through; absent means the SDK default (fail)', () => {
   const c = initFailureClient(kase({ init_timeout_ms: 500, api_urls: refused }));
-  assert.deepEqual(c, { onInitFailure: null, mode: 'fail', apiUrls: refused, apiStatus: null, initTimeoutMs: 500 });
+  assert.deepEqual(c, { onInitFailure: null, mode: 'fail', apiUrls: refused, apiStatuses: null, apiBody: null, initTimeoutMs: 500 });
   assert.equal(initFailureClient(kase({ on_init_failure: 'continue', init_timeout_ms: 1, api_urls: refused })).mode, 'continue');
   assert.equal(initFailureClient(kase({ on_init_failure: 'wait', init_timeout_ms: 1, api_urls: refused })).mode, 'wait');
 });
@@ -32,10 +32,38 @@ test('deprecated aliases keep their spelling and map to the canonical mode', () 
   assert.equal(t.mode, 'continue');
 });
 
-test('api_status replaces api_urls with a local status server', () => {
+test('api_status replaces api_urls with a local status server per leg', () => {
   const c = initFailureClient(kase({ api_status: 401, init_timeout_ms: 8000 }));
-  assert.equal(c.apiStatus, 401);
+  assert.deepEqual(c.apiStatuses, [401, 401]);
+  assert.equal(c.apiBody, null);
+  assert.equal(uniformStatus(c), 401);
   assert.deepEqual(c.apiUrls, []);
+});
+
+test('api_status list sets one status per leg, in order', () => {
+  const c = initFailureClient(kase({ api_status: [401, 503], init_timeout_ms: 1500 }));
+  assert.deepEqual(c.apiStatuses, [401, 503]);
+  assert.equal(uniformStatus(c), null);
+  assert.equal(uniformStatus(initFailureClient(kase({ api_status: [404, 404], init_timeout_ms: 1 }))), 404);
+  assert.throws(() => initFailureClient(kase({ api_status: [], init_timeout_ms: 1 })), /at least one leg/);
+  assert.throws(() => initFailureClient(kase({ api_status: [401, 200], init_timeout_ms: 1 })), /HTTP error status/);
+  assert.throws(() => initFailureClient(kase({ api_status: [401, '503'], init_timeout_ms: 1 })), /HTTP error status/);
+});
+
+test('api_body is the local legs\' body and needs api_status', () => {
+  const c = initFailureClient(kase({ api_status: 503, api_body: 'marker', init_timeout_ms: 500 }));
+  assert.equal(c.apiBody, 'marker');
+  assert.equal(uniformStatus(c), null, 'a body needs the full leg helper');
+  assert.equal(isInitFailureCase(kase({ api_body: 'x' })), true);
+  assert.throws(() => initFailureClient(kase({ api_urls: refused, api_body: 'marker', init_timeout_ms: 1 })), /needs api_status/);
+  assert.throws(() => initFailureClient(kase({ api_status: 503, api_body: '', init_timeout_ms: 1 })), /non-empty/);
+  assert.throws(() => initFailureClient(kase({ api_status: 503, api_body: 7, init_timeout_ms: 1 })), /non-empty/);
+});
+
+test('init_timeout_ms 0 is one attempt (Decision 8); negative fails', () => {
+  assert.equal(initFailureClient(kase({ init_timeout_ms: 0, api_urls: refused })).initTimeoutMs, 0);
+  assert.throws(() => initFailureClient(kase({ init_timeout_ms: -1, api_urls: refused })), /non-negative/);
+  assert.throws(() => initFailureClient(kase({ init_timeout_ms: 1.5, api_urls: refused })), /non-negative/);
 });
 
 test('Prefab-era keys fail the generator with the new name', () => {
@@ -57,12 +85,29 @@ test('init raise expectation: error, reason, bound', () => {
     { on_init_failure: 'fail', init_timeout_ms: 200, api_urls: ['http://192.0.2.1:1'] },
     { expected: { status: 'raise', error: 'initialization_timeout', reason: 'timeout', raises_within_ms: 2000 } },
   );
-  assert.deepEqual(initRaiseExpectation(k), { error: 'initialization_timeout', reason: 'timeout', raisesWithinMs: 2000 });
+  assert.deepEqual(initRaiseExpectation(k), {
+    error: 'initialization_timeout',
+    reason: 'timeout',
+    raisesWithinMs: 2000,
+    messageExcludes: [],
+  });
   const u = kase(
     { api_status: 401, init_timeout_ms: 8000 },
     { expected: { status: 'raise', error: 'init_failed', reason: 'unauthorized' } },
   );
-  assert.deepEqual(initRaiseExpectation(u), { error: 'init_failed', reason: 'unauthorized', raisesWithinMs: null });
+  assert.deepEqual(initRaiseExpectation(u), { error: 'init_failed', reason: 'unauthorized', raisesWithinMs: null, messageExcludes: [] });
+});
+
+test('init raise expectation: message_excludes covers the message and cause chain; contains is rejected', () => {
+  const overrides = { on_init_failure: 'fail', init_timeout_ms: 500, api_urls: ['http://u:secret@127.0.0.1:1'] };
+  const raise = { status: 'raise', error: 'init_failed', reason: 'unavailable' };
+  assert.deepEqual(initRaiseExpectation(kase(overrides, { expected: { ...raise, message_excludes: ['secret', 'u:'] } })).messageExcludes, [
+    'secret',
+    'u:',
+  ]);
+  assert.deepEqual(initRaiseExpectation(kase(overrides, { expected: { ...raise, message_excludes: 'secret' } })).messageExcludes, ['secret']);
+  assert.throws(() => initRaiseExpectation(kase(overrides, { expected: { ...raise, message_excludes: [''] } })));
+  assert.throws(() => initRaiseExpectation(kase(overrides, { expected: { ...raise, message_contains: 'init' } })), /message_contains/);
 });
 
 test('init raise expectation rejects inconsistent shapes', () => {

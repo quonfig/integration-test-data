@@ -693,12 +693,15 @@ function renderInitFailureBody(kase: YamlCase): string {
   if (Object.keys(kase.env_vars ?? {}).length > 0) throw new Error('env_vars on an init-failure case is unsupported');
   let body = '';
   let urls: string;
-  if (ic.apiStatus !== null) {
-    for (const n of [0, 1]) {
+  if (ic.apiStatuses !== null) {
+    ic.apiStatuses.forEach((status, n) => {
+      const respond = ic.apiBody === null
+        ? `Response.Create().WithStatusCode(${status})`
+        : `Response.Create().WithStatusCode(${status}).WithBody(${csStringLiteral(ic.apiBody)})`;
       body += `${I}using var leg${n} = WireMockServer.Start();\n`;
-      body += `${I}leg${n}.Given(Request.Create().UsingAnyMethod()).RespondWith(Response.Create().WithStatusCode(${ic.apiStatus}));\n`;
-    }
-    urls = 'new[] { leg0.Urls[0], leg1.Urls[0] }';
+      body += `${I}leg${n}.Given(Request.Create().UsingAnyMethod()).RespondWith(${respond});\n`;
+    });
+    urls = `new[] { ${ic.apiStatuses.map((_, n) => `leg${n}.Urls[0]`).join(', ')} }`;
   } else {
     urls = `new[] { ${ic.apiUrls.map(csStringLiteral).join(', ')} }`;
   }
@@ -715,7 +718,6 @@ function renderInitFailureBody(kase: YamlCase): string {
   if (fn === 'init') {
     const want = initRaiseExpectation(kase);
     if (kase.input && Object.keys(kase.input).length > 0) throw new Error('function: init cases take no input');
-    rejectMessageExpectations(kase, 'an init case');
     body += `${I}var stopwatch = System.Diagnostics.Stopwatch.StartNew();\n`;
     body += `${I}var raised = await Assert.ThrowsAnyAsync<QuonfigInitException>(() => client.InitAsync());\n`;
     body += `${I}stopwatch.Stop();\n`;
@@ -724,8 +726,18 @@ function renderInitFailureBody(kase: YamlCase): string {
     } else {
       body += `${I}Assert.False(raised is QuonfigInitTimeoutException, ${csStringLiteral(`reason ${want.reason}, not the init timeout`)});\n`;
     }
+    const reasonMember = want.reason.charAt(0).toUpperCase() + want.reason.slice(1);
+    body += `${I}Assert.Equal(QuonfigInitFailureReason.${reasonMember}, raised.Reason);\n`;
     if (want.raisesWithinMs !== null) {
       body += `${I}Assert.True(stopwatch.ElapsedMilliseconds < ${want.raisesWithinMs}, $"InitAsync raised after {stopwatch.ElapsedMilliseconds}ms");\n`;
+    }
+    if (want.messageExcludes.length > 0) {
+      // The message and every exception down InnerException (Decision 9).
+      body += `${I}for (Exception? e = raised; e != null; e = e.InnerException)\n${I}{\n`;
+      for (const sub of want.messageExcludes) {
+        body += `${I}    Assert.DoesNotContain(${csStringLiteral(sub)}, e.Message, StringComparison.Ordinal);\n`;
+      }
+      body += `${I}}\n`;
     }
     return body;
   }

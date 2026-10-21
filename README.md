@@ -138,6 +138,12 @@ client builder; sdk-go supplies `newInitFailureClient` by hand (contract in `gen
           api_urls: ["http://127.0.0.1:1", "http://127.0.0.1:2"]   # or api_status: 401
 ```
 
+`init_timeout_ms` may be 0 (one attempt, then `on_init_failure`). `api_status` takes a number (two legs)
+or a per-leg list (`[401, 503]` = primary 401, secondary 503); `api_body` sets the local legs' response
+body. On a `function: init` case, `expected.message_excludes` must hold for the init error's message and
+every message in its cause chain. Hung legs use `192.0.2.1:8001`/`:8002`, never port 1 (on the fetch
+bad-ports list, so node fails it at once).
+
 ### Telemetry tests (`function: post`)
 
 ```yaml

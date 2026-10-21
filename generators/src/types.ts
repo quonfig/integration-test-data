@@ -50,7 +50,8 @@ export interface ClientOverrides {
   on_init_failure?: string;
   init_timeout_ms?: number;
   api_urls?: string[];
-  api_status?: number;
+  api_status?: number | number[];
+  api_body?: string;
   context_upload_mode?: string;
   collect_evaluation_summaries?: boolean;
   [k: string]: unknown;
