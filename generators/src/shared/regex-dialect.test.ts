@@ -42,15 +42,18 @@ interface Fixture {
   hints: Record<string, string>;
   accept: { pattern: string; note?: string }[];
   reject: { pattern: string; reason: string; note?: string }[];
-  open_questions?: { pattern: string; question: string }[];
 }
 
 const MAX_LENGTH = 256;
 const MAX_REPEAT = 1000;
 const MAX_UNBOUNDED = 2;
-const PUNCT = new Set(Array.from('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'));
+// ASCII punctuation minus `_`: .NET throws on \_ (qfg-ktkr.7).
+const PUNCT = new Set(Array.from('!"#$%&\'()*+,-./:;<=>?@[\\]^`{|}~'));
 const HEX = /^[0-9A-Fa-f]$/;
-const CONTROL: Record<string, number> = { t: 9, n: 10, v: 11, f: 12, r: 13 };
+// No \v: java reads it as a class of vertical whitespace (qfg-ktkr.7).
+const CONTROL: Record<string, number> = { t: 9, n: 10, f: 12, r: 13 };
+// \xHH stops at \x7F: ruby rejects \x80 to \xFF (qfg-ktkr.7).
+const MAX_HEX = 0x7f;
 
 type Step = { end: number; cp: number } | Reason;
 
@@ -66,7 +69,8 @@ function escape(cs: string[], i: number): Step {
     const h1 = cs[i + 2];
     const h2 = cs[i + 3];
     if (h1 !== undefined && h2 !== undefined && HEX.test(h1) && HEX.test(h2)) {
-      return { end: i + 4, cp: parseInt(h1 + h2, 16) };
+      const cp = parseInt(h1 + h2, 16);
+      return cp <= MAX_HEX ? { end: i + 4, cp } : 'unsupported-escape';
     }
     return 'unsupported-escape';
   }
@@ -223,14 +227,12 @@ test('every reason code has a hint, and every hint is a used reason code', () =>
 });
 
 test('no pattern is listed twice', () => {
-  const all = [...fixture.accept, ...fixture.reject, ...(fixture.open_questions ?? [])].map((r) => r.pattern);
+  const all = [...fixture.accept, ...fixture.reject].map((r) => r.pattern);
   assert.equal(new Set(all).size, all.length);
 });
 
-test('open questions are not pinned either way', () => {
-  for (const q of fixture.open_questions ?? []) {
-    assert.ok(q.question.length > 0, `${q.pattern}: open question needs text`);
-  }
+test('no open questions remain (qfg-ktkr.7 settled them)', () => {
+  assert.equal((fixture as { open_questions?: unknown }).open_questions, undefined);
 });
 
 for (const { pattern } of fixture.accept) {
