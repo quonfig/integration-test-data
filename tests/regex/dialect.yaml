@@ -5,7 +5,9 @@
 # approved by Jeff on 2026-10-16 (qfg-goi1.10.10): writers and the git hook
 # REJECT out-of-dialect patterns from day one; \d \w \s \b are rejected with
 # a hint; the safety caps are as written; context values containing a
-# newline are out of contract.
+# newline are out of contract. Narrowed by Jeff on 2026-10-22 (qfg-ktkr.7):
+# \_, \v and \x80 to \xFF are rejected (unsupported-escape) because a
+# cross-engine probe showed .NET, java and ruby read them differently.
 #
 # The dialect is the intersection of what every SDK's engine accepts and
 # reads the same way (go RE2, node RegExp with no flags, python re, ruby
@@ -24,7 +26,6 @@
 #   hints:          reason code -> the fix-it hint a writer shows
 #   accept:         list of { pattern, note? }   must pass the check
 #   reject:         list of { pattern, reason, note? }   must fail with `reason`
-#   open_questions: list of { pattern, question }   NOT pinned either way
 #
 # Patterns are single-quoted YAML, so a backslash is a literal backslash
 # ('\d' is the two characters \ and d) and '' is one quote.
@@ -54,7 +55,7 @@ allowed:
   - 'literals; `.`; `^` and `$`; `|`; `( )` capturing groups and `(?: )`'
   - '`*` `+` `?` and `{n}` `{n,}` `{n,m}` with n <= m <= 1000, each optionally lazy (`*?` and so on)'
   - 'classes `[...]` and `[^...]` holding literals and ranges'
-  - 'escapes: `\` + ASCII punctuation, `\t \n \r \f \v`, `\xHH`'
+  - 'escapes: `\` + ASCII punctuation other than `_`, `\t \n \r \f`, `\xHH` from `\x00` to `\x7F`'
 
 rejected:
   - 'any `(?` other than `(?:`. That covers lookaround, named groups in both syntaxes, inline flags, atomic groups, comments and conditionals'
@@ -62,7 +63,8 @@ rejected:
   - 'possessive quantifiers; `{,m}` (python reads it as `{0,m}`, the rest read it as a literal); repeat counts over 1000 (RE2''s limit)'
   - 'in a class: `[:..:]`, a nested `[`, `&&` (java intersection), and `--`, `~~` or `||` (python warns that these become set operations)'
   - '`\A \z \Z \G \Q..\E \p \P \u \x{..} \h \R \X \K`, and any other `\letter` not listed as allowed'
-  - '`\d \w \s \b` and their negations (python and .NET match Unicode digits and letters; go, node, java and ruby are ASCII-only). Hint: use `[0-9]`, `[A-Za-z0-9_]` or `[ \t\r\n\f\v]`.'
+  - '`\_` (.NET throws; write `_` unescaped), `\v` (java reads it as a class of vertical whitespace; write `\x0B`), and `\x80` to `\xFF` (ruby rejects them; write the character itself) (qfg-ktkr.7)'
+  - '`\d \w \s \b` and their negations (python and .NET match Unicode digits and letters; go, node, java and ruby are ASCII-only). Hint: use `[0-9]`, `[A-Za-z0-9_]` or `[ \t\r\n\f\x0B]`.'
   - 'Safety: no quantifier on a group that contains a quantifier or an `|` (this stops `(a+)+`, `(a|a)*` and `(x+x+)+y`); at most 2 unbounded quantifiers per pattern (`*`, `+`, `{n,}`), which caps the polynomial `.*.*.*` blow-up; pattern length <= 256.'
 
 hints:
@@ -77,8 +79,8 @@ hints:
   possessive: 'Possessive quantifiers (*+, ++, ?+, {n}+) are not supported. Use the plain form (a+) or the lazy form (a+?).'
   bad-repeat: 'Write repeat counts as {n}, {n,} or {n,m} with n <= m <= 1000. {,m} is not portable: write {0,m}. Escape a literal brace as \{.'
   class-syntax: 'Inside [...] use only literals, ranges and escapes. POSIX classes such as [:digit:], a nested [, &&, --, ~~ and || are not supported. Escape a literal [ or ] as \[ or \], and do not start a class with ].'
-  unicode-shorthand: '\d, \w, \s, \b and their negations match different characters in different SDKs. Use [0-9], [A-Za-z0-9_] or [ \t\r\n\f\v].'
-  unsupported-escape: 'This escape is not supported. The supported escapes are \ followed by ASCII punctuation, \t \n \r \f \v, and \xHH with exactly two hex digits.'
+  unicode-shorthand: '\d, \w, \s, \b and their negations match different characters in different SDKs. Use [0-9], [A-Za-z0-9_] or [ \t\r\n\f\x0B].'
+  unsupported-escape: 'This escape is not supported. The supported escapes are \ followed by ASCII punctuation other than _, \t \n \r \f, and \xHH with exactly two hex digits from \x00 to \x7F. Write _ unescaped instead of \_, \x0B instead of \v, and a character above \x7F as the character itself.'
   nested-quantifier: 'A quantifier cannot apply to a group that contains a quantifier or a |, as in (a+)+ or (a|b)*. Such patterns can take exponential time. Quantify the inner part only, or use a class: [ab]* instead of (a|b)*.'
   too-many-unbounded: 'A pattern can have at most 2 unbounded quantifiers (*, +, {n,}). Bound the extra ones with {n,m}, or split the rule into two criteria.'
 
@@ -118,6 +120,8 @@ accept:
   - { pattern: '\!\"\#\%\&\''\,\-\:\;\<\=\>\@\`\~', note: 'more ASCII punctuation escapes' }
   - { pattern: '\t\n\r\f' }
   - { pattern: '\x41\x7a' }
+  - { pattern: 'a_b\x0B\x7F', note: 'the replacements for \_, \v and \x80+ (qfg-ktkr.7); \x7F is the top of the \xHH range' }
+  - { pattern: 'café', note: 'a non-ASCII character written as itself' }
   # Length
   - { pattern: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', note: '256 characters, the length cap' }
 
@@ -211,6 +215,13 @@ reject:
   - { pattern: '\cA', reason: unsupported-escape }
   - { pattern: '\ ', reason: unsupported-escape, note: 'a space is not ASCII punctuation' }
   - { pattern: '[\p{L}]', reason: unsupported-escape, note: 'inside a class too' }
+  - { pattern: '\_', reason: unsupported-escape, note: '.NET throws "Unrecognized escape sequence \_"; write _ unescaped (qfg-ktkr.7)' }
+  - { pattern: '[a\_]', reason: unsupported-escape, note: '.NET throws inside a class too' }
+  - { pattern: '^\v$', reason: unsupported-escape, note: 'java reads \v as [\n\x0B\f\r\x85\u2028\u2029]; write \x0B (qfg-ktkr.7)' }
+  - { pattern: '[ \t\v]', reason: unsupported-escape, note: 'inside a class too' }
+  - { pattern: '\xe9', reason: unsupported-escape, note: 'ruby rejects \x80 to \xFF; write the character itself (qfg-ktkr.7)' }
+  - { pattern: '[\x80-\xff]', reason: unsupported-escape, note: 'inside a class too' }
+  - { pattern: '\x80', reason: unsupported-escape, note: 'the bottom of the rejected \xHH range' }
   # nested-quantifier
   - { pattern: '(a+)+', reason: nested-quantifier }
   - { pattern: '(a|a)*', reason: nested-quantifier }
@@ -225,14 +236,3 @@ reject:
   - { pattern: 'a*b{2,}c+', reason: too-many-unbounded }
   - { pattern: 'a*?b+?c*?', reason: too-many-unbounded, note: 'lazy forms count' }
 
-# Three constructs on the plan's allowed list that a cross-engine probe
-# (2026-10-22, go 1.26, node 25, python 3.9, ruby 2.6, java 22, .NET 8)
-# shows are NOT read the same way everywhere. Neither accepted nor rejected
-# here until Jeff decides; see qfg-ktkr.7.
-open_questions:
-  - pattern: '\_'
-    question: '.NET throws "Unrecognized escape sequence \_" (also in a class). _ is ASCII punctuation, so the plan allows it. Reject \_ (hint: write _ unescaped)?'
-  - pattern: '^\v$'
-    question: 'java reads \v as the class [\n\x0B\f\r\x85\u2028\u2029] (it matches "\r"); every other engine reads it as \x0B. Reject \v (hint: write \x0B), and change the \s hint to [ \t\r\n\f\x0B]?'
-  - pattern: '\xe9'
-    question: 'ruby raises "too short escaped multibyte character" for \x80 to \xFF (and [\x80-\xff]); the rest read U+0080 to U+00FF. Restrict \xHH to \x00-\x7F?'
