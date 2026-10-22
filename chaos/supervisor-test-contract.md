@@ -64,7 +64,7 @@ fake the worker. It drives the SDK's real SSE worker against a local HTTP
 server on 127.0.0.1 built from the language's stdlib or existing test
 dependencies (no toxiproxy, no fault proxy, no new dependency). Only the
 fallback threshold/interval is shrunk, through the SDK's existing option or
-test seam.
+test seam. Test 10 (size caps) uses the same local-server fixture.
 
 ## Common assertion vocabulary
 
@@ -73,7 +73,8 @@ but the meaning is fixed:
 
 | Capability | Meaning |
 |---|---|
-| `worker_restart_total` | Counter incremented every time the supervisor restarts a worker after abnormal exit. Reset to 0 at supervisor start. Exposed via the same Prometheus-style metric the SDK exports in production. |
+| `worker_restart_total` | Counter incremented only when the supervisor actually restarts a worker after abnormal exit (`layer="1"`: the SSE worker reconnects after its connection ended abnormally; `layer="2"`: the fallback-poller worker is restarted). Never incremented by a user callback throw (see `callback_errors_total`). Reset to 0 at supervisor start. Exposed via the same Prometheus-style metric the SDK exports in production. |
+| `callback_errors_total` | `quonfig_sdk_callback_errors_total{callback}`, `callback` in {`on_config_update`, `on_connection_state_change`}. Incremented by 1 for each user callback invocation that throws / panics / raises and is caught by the SDK. Same visibility as `worker_restart_total` in that SDK (an internal test seam; a public reader only where the SDK already has a public diagnostic surface). Reset to 0 at client start. (qfg-6vno.25) |
 | `lastSuccessfulRefresh()` | Wall-clock timestamp (UTC) of the most recent successful refresh — the last time the SDK confirmed its config source reachable and its held config current. A LIVENESS signal, not an install counter (qfg-41nh.11): advanced by any envelope install AND by a config fetch that completed successfully without installing — a 304 Not Modified, a 200 the reject-older guard dropped as equal-or-older, or a received-and-processed SSE message that was a guard no-op. Transport errors never advance it. Returns null / zero / None before the first successful refresh. |
 | `connectionState()` | Returns one of: `initializing`, `connected`, `disconnected`, `falling_back`. Documented values are fixed; SDKs may not invent new strings. |
 | `client.close()` | Public shutdown method. Stops the supervisor, joins all workers, releases resources. Idempotent. |
@@ -95,7 +96,8 @@ or disengage an engaged poller, and (3) report `connected` via
   that is either comment-only (the server keepalive, `: keepalive`) or a
   `data:` block that decodes and validates as a config envelope.
 - **Not a frame:** 200 response headers alone; a block cut off by EOF; a
-  malformed or non-envelope `data:` block; an oversized event.
+  malformed or non-envelope `data:` block; an oversized event (see Rule —
+  size caps).
 - **Failed attempt:** a connection that ends (EOF, IO error, read watchdog)
   before its first valid frame. It MUST be handled exactly like a connect
   error: backoff grows, the SDK reports a not-connected state, and the
@@ -126,6 +128,35 @@ closes would otherwise reset the backoff and cancel the fallback poller on
 every attempt — a reconnect storm with frozen config (qfg-goi1.10.9).
 Against Quonfig's own servers the 200 headers and the first frame arrive in
 the same write, so the only new delay there is parsing that frame.
+
+## Rule — size caps (all backend SDKs; qfg-6vno.8)
+
+Plan: `project/plans/2026-10-22-sse-body-size-caps.md`, approved by Jeff
+2026-10-22. Applies to go, node, python, ruby, java and net. sdk-javascript
+and sdk-swift (and sdk-react / sdk-react-native over sdk-javascript) are out
+of scope: their payload is a per-context evaluation for one user and they have
+no SSE.
+
+| Input | Cap | Over the cap |
+|---|---|---|
+| One SSE event (any line; SDKs that join multi-line `data:` SHOULD cap the sum) | 4 MiB (4,194,304 bytes) | Not a frame. The connection is a failed attempt. |
+| HTTP 200 body from `/api/v2/configs` | 16 MiB (16,777,216 bytes) | A failed leg, exactly like a 5xx. |
+| Non-2xx body | read at most 1 KiB | Never logged, never in an error message. |
+
+- Memory per stream or request stays bounded near the cap, even for an
+  event with no line terminator. Stop reading at the cap; do not read all
+  of it and then compare.
+- Overflow never installs anything, never stores an ETag and never advances
+  `lastSuccessfulRefresh()`. A failed attempt or failed leg backs off as
+  usual (Test 2's ladder; the hedge/failover legs proceed as for a 5xx).
+- After an oversized SSE event, a connection that delivers only that event
+  again never reports `connected` (backoff keeps growing and the fallback
+  poller engages). A keepalive alone does not clear this; the first
+  installed envelope does.
+- One WARN per oversized episode naming the source (redacted) and the cap
+  in bytes; repeats at DEBUG. The episode ends at the next installed
+  envelope from that source.
+- The caps are constants, not options.
 
 ## Test 1 — Restart on worker throw within 1000ms
 
@@ -281,8 +312,11 @@ SDK increments by exactly 1 per restart.
 - After all 3 restarts have occurred, the counter is exactly **3**.
 - The counter has the expected labels per the plan's server-side metric spec:
   `sdk`, `sdk_version`, `layer` (where `layer="1"` for SSE and `layer="2"`
-  for HTTP polling), `reason` (one of: `worker_throw`, `worker_exit`,
-  `read_timeout`).
+  for HTTP polling). An optional `reason` label (today only sdk-go sets it,
+  on `layer="1"`) is one of: `connect_failed` (the attempt failed before the
+  stream delivered a valid frame) or `stream_ended` (an established stream
+  ended: EOF, IO error or read timeout). A user callback throw is never a
+  restart reason (Test 5).
 - The counter must be readable via whatever Prometheus / metrics endpoint
   the SDK exposes — test reads it the same way a real scraper would.
 
@@ -302,54 +336,58 @@ because operators won't see it.
 - **Ruby:** `prometheus-client` gem. Read via `Counter#get(labels:)`.
 - **Node:** `prom-client`'s `Counter`. Read via `counter.get()`.
 
-## Test 5 — Panic-in-callback recovery (sdk-go specific, optional elsewhere)
+## Test 5 — Callback-throw isolation (all backend SDKs)
 
-**Goal:** A panic / unchecked exception thrown by the user's `OnEnvelope`
-callback does NOT tear down the SSE read loop. The supervisor recovers,
-logs the panic with stack trace, increments `worker_restart_total` with
-`reason="callback_panic"`, and continues processing envelopes.
+**Applies to:** every backend SDK (go, node, java, python, ruby, net).
+REQUIRED. Decision: Jeff 2026-10-22 (bead `qfg-6vno.25`).
 
-**Context:** Today's `sdk-go` does NOT recover from a panic inside
-`OnEnvelope` — the panic propagates up through `parseStream` and crashes
-the worker goroutine. The supervisor *will* restart it (Test 1 catches
-that), but the first envelope after a panic-y deploy will repeatedly crash
-the goroutine in a tight restart loop. The fix is ~5 lines: a deferred
-`recover()` around the `c.cfg.OnEnvelope(&env)` call at
-`sdk-go/sse_client.go:226-228` (now line 273 after the read-deadline
-refactor). This test ships with that fix in Phase 1 of the hardening plan.
+**Goal:** A throw / panic / raise from a user callback (`on_config_update`,
+`on_connection_state_change`) is caught by the SDK, counted in
+`callback_errors_total`, logged at ERROR, and is NOT a worker restart. The
+SDK keeps processing envelopes.
+
+**The rule under test:**
+
+- The SDK catches the language's ordinary exception class only (Go:
+  `recover()`; Java: `Exception`; Python: `Exception`; Ruby:
+  `StandardError`; Node: a thrown error or a rejected promise; .NET:
+  `Exception`).
+- `quonfig_sdk_callback_errors_total{callback}` increments by 1 per caught
+  throw. `worker_restart_total` does not change: no worker was restarted.
+- The throw is logged at ERROR with the exception value and stack; the
+  message names the callback (matches `/callback|onConfigUpdate/i`).
+- No change to `connectionState()`, `lastSuccessfulRefresh()` or the
+  OpenFeature provider status. Remaining listeners still run.
 
 **Setup:**
 
-- Configure the SDK with an `OnEnvelope` callback that panics / throws /
-  raises on its first invocation, then succeeds on subsequent invocations.
+- Configure the SDK with an `on_config_update` callback that throws on its
+  first invocation, then succeeds on subsequent invocations.
 - Feed the SDK a fake stream that emits two valid envelopes back-to-back.
-  (Either via a unit-level fake `parseStream` input, or via an httptest
-  server in Go's case.)
+  (Either via a unit-level fake `parseStream` input, or via a local test
+  server.)
+- Repeat with an `on_connection_state_change` callback that throws on its
+  first invocation.
 
-**Assert:**
+**Assert (per callback):**
 
-- The first envelope causes the callback to throw. The SDK logs the panic
-  (test inspects the logger).
-- The SDK does NOT crash the worker — the second envelope is delivered to
-  the callback, which succeeds.
-- `worker_restart_total` may or may not increment per panic depending on
-  whether the SDK treats the panic as a worker restart or as an inline
-  recovery — both are acceptable as long as the panic is logged. Document
-  which approach the SDK takes in the test comment.
-- The user's panic message and stack trace appear in the SDK's log output.
+- After the one throw, `callback_errors_total{callback="on_config_update"}`
+  (or `"on_connection_state_change"`) is exactly **1**.
+- `worker_restart_total` is unchanged across the throw (delta 0, every
+  layer).
+- The next envelope is still delivered: the second envelope is installed,
+  and the callback runs again (and succeeds) on its next trigger.
+- An ERROR log line contains the user's exception message and stack trace.
+- `connectionState()` and `lastSuccessfulRefresh()` are exactly what they
+  would be without the throw.
 
 **Per-language hints:**
 
 - **Go:** `defer func() { if r := recover(); r != nil { ... } }()` wrapped
-  around the `OnEnvelope` call. The recover must log via the SDK's
-  configured logger, not stderr directly. **This is the ~5 line fix
-  the bead description references.**
-- **Java:** the existing `try/catch (Exception e)` pattern around the user
-  callback. sdk-java already catches `Exception` but not `Error` — the
-  test should clarify which is intended. Recommendation: catch
-  `Throwable` for the SDK's outermost callback wrapper since an
-  `OutOfMemoryError` originating in user code shouldn't take down the
-  background thread.
+  around the user callback. The recover must log via the SDK's configured
+  logger, not stderr directly, and must not call the restart counter.
+- **Java:** `try/catch (Exception e)` around the user callback (not
+  `Throwable`: an `Error` is not an ordinary exception).
 - **Python:** `try / except Exception` (NOT bare `except` — let
   `KeyboardInterrupt` and `SystemExit` propagate). Log via
   `logger.exception()` so the traceback is preserved.
@@ -359,11 +397,8 @@ refactor). This test ships with that fix in Phase 1 of the hardening plan.
   Promise rejection from an async callback must be awaited and caught;
   unhandled rejections would crash the process under
   `--unhandled-rejections=strict`.
-
-**Languages where this test is optional:** sdk-java, sdk-python, sdk-ruby,
-sdk-node already have language-level idioms (try/catch) and most of those
-SDKs already wrap user callbacks. The test is *required* for sdk-go and
-*recommended* for all others as a regression guard.
+- **.NET:** `try { } catch (Exception ex)` around the handler invocation;
+  log at Error, not Warning.
 
 ## Test 6 — `lastSuccessfulRefresh()` and `connectionState()` transitions
 
@@ -635,6 +670,32 @@ the pre-fix SDK (9a or 9b; sdk-ruby: 9a or 9c).
 callback tests). Under this rule they no longer report `connected` on
 headers and must send a frame first.
 
+## Test 10 — Size caps (all backend SDKs)
+
+**Applies to:** every backend SDK (go, node, python, ruby, java, net). Plan:
+`project/plans/2026-10-22-sse-body-size-caps.md`, approved by Jeff
+2026-10-22 (bead `qfg-6vno.8`). **The rule under test:** "Rule — size caps"
+above.
+
+Local server, same fixture as Test 9.
+1. SSE serves `id: g2` + `data:` with a valid-JSON envelope padded to
+   4 MiB + 1 byte, then holds the stream open; `/api/v2/configs` serves a
+   small valid envelope. Assert within 10 s: at least 2 SSE connects with
+   growing gaps, `connectionState()` never `connected`, the fallback poller
+   fetched `/api/v2/configs`, exactly one WARN containing `4194304`.
+2. SSE serves `data: ` followed by 8 MiB with no newline. Assert the
+   connection ends and is retried with backoff, and (where the language can
+   measure it) the process did not buffer more than about 5 MiB for it.
+3. `/api/v2/configs` returns 200 with a 16 MiB + 1 byte body (and a run
+   with no `Content-Length`). Assert the leg failed, nothing installed,
+   no ETag stored, the next request sends no `If-None-Match` from it.
+4. `/api/v2/configs` returns 502 with a 2 MiB body containing a marker
+   string. Assert no log line or error message contains the marker.
+5. Control: an envelope of 3 MiB over SSE and 12 MiB over HTTP installs.
+
+No YAML corpus change: this is a transport contract, tested by per-SDK unit
+tests against a local server, like Tests 8 and 9.
+
 ## Test runner conventions
 
 Each SDK places these tests in its own test directory, run by its own
@@ -657,10 +718,10 @@ Each test should be named after its number above, e.g.
 
 A Tier 1 implementation is accepted when:
 
-1. Tests 1-6, 8 and 9 run green in the SDK's CI (plus Test 7 where applicable;
-   Test 7 is N/A for go, node, java and net).
-2. The SDK exposes `worker_restart_total`, `lastSuccessfulRefresh()`,
-   `connectionState()` per the contract.
+1. Tests 1-6, 8, 9 and 10 run green in the SDK's CI (plus Test 7 where
+   applicable; Test 7 is N/A for go, node, java and net).
+2. The SDK exposes `worker_restart_total`, `callback_errors_total`,
+   `lastSuccessfulRefresh()`, `connectionState()` per the contract.
 3. The SDK's `connectionState()` only returns documented values.
 4. The PR description in the SDK repo links back to this doc and to the
    parent bead `qfg-47c2`.
