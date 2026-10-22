@@ -3,8 +3,9 @@ tests:
   - name: "10 callback throw — user code throws inside onConfigUpdate"
     description: |
       A panic/throw inside the customer-provided onConfigUpdate callback MUST be
-      caught by the supervisor. The SDK continues to operate; subsequent updates
-      are still delivered. The 'worker_restart_total' counter increments.
+      caught by the SDK. The SDK continues to operate; subsequent updates
+      are still delivered. The 'callback_errors_total{callback=on_config_update}'
+      counter increments; a callback throw is not a worker restart (contract Test 5).
     setup:
       sdk: any
       sse_endpoint: chaos
@@ -14,7 +15,7 @@ tests:
     chaos: []
     expectations:
       - within_ms: 10000
-        assert: "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"
+        assert: "client.sdkMetric('quonfig_sdk_callback_errors_total', callback='on_config_update') >= 1"
       - within_ms: 45000
         assert: "client.connectionState() == 'connected'"
       - within_ms: 45000
