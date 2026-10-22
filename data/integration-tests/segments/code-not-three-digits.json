@@ -1,0 +1,39 @@
+{
+  "id": "17611315200000006",
+  "projectId": "124",
+  "key": "code-not-three-digits",
+  "type": "segment",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "propertyName": "user.code",
+            "operator": "PROP_DOES_NOT_MATCH",
+            "valueToMatch": {
+              "type": "string",
+              "value": "^[0-9]{3}$"
+            }
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": true
+        }
+      },
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    ]
+  }
+}

@@ -71,6 +71,28 @@ invalid:                                 # must be rejected
 
 Self-check: `cd generators && npm test` (`src/shared/duration-grammar.test.ts`).
 
+## Regex dialect fixture (qfg-ktkr.1)
+
+`tests/regex/dialect.yaml` defines "Quonfig regex v1", the patterns
+`PROP_MATCHES` and `PROP_DOES_NOT_MATCH` accept: the intersection of what
+every SDK's engine reads the same way, plus a ReDoS safety rule (no
+quantified group containing a quantifier or `|`, at most 2 unbounded
+quantifiers, at most 256 characters). It is for the writers (cli
+`qfg verify` and push, app-quonfig): each `reject` row carries a reason
+code, and `hints` gives the fix-it text per code. SDKs do not validate;
+their evaluation contract (unanchored search; invalid pattern, non-string
+value or missing property make both operators false) is in
+`tests/eval/enabled.yaml`.
+
+```yaml
+accept:
+  - { pattern: '^[0-9]{3}$' }
+reject:
+  - { pattern: '(a+)+', reason: nested-quantifier }
+```
+
+Self-check: `cd generators && npm test` (`src/shared/regex-dialect.test.ts`).
+
 ## Workflow
 
 ```

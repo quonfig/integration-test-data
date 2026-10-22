@@ -1,0 +1,238 @@
+# "Quonfig regex v1": the regex dialect of the PROP_MATCHES and
+# PROP_DOES_NOT_MATCH operators (qfg-ktkr.1).
+#
+# Spec: project/plans/2026-10-12-regex-write-time-check.md section 2,
+# approved by Jeff on 2026-10-16 (qfg-goi1.10.10): writers and the git hook
+# REJECT out-of-dialect patterns from day one; \d \w \s \b are rejected with
+# a hint; the safety caps are as written; context values containing a
+# newline are out of contract.
+#
+# The dialect is the intersection of what every SDK's engine accepts and
+# reads the same way (go RE2, node RegExp with no flags, python re, ruby
+# Onigmo, java.util.regex, .NET Regex), plus a ReDoS safety rule. SDKs do
+# NOT validate patterns: they compile and search, and an invalid pattern
+# makes both operators false. This file is for the WRITERS: the fixture of
+# record for cli (src/verify/regex-dialect.ts, qfg verify + both push
+# engines + migrate) and app-quonfig (src/lib/domain/regex-dialect.ts, on
+# CriterionSchema). Evaluation behavior is pinned in tests/eval/enabled.yaml.
+#
+# Shape:
+#   dialect:        name of the dialect
+#   limits:         the numeric caps
+#   allowed:        the allowed constructs, verbatim from the plan
+#   rejected:       the rejected constructs, verbatim from the plan
+#   hints:          reason code -> the fix-it hint a writer shows
+#   accept:         list of { pattern, note? }   must pass the check
+#   reject:         list of { pattern, reason, note? }   must fail with `reason`
+#   open_questions: list of { pattern, question }   NOT pinned either way
+#
+# Patterns are single-quoted YAML, so a backslash is a literal backslash
+# ('\d' is the two characters \ and d) and '' is one quote.
+#
+# Which reason a pattern gets when it breaks more than one rule:
+#   1. too-long, before anything else (length counts Unicode code points);
+#   2. then one left-to-right scan reports the FIRST offending construct,
+#      syntax errors included (an unclosed ( or [ is found at the end of
+#      the scan);
+#   3. then too-many-unbounded, which needs the whole pattern.
+# A quantifier applies to the atom just before it. `^` and `$` are not
+# atoms, so `^*` is a syntax error. "Contains" in the nested-quantifier
+# rule is transitive: ((a+))+ is rejected. A `|` or a quantifier inside a
+# class [...] is a literal and counts for neither rule.
+#
+# Self-check: generators/src/shared/regex-dialect.test.ts (cd generators &&
+# npm test) re-derives the dialect independently and holds every row to it.
+
+dialect: quonfig-regex-v1
+
+limits:
+  max_length: 256
+  max_repeat: 1000
+  max_unbounded_quantifiers: 2
+
+allowed:
+  - 'literals; `.`; `^` and `$`; `|`; `( )` capturing groups and `(?: )`'
+  - '`*` `+` `?` and `{n}` `{n,}` `{n,m}` with n <= m <= 1000, each optionally lazy (`*?` and so on)'
+  - 'classes `[...]` and `[^...]` holding literals and ranges'
+  - 'escapes: `\` + ASCII punctuation, `\t \n \r \f \v`, `\xHH`'
+
+rejected:
+  - 'any `(?` other than `(?:`. That covers lookaround, named groups in both syntaxes, inline flags, atomic groups, comments and conditionals'
+  - 'backreferences `\1`-`\9` and `\k<..>`; octal and `\0`'
+  - 'possessive quantifiers; `{,m}` (python reads it as `{0,m}`, the rest read it as a literal); repeat counts over 1000 (RE2''s limit)'
+  - 'in a class: `[:..:]`, a nested `[`, `&&` (java intersection), and `--`, `~~` or `||` (python warns that these become set operations)'
+  - '`\A \z \Z \G \Q..\E \p \P \u \x{..} \h \R \X \K`, and any other `\letter` not listed as allowed'
+  - '`\d \w \s \b` and their negations (python and .NET match Unicode digits and letters; go, node, java and ruby are ASCII-only). Hint: use `[0-9]`, `[A-Za-z0-9_]` or `[ \t\r\n\f\v]`.'
+  - 'Safety: no quantifier on a group that contains a quantifier or an `|` (this stops `(a+)+`, `(a|a)*` and `(x+x+)+y`); at most 2 unbounded quantifiers per pattern (`*`, `+`, `{n,}`), which caps the polynomial `.*.*.*` blow-up; pattern length <= 256.'
+
+hints:
+  too-long: 'Regex patterns are limited to 256 characters.'
+  syntax: 'This is not a valid regular expression. Check for an unbalanced ( ) or [ ], a trailing \, a reversed range such as [z-a], or a quantifier with nothing before it (a quantifier cannot follow ^, $, |, ( or another quantifier).'
+  lookaround: 'Lookahead and lookbehind ((?=, (?!, (?<=, (?<!) are not supported. Rewrite the pattern without them, or split the rule into two criteria.'
+  named-group: 'Named groups ((?<name>...), (?P<name>...), (?''name''...)) are not supported. Use a plain group ( ) or (?: ).'
+  inline-flag: 'Inline flags such as (?i) are not supported. Spell out both cases with a class, for example [Hh]ello.'
+  group-extension: 'Only ( ) and (?: ) groups are supported. Atomic groups (?>...), comments (?#...), conditionals and other (? forms are not.'
+  backref: 'Backreferences (\1 to \9, \k<name>) are not supported. Repeat the text explicitly instead.'
+  octal: 'Octal escapes and \0 are not supported. Write the character as \xHH, for example \x00.'
+  possessive: 'Possessive quantifiers (*+, ++, ?+, {n}+) are not supported. Use the plain form (a+) or the lazy form (a+?).'
+  bad-repeat: 'Write repeat counts as {n}, {n,} or {n,m} with n <= m <= 1000. {,m} is not portable: write {0,m}. Escape a literal brace as \{.'
+  class-syntax: 'Inside [...] use only literals, ranges and escapes. POSIX classes such as [:digit:], a nested [, &&, --, ~~ and || are not supported. Escape a literal [ or ] as \[ or \], and do not start a class with ].'
+  unicode-shorthand: '\d, \w, \s, \b and their negations match different characters in different SDKs. Use [0-9], [A-Za-z0-9_] or [ \t\r\n\f\v].'
+  unsupported-escape: 'This escape is not supported. The supported escapes are \ followed by ASCII punctuation, \t \n \r \f \v, and \xHH with exactly two hex digits.'
+  nested-quantifier: 'A quantifier cannot apply to a group that contains a quantifier or a |, as in (a+)+ or (a|b)*. Such patterns can take exponential time. Quantify the inner part only, or use a class: [ab]* instead of (a|b)*.'
+  too-many-unbounded: 'A pattern can have at most 2 unbounded quantifiers (*, +, {n,}). Bound the extra ones with {n,m}, or split the rule into two criteria.'
+
+accept:
+  # Literals, dot, anchors, alternation, groups
+  - { pattern: 'abc' }
+  - { pattern: 'a.c' }
+  - { pattern: '^$', note: 'anchors only' }
+  - { pattern: '^(foo|bar)$', note: 'a group holding | is fine when it is not quantified' }
+  - { pattern: 'a|b|' , note: 'an empty alternative' }
+  - { pattern: '(a)(b)(?:c)' }
+  - { pattern: '((ab))+', note: 'nested groups with no quantifier or | inside' }
+  - { pattern: '@example\.com$' }
+  - { pattern: 'a}b', note: 'an unescaped } is a literal' }
+  # Quantifiers, lazy forms, repeat bounds
+  - { pattern: 'a+b+', note: 'the existing ITD fixture pattern' }
+  - { pattern: 'colou?r' }
+  - { pattern: 'a{2}b{2,}c{2,5}' }
+  - { pattern: 'a{0,1000}', note: 'the repeat ceiling' }
+  - { pattern: 'a{1000}' }
+  - { pattern: 'a*?b+?' }
+  - { pattern: 'a??b{2,5}?c{3}?' }
+  - { pattern: '(?:ab)+', note: 'a quantified group with no quantifier or | inside' }
+  - { pattern: '.*foo.*', note: 'exactly 2 unbounded quantifiers' }
+  - { pattern: 'a*b?c{1,3}d+', note: '2 unbounded; ? and {n,m} are bounded' }
+  # Classes
+  - { pattern: '^[0-9]{3}$' }
+  - { pattern: '^[A-Za-z0-9_]+$', note: 'the \w replacement' }
+  - { pattern: '[^a-z]' }
+  - { pattern: '[-a][a-][a^b]', note: 'a - at either end and a ^ after the start are literals' }
+  - { pattern: '[\]\[\-\\]', note: 'escaped ] [ - and \ in a class' }
+  - { pattern: '[a|b*]', note: '| and * inside a class are literals' }
+  - { pattern: '[\x00-\x1f]' }
+  - { pattern: '^user-[0-9]+@[a-z]+\.[a-z]{2,6}$' }
+  # Escapes
+  - { pattern: '\.\*\+\?\(\)\[\]\{\}\|\\\^\$\/' }
+  - { pattern: '\!\"\#\%\&\''\,\-\:\;\<\=\>\@\`\~', note: 'more ASCII punctuation escapes' }
+  - { pattern: '\t\n\r\f' }
+  - { pattern: '\x41\x7a' }
+  # Length
+  - { pattern: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', note: '256 characters, the length cap' }
+
+reject:
+  # too-long
+  - { pattern: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', reason: too-long, note: '257 characters' }
+  # syntax
+  - { pattern: '(abc', reason: syntax }
+  - { pattern: 'abc)', reason: syntax }
+  - { pattern: '[abc', reason: syntax }
+  - { pattern: 'abc\', reason: syntax, note: 'trailing backslash' }
+  - { pattern: '*a', reason: syntax }
+  - { pattern: 'a**', reason: syntax }
+  - { pattern: '^*a', reason: syntax, note: 'RE2 accepts this, node and java do not' }
+  - { pattern: 'a|*b', reason: syntax }
+  - { pattern: 'a{2}{3}', reason: syntax }
+  - { pattern: '[z-a]', reason: syntax }
+  # lookaround
+  - { pattern: 'foo(?=bar)', reason: lookaround }
+  - { pattern: 'foo(?!bar)', reason: lookaround }
+  - { pattern: '(?<=x)y', reason: lookaround }
+  - { pattern: '(?<!x)y', reason: lookaround }
+  # named-group
+  - { pattern: '(?P<n>a)', reason: named-group }
+  - { pattern: '(?<n>a)', reason: named-group }
+  - { pattern: '(?''n''a)', reason: named-group }
+  # inline-flag
+  - { pattern: '(?i)abc', reason: inline-flag }
+  - { pattern: '(?i:abc)', reason: inline-flag }
+  - { pattern: '(?-i)abc', reason: inline-flag }
+  # group-extension
+  - { pattern: '(?>a)b', reason: group-extension, note: 'atomic group' }
+  - { pattern: '(?#note)a', reason: group-extension, note: 'comment' }
+  - { pattern: '(?(1)a|b)', reason: group-extension, note: 'conditional' }
+  # backref
+  - { pattern: '(a)\1', reason: backref }
+  - { pattern: '(a)\9', reason: backref }
+  - { pattern: '\k<n>', reason: backref }
+  # octal
+  - { pattern: '\0', reason: octal }
+  - { pattern: 'a\012', reason: octal }
+  # possessive
+  - { pattern: 'a++b', reason: possessive }
+  - { pattern: 'a*+b', reason: possessive }
+  - { pattern: 'a?+b', reason: possessive }
+  - { pattern: 'a{2}+b', reason: possessive }
+  # bad-repeat
+  - { pattern: 'a{,3}', reason: bad-repeat, note: 'python reads {0,3}, the rest a literal' }
+  - { pattern: 'a{1001}', reason: bad-repeat }
+  - { pattern: 'a{0,1001}', reason: bad-repeat }
+  - { pattern: 'a{3,2}', reason: bad-repeat }
+  - { pattern: 'a{', reason: bad-repeat, note: 'a bare brace; java rejects it' }
+  - { pattern: 'x{foo}', reason: bad-repeat }
+  # class-syntax
+  - { pattern: '[[:digit:]]', reason: class-syntax }
+  - { pattern: '[:alpha:]', reason: class-syntax }
+  - { pattern: '[a[b]]', reason: class-syntax, note: 'nested [' }
+  - { pattern: '[a&&b]', reason: class-syntax, note: 'java intersection' }
+  - { pattern: '[a--b]', reason: class-syntax }
+  - { pattern: '[a~~b]', reason: class-syntax }
+  - { pattern: '[a||b]', reason: class-syntax }
+  - { pattern: '[]a]', reason: class-syntax, note: 'node reads [] as an empty class, the rest a literal ]' }
+  - { pattern: '[^]a]', reason: class-syntax, note: 'node reads [^] as any character' }
+  # unicode-shorthand
+  - { pattern: '^\d+$', reason: unicode-shorthand }
+  - { pattern: '\D', reason: unicode-shorthand }
+  - { pattern: '^\w+$', reason: unicode-shorthand }
+  - { pattern: '\W', reason: unicode-shorthand }
+  - { pattern: 'a\sb', reason: unicode-shorthand }
+  - { pattern: '\S', reason: unicode-shorthand }
+  - { pattern: '\bfoo\b', reason: unicode-shorthand }
+  - { pattern: '\B', reason: unicode-shorthand }
+  - { pattern: '[\d]', reason: unicode-shorthand, note: 'inside a class too' }
+  # unsupported-escape
+  - { pattern: '\Aabc', reason: unsupported-escape }
+  - { pattern: 'abc\z', reason: unsupported-escape }
+  - { pattern: 'abc\Z', reason: unsupported-escape }
+  - { pattern: '\Gabc', reason: unsupported-escape }
+  - { pattern: '\Qa.b\E', reason: unsupported-escape }
+  - { pattern: '\p{L}', reason: unsupported-escape }
+  - { pattern: '\P{L}', reason: unsupported-escape }
+  - { pattern: '\u0041', reason: unsupported-escape }
+  - { pattern: '\x{41}', reason: unsupported-escape }
+  - { pattern: '\x4', reason: unsupported-escape, note: '\x needs exactly two hex digits' }
+  - { pattern: '\h', reason: unsupported-escape }
+  - { pattern: '\R', reason: unsupported-escape }
+  - { pattern: '\X', reason: unsupported-escape }
+  - { pattern: 'a\Kb', reason: unsupported-escape }
+  - { pattern: '\a', reason: unsupported-escape, note: 'any other \letter' }
+  - { pattern: '\e', reason: unsupported-escape }
+  - { pattern: '\cA', reason: unsupported-escape }
+  - { pattern: '\ ', reason: unsupported-escape, note: 'a space is not ASCII punctuation' }
+  - { pattern: '[\p{L}]', reason: unsupported-escape, note: 'inside a class too' }
+  # nested-quantifier
+  - { pattern: '(a+)+', reason: nested-quantifier }
+  - { pattern: '(a|a)*', reason: nested-quantifier }
+  - { pattern: '(x+x+)+y', reason: nested-quantifier, note: 'also 3 unbounded; nested-quantifier is found first' }
+  - { pattern: '(ab?)*', reason: nested-quantifier, note: 'a bounded inner quantifier counts' }
+  - { pattern: '(?:a|b)?', reason: nested-quantifier, note: 'a bounded outer quantifier counts' }
+  - { pattern: '([0-9]{3})+', reason: nested-quantifier }
+  - { pattern: '((a+))+', reason: nested-quantifier, note: 'contains is transitive' }
+  # too-many-unbounded
+  - { pattern: '.*.*.*', reason: too-many-unbounded }
+  - { pattern: 'a+b+c+', reason: too-many-unbounded }
+  - { pattern: 'a*b{2,}c+', reason: too-many-unbounded }
+  - { pattern: 'a*?b+?c*?', reason: too-many-unbounded, note: 'lazy forms count' }
+
+# Three constructs on the plan's allowed list that a cross-engine probe
+# (2026-10-22, go 1.26, node 25, python 3.9, ruby 2.6, java 22, .NET 8)
+# shows are NOT read the same way everywhere. Neither accepted nor rejected
+# here until Jeff decides; see qfg-ktkr.7.
+open_questions:
+  - pattern: '\_'
+    question: '.NET throws "Unrecognized escape sequence \_" (also in a class). _ is ASCII punctuation, so the plan allows it. Reject \_ (hint: write _ unescaped)?'
+  - pattern: '^\v$'
+    question: 'java reads \v as the class [\n\x0B\f\r\x85\u2028\u2029] (it matches "\r"); every other engine reads it as \x0B. Reject \v (hint: write \x0B), and change the \s hint to [ \t\r\n\f\x0B]?'
+  - pattern: '\xe9'
+    question: 'ruby raises "too short escaped multibyte character" for \x80 to \xFF (and [\x80-\xff]); the rest read U+0080 to U+00FF. Restrict \xHH to \x00-\x7F?'
