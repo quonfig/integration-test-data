@@ -5,8 +5,8 @@
 //
 //   - `type:` + `function:` pick the public method: the typed getter
 //     (getString / getNumber / getBool / getStringList / getJSON /
-//     getDuration), `get(key, contexts, default)` when the case supplies a
-//     default (Node's typed getters take none), `isEnabled` for
+//     getDuration), called with the default as its third argument when the
+//     case supplies one (qfg-zvyy, sdk-node 2.0), `isEnabled` for
 //     `function: enabled`. `get_or_raise` is the same call on a client with
 //     the SDK's default `onNoDefault: "error"`.
 //   - Context tiers are NOT pre-merged here: `global` becomes the client's
@@ -354,14 +354,6 @@ function publicCall(kase: YamlCase, recv: string, key: string): string {
     return `${recv}.isEnabled(${keyLit}${localLit ? `, ${localLit}` : ''})`;
   }
 
-  if (hasDefault) {
-    // Node's typed getters take no default; `get(key, contexts, default)` is
-    // the public call that does. DURATION defaults are integer ms (the YAML
-    // unit), which is also what Node returns for a duration.
-    const def = (input as { default?: unknown }).default;
-    return `${recv}.get(${keyLit}, ${localLit ?? 'undefined'}, ${tsLiteral(def)})`;
-  }
-
   const yamlType = kase.type === undefined ? undefined : String(kase.type).toUpperCase();
   let method = 'get';
   if (yamlType !== undefined) {
@@ -369,6 +361,17 @@ function publicCall(kase: YamlCase, recv: string, key: string): string {
     if (!typed) throw new Error(`no Node typed getter for type: ${yamlType}`);
     method = typed;
   }
+
+  if (hasDefault) {
+    // The typed getter with a default (qfg-zvyy, sdk-node 2.0): only a typed
+    // call can tell a wrong-type value from a found one, so a defaulted case
+    // never goes through the untyped `get(key, contexts, default)`. DURATION
+    // defaults are integer ms (the YAML unit), which is also what Node
+    // returns for a duration.
+    const def = (input as { default?: unknown }).default;
+    return `${recv}.${method}(${keyLit}, ${localLit ?? 'undefined'}, ${tsLiteral(def)})`;
+  }
+
   return `${recv}.${method}(${keyLit}${localLit ? `, ${localLit}` : ''})`;
 }
 

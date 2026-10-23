@@ -518,3 +518,561 @@ tests:
       expected:
         status: raise
         error: unable_to_coerce_env_var
+
+    # Typed-getter contract (qfg-zvyy): get_or_raise legs. The rule and the
+    # fixtures are documented on the "Typed-getter contract" block in
+    # get.yaml. A wrong-type read raises type_mismatch; a malformed stored or
+    # ENV_VAR int/double raises the coercion error (unable_to_coerce_env_var,
+    # as for malformed durations); a missing bool env var raises
+    # missing_env_var. Safe int <-> double conversions return the value.
+    - name: STRING get_or_raise on stored int raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "getter.contract.int"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING get_or_raise on stored double raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "getter.contract.double"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING get_or_raise on stored bool raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "getter.contract.bool"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING get_or_raise on stored string_list raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "getter.contract.string_list"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING get_or_raise on stored json raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "getter.contract.json"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING get_or_raise on stored duration raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "getter.contract.duration"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored string raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.string"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored double 3.9 raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.double"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored bool raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.bool"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored string_list raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.string_list"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored json raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.json"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored duration raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.duration"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DOUBLE get_or_raise on stored string raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.string"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DOUBLE get_or_raise on stored bool raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.bool"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DOUBLE get_or_raise on stored string_list raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.string_list"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DOUBLE get_or_raise on stored json raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.json"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DOUBLE get_or_raise on stored duration raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.duration"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored string raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.string"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored int raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.int"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored double raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.double"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored string_list raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.string_list"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored json raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.json"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored duration raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.duration"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING_LIST get_or_raise on stored string raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING_LIST
+      input:
+        key: "getter.contract.string"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING_LIST get_or_raise on stored int raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING_LIST
+      input:
+        key: "getter.contract.int"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING_LIST get_or_raise on stored double raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING_LIST
+      input:
+        key: "getter.contract.double"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING_LIST get_or_raise on stored bool raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING_LIST
+      input:
+        key: "getter.contract.bool"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING_LIST get_or_raise on stored json raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING_LIST
+      input:
+        key: "getter.contract.json"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: STRING_LIST get_or_raise on stored duration raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: STRING_LIST
+      input:
+        key: "getter.contract.duration"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: JSON get_or_raise on stored string raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: JSON
+      input:
+        key: "getter.contract.string"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: JSON get_or_raise on stored int raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: JSON
+      input:
+        key: "getter.contract.int"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: JSON get_or_raise on stored double raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: JSON
+      input:
+        key: "getter.contract.double"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: JSON get_or_raise on stored bool raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: JSON
+      input:
+        key: "getter.contract.bool"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: JSON get_or_raise on stored string_list raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: JSON
+      input:
+        key: "getter.contract.string_list"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: JSON get_or_raise on stored duration raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: JSON
+      input:
+        key: "getter.contract.duration"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DURATION get_or_raise on stored string raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "getter.contract.string"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DURATION get_or_raise on stored int raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "getter.contract.int"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DURATION get_or_raise on stored double raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "getter.contract.double"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DURATION get_or_raise on stored bool raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "getter.contract.bool"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DURATION get_or_raise on stored string_list raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "getter.contract.string_list"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DURATION get_or_raise on stored json raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "getter.contract.json"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored string "false" raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.string.false"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: BOOLEAN get_or_raise on stored string "true" raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.string.true"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored string "3" raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.string.number"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DOUBLE get_or_raise on stored string "3" raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.string.number"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DURATION get_or_raise on stored string "PT1S" raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: DURATION
+      input:
+        key: "getter.contract.string.duration"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: DOUBLE get_or_raise on stored int 30 returns 30.0
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.int"
+      expected:
+        value: 30.0
+
+    - name: INT get_or_raise on stored whole double 3.0 returns 3
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.double.whole"
+      expected:
+        value: 3
+
+    - name: INT get_or_raise on stored double 1e300 raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.double.huge"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored double 2^53 (outside the safe int range) raises type_mismatch
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.double.unsafe"
+      expected:
+        status: "raise"
+        error: "type_mismatch"
+
+    - name: INT get_or_raise on stored malformed int "twelve" raises unable_to_coerce_env_var
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.int.malformed"
+      expected:
+        status: "raise"
+        error: "unable_to_coerce_env_var"
+
+    - name: DOUBLE get_or_raise on stored malformed double "abc" raises unable_to_coerce_env_var
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.double.malformed"
+      expected:
+        status: "raise"
+        error: "unable_to_coerce_env_var"
+
+    - name: INT get_or_raise on env-var-provided malformed int "twelve" raises unable_to_coerce_env_var
+      client: config_client
+      function: get_or_raise
+      type: INT
+      input:
+        key: "getter.contract.provided.int.malformed"
+      env_vars:
+        QUONFIG_ITD_GETTER_INT: "twelve"
+      expected:
+        status: "raise"
+        error: "unable_to_coerce_env_var"
+
+    - name: DOUBLE get_or_raise on env-var-provided malformed double "abc" raises unable_to_coerce_env_var
+      client: config_client
+      function: get_or_raise
+      type: DOUBLE
+      input:
+        key: "getter.contract.provided.double.malformed"
+      env_vars:
+        QUONFIG_ITD_GETTER_DOUBLE: "abc"
+      expected:
+        status: "raise"
+        error: "unable_to_coerce_env_var"
+
+    - name: BOOLEAN get_or_raise on a missing bool env var raises missing_env_var
+      client: config_client
+      function: get_or_raise
+      type: BOOLEAN
+      input:
+        key: "getter.contract.provided.bool.missing"
+      expected:
+        status: "raise"
+        error: "missing_env_var"

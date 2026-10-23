@@ -604,3 +604,1249 @@ tests:
           value: ~
         client_overrides:
           on_no_default: 2
+
+      ##########################################################################
+      ## Typed-getter contract (qfg-zvyy; JEFF'S DECISIONS 2026-10-22/23 on the
+      ## bead). Generalizes the malformed-durations rule above to every type
+      ## and every failed read:
+      ##   - type mismatch: the stored valueType is not the getter's type. No
+      ##     string coercion: stored "false" is never a bool, "3" never an int,
+      ##     "PT1S" never a duration.
+      ##   - int <-> double: safe conversions only. A double getter on an int
+      ##     always succeeds (30 -> 30.0); an int getter on a double succeeds
+      ##     only when the value is whole and within +/-(2^53-1) (3.0 -> 3).
+      ##     3.9, 1e300 and 2^53 are type mismatches. Never truncate.
+      ##   - malformed stored or ENV_VAR int/double (qfg-zqoh), a missing
+      ##     ENV_VAR and a decryption failure follow the same rule.
+      ## For every failed read:
+      ##   - typed getter WITH a default -> the caller's default (the SDK also
+      ##     logs once per key; ITD cannot assert logging).
+      ##   - typed getter with NO default -> the SDK's absent value
+      ##     (null/None/nil; zero with ok=false in Go).
+      ##   - get_or_raise -> raises (see get_or_raise.yaml): type_mismatch for a
+      ##     wrong type, unable_to_coerce_env_var for a malformed value (same
+      ##     key as malformed durations), missing_env_var / unable_to_decrypt.
+      ##   - enabled never raises: false (see enabled.yaml).
+      ## Fixtures: data/integration-tests/configs/getter.contract.*.json.
+      ##########################################################################
+      - name: STRING getter on stored int returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.int"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on stored int with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.int"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING getter on stored double returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.double"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on stored double with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.double"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING getter on stored bool returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.bool"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on stored bool with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.bool"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING getter on stored string_list returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.string_list"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on stored string_list with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.string_list"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING getter on stored json returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.json"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on stored json with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.json"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING getter on stored duration returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.duration"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on stored duration with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "getter.contract.duration"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored string returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.string"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored string with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.string"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored double 3.9 returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored double 3.9 with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored bool returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.bool"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored bool with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.bool"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored string_list returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.string_list"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored string_list with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.string_list"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored json returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.json"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored json with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.json"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored duration returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.duration"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored duration with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.duration"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on stored string returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.string"
+          default: 7.5
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on stored string with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.string"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on stored bool returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.bool"
+          default: 7.5
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on stored bool with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.bool"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on stored string_list returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.string_list"
+          default: 7.5
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on stored string_list with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.string_list"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on stored json returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.json"
+          default: 7.5
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on stored json with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.json"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on stored duration returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.duration"
+          default: 7.5
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on stored duration with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.duration"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored string returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored string with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored int returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.int"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored int with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.int"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored double returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.double"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored double with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.double"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored string_list returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string_list"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored string_list with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string_list"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored json returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.json"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored json with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.json"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored duration returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.duration"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored duration with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.duration"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING_LIST getter on stored string returns the default
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.string"
+          default: ["DEFAULT"]
+        expected:
+          value: ["DEFAULT"]
+
+      - name: STRING_LIST getter on stored string with no default returns nil
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.string"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING_LIST getter on stored int returns the default
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.int"
+          default: ["DEFAULT"]
+        expected:
+          value: ["DEFAULT"]
+
+      - name: STRING_LIST getter on stored int with no default returns nil
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.int"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING_LIST getter on stored double returns the default
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.double"
+          default: ["DEFAULT"]
+        expected:
+          value: ["DEFAULT"]
+
+      - name: STRING_LIST getter on stored double with no default returns nil
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.double"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING_LIST getter on stored bool returns the default
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.bool"
+          default: ["DEFAULT"]
+        expected:
+          value: ["DEFAULT"]
+
+      - name: STRING_LIST getter on stored bool with no default returns nil
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.bool"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING_LIST getter on stored json returns the default
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.json"
+          default: ["DEFAULT"]
+        expected:
+          value: ["DEFAULT"]
+
+      - name: STRING_LIST getter on stored json with no default returns nil
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.json"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING_LIST getter on stored duration returns the default
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.duration"
+          default: ["DEFAULT"]
+        expected:
+          value: ["DEFAULT"]
+
+      - name: STRING_LIST getter on stored duration with no default returns nil
+        client: config_client
+        function: get
+        type: STRING_LIST
+        input:
+          key: "getter.contract.duration"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: JSON getter on stored string returns the default
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.string"
+          default: {"default": true}
+        expected:
+          value: {"default": true}
+
+      - name: JSON getter on stored string with no default returns nil
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.string"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: JSON getter on stored int returns the default
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.int"
+          default: {"default": true}
+        expected:
+          value: {"default": true}
+
+      - name: JSON getter on stored int with no default returns nil
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.int"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: JSON getter on stored double returns the default
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.double"
+          default: {"default": true}
+        expected:
+          value: {"default": true}
+
+      - name: JSON getter on stored double with no default returns nil
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.double"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: JSON getter on stored bool returns the default
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.bool"
+          default: {"default": true}
+        expected:
+          value: {"default": true}
+
+      - name: JSON getter on stored bool with no default returns nil
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.bool"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: JSON getter on stored string_list returns the default
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.string_list"
+          default: {"default": true}
+        expected:
+          value: {"default": true}
+
+      - name: JSON getter on stored string_list with no default returns nil
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.string_list"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: JSON getter on stored duration returns the default
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.duration"
+          default: {"default": true}
+        expected:
+          value: {"default": true}
+
+      - name: JSON getter on stored duration with no default returns nil
+        client: config_client
+        function: get
+        type: JSON
+        input:
+          key: "getter.contract.duration"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DURATION getter on stored string returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.string"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: DURATION getter on stored string with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.string"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DURATION getter on stored int returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.int"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: DURATION getter on stored int with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.int"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DURATION getter on stored double returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.double"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: DURATION getter on stored double with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.double"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DURATION getter on stored bool returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.bool"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: DURATION getter on stored bool with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.bool"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DURATION getter on stored string_list returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.string_list"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: DURATION getter on stored string_list with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.string_list"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DURATION getter on stored json returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.json"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: DURATION getter on stored json with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.json"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored string "false" returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string.false"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored string "false" with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string.false"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on stored string "false" returns a true default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string.false"
+          default: true
+        expected:
+          value: true
+
+      - name: BOOLEAN getter on stored string "true" returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string.true"
+          default: false
+        expected:
+          value: false
+
+      - name: BOOLEAN getter on stored string "true" with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.string.true"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored string "3" returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.string.number"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored string "3" with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.string.number"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on stored string "3" returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.string.number"
+          default: 7.5
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on stored string "3" with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.string.number"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DURATION getter on stored string "PT1S" returns the default
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.string.duration"
+          default: 7000
+        expected:
+          millis: 7000
+
+      - name: DURATION getter on stored string "PT1S" with no default returns nil
+        client: config_client
+        function: get
+        type: DURATION
+        input:
+          key: "getter.contract.string.duration"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE get on stored int 30 returns 30.0
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.int"
+        expected:
+          value: 30.0
+
+      - name: INT get on stored whole double 3.0 returns 3
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double.whole"
+        expected:
+          value: 3
+
+      - name: DOUBLE getter on stored int 30 ignores the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.int"
+          default: 7.5
+        expected:
+          value: 30.0
+
+      - name: INT getter on stored whole double 3.0 ignores the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double.whole"
+          default: 7
+        expected:
+          value: 3
+
+      - name: INT getter on stored double 1e300 returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double.huge"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored double 1e300 with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double.huge"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored double 2^53 (outside the safe int range) returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double.unsafe"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored double 2^53 (outside the safe int range) with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.double.unsafe"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on stored malformed int "twelve" returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.int.malformed"
+          default: 7
+        expected:
+          value: 7
+
+      - name: INT getter on stored malformed int "twelve" with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.int.malformed"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on stored malformed double "abc" returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.double.malformed"
+          default: 7.5
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on stored malformed double "abc" with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.double.malformed"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: INT getter on env-var-provided malformed int "twelve" returns the default
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.provided.int.malformed"
+          default: 7
+        env_vars:
+          QUONFIG_ITD_GETTER_INT: "twelve"
+        expected:
+          value: 7
+
+      - name: INT getter on env-var-provided malformed int "twelve" with no default returns nil
+        client: config_client
+        function: get
+        type: INT
+        input:
+          key: "getter.contract.provided.int.malformed"
+        env_vars:
+          QUONFIG_ITD_GETTER_INT: "twelve"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: DOUBLE getter on env-var-provided malformed double "abc" returns the default
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.provided.double.malformed"
+          default: 7.5
+        env_vars:
+          QUONFIG_ITD_GETTER_DOUBLE: "abc"
+        expected:
+          value: 7.5
+
+      - name: DOUBLE getter on env-var-provided malformed double "abc" with no default returns nil
+        client: config_client
+        function: get
+        type: DOUBLE
+        input:
+          key: "getter.contract.provided.double.malformed"
+        env_vars:
+          QUONFIG_ITD_GETTER_DOUBLE: "abc"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING getter on a missing env var returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "provided.by.missing.env.var"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on a missing env var with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "provided.by.missing.env.var"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: STRING getter on a decryption failure returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "a.broken.secret.config"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: STRING getter on a decryption failure with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "a.broken.secret.config"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on a missing bool env var returns the default
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.provided.bool.missing"
+          default: true
+        expected:
+          value: true
+
+      - name: BOOLEAN getter on a missing bool env var with no default returns nil
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.provided.bool.missing"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: BOOLEAN getter on env-var-provided bool "false" returns false
+        client: config_client
+        function: get
+        type: BOOLEAN
+        input:
+          key: "getter.contract.provided.bool"
+        env_vars:
+          QUONFIG_ITD_GETTER_BOOL: "false"
+        expected:
+          value: false

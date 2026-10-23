@@ -12,6 +12,8 @@ const RUBY_ERRORS: ErrorMap = {
   missing_env_var: 'Quonfig::Errors::MissingEnvVarError',
   unable_to_coerce_env_var: 'Quonfig::Errors::EnvVarParseError',
   unable_to_decrypt: 'Quonfig::Errors::DecryptionError',
+  // Typed-getter contract (qfg-zvyy): a wrong-type read in get_or_raise.
+  type_mismatch: 'Quonfig::Errors::TypeMismatchError',
   missing_environment: 'Quonfig::Errors::MissingEnvironmentError',
   invalid_environment: 'Quonfig::Errors::InvalidEnvironmentError',
 };
@@ -42,6 +44,10 @@ const NODE_ERRORS: ErrorMap = {
     '/^(environment variable ".*" cannot be converted to (int|double|duration) for config ".*"|\\[quonfig\\] Config ".*" has a malformed duration value)$/',
   // encryption.ts decrypt() / node:crypto GCM auth failure.
   unable_to_decrypt: '/^(Invalid key length|Invalid encrypted string|Unsupported state or unable to authenticate data)/',
+  // Typed-getter contract (qfg-zvyy): the message the *Details API already
+  // reports for TYPE_MISMATCH (quonfig.ts detailsFor), now also raised by the
+  // typed getters under onNoDefault: "error".
+  type_mismatch: '/^Config ".*" has type .*, expected .*$/',
   // datadir.ts resolveEnvironment.
   missing_environment: '/Environment required for datadir mode/',
   invalid_environment: '/Environment ".*" not found in workspace/',
@@ -61,6 +67,9 @@ const PYTHON_ERRORS: ErrorMap = {
   missing_env_var: 'QuonfigEnvVarNotSetError',
   unable_to_coerce_env_var: 'QuonfigKeyNotFoundError',
   unable_to_decrypt: 'QuonfigDecryptionError',
+  // Typed-getter contract (qfg-zvyy). Does not exist yet: sdk-python 3.0
+  // adds it (QuonfigValueTypeError means a malformed wire payload, not this).
+  type_mismatch: 'QuonfigTypeMismatchError',
   missing_environment: 'RuntimeError',
   invalid_environment: 'RuntimeError',
 };
@@ -86,6 +95,9 @@ const JAVA_ERRORS: ErrorMap = {
   missing_env_var: 'com.quonfig.sdk.exceptions.QuonfigEnvVarNotSetException',
   unable_to_coerce_env_var: 'com.quonfig.sdk.exceptions.QuonfigKeyNotFoundException',
   unable_to_decrypt: 'com.quonfig.sdk.exceptions.QuonfigDecryptionException',
+  // Typed-getter contract (qfg-zvyy). Added by qfg-koj9 as a subclass of the
+  // IllegalArgumentException get*OrThrow throws today.
+  type_mismatch: 'com.quonfig.sdk.exceptions.QuonfigTypeMismatchException',
   missing_environment: 'java.lang.RuntimeException',
   invalid_environment: 'java.lang.RuntimeException',
 };

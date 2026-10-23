@@ -1,0 +1,23 @@
+{
+  "id": "17990000000001004",
+  "projectId": "124",
+  "key": "getter.contract.bool",
+  "type": "config",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "bool",
+          "value": true
+        }
+      }
+    ]
+  }
+}

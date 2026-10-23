@@ -1,0 +1,26 @@
+{
+  "id": "17990000000001020",
+  "projectId": "124",
+  "key": "getter.contract.provided.bool.missing",
+  "type": "config",
+  "valueType": "bool",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "provided",
+          "value": {
+            "source": "ENV_VAR",
+            "lookup": "QUONFIG_ITD_GETTER_UNSET_BOOL"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -122,6 +122,9 @@ const DOTNET_ERRORS: Readonly<Record<string, string>> = {
   missing_env_var: 'QuonfigEnvVarNotSetException',
   unable_to_coerce_env_var: 'QuonfigCoercionException',
   unable_to_decrypt: 'QuonfigDecryptionException',
+  // Typed-getter contract (qfg-zvyy). Does not exist yet; the sdk-net minor
+  // adds it.
+  type_mismatch: 'QuonfigTypeMismatchException',
   missing_environment: 'InvalidOperationException',
   invalid_environment: 'InvalidOperationException',
 };

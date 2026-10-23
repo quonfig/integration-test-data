@@ -8,7 +8,12 @@
 // any other shape fails the generator so a Details reason is never silently
 // left unasserted.
 
-const MALFORMED_KEY = /(^|\.)duration\.malformed\./;
+//
+// The typed-getter contract (qfg-zvyy) extends the same rule to every failed
+// read: its `getter.contract.*` fixtures are only ever read with the DURATION
+// getter when the read fails (wrong stored type, or a string that looks like
+// a duration), so they qualify too.
+const MALFORMED_KEY = /(^|\.)duration\.malformed\.|^getter\.contract\./;
 
 /**
  * True when `kase` is a malformed-duration case read with a default, i.e. the
