@@ -27,3 +27,13 @@ test('malformed key that does not expect its default fails the generator', () =>
     isMalformedDurationWithDefault('DURATION', 'test.duration.malformed.30s', { default: 7000 }, 30000),
   );
 });
+
+test('typed-getter contract fixture read with its default -> Reason=ERROR case (qfg-zvyy)', () => {
+  assert.equal(
+    isMalformedDurationWithDefault('DURATION', 'getter.contract.string.duration', { default: 7000 }, 7000),
+    true,
+  );
+  assert.throws(() =>
+    isMalformedDurationWithDefault('DURATION', 'getter.contract.duration', { default: 7000 }, 30000),
+  );
+});

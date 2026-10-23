@@ -139,6 +139,16 @@ tests:
           on_no_default: 2
 ```
 
+### Typed-getter contract (`getter.contract.*`)
+
+`get.yaml`, `get_or_raise.yaml` and `enabled.yaml` each end with the cross-SDK typed-getter
+matrix (qfg-zvyy): every getter type read against every other stored type, strings that look
+like other types, safe int <-> double conversions, malformed ints/doubles, a missing ENV_VAR and
+a decryption failure, each as {with a default, with no default, `get_or_raise`, `enabled`}. The
+rule is written out once, in the comment block above the matrix in `get.yaml`; the fixtures are
+`data/integration-tests/configs/getter.contract.*.json`. A wrong-type `get_or_raise` expects
+`error: type_mismatch`.
+
 ### Init-failure cases (`get_or_raise.yaml`, `function: init`)
 
 The SDK's own init path against unreachable delivery legs. The keys and the expected errors are

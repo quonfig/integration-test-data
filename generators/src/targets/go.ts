@@ -385,6 +385,7 @@ const GO_PUBLIC_ERRORS: Record<string, string> = {
   missing_env_var: 'quonfig.ErrMissingEnvVar',
   unable_to_coerce_env_var: 'quonfig.ErrUnableToCoerce',
   unable_to_decrypt: 'quonfig.ErrUnableToDecrypt',
+  type_mismatch: 'quonfig.ErrTypeMismatch',
   initialization_timeout: 'quonfig.ErrInitializationTimeout',
 };
 
@@ -580,13 +581,12 @@ function renderEvalBody(kase: YamlCase, features: Set<string>): string {
     // Go has no default-argument getter; a customer applies the default
     // when the getter reports ok=false. A getter that reports ok=true with
     // a wrong value bypasses the default and fails here.
-    if (getter.json) throw new Error('JSON with input.default is unsupported');
     body += `\tgot, ok, _ := ${call}\n`;
     body += `\tif !ok {\n`;
     body += `\t\tgot = ${getter.lit(def)}\n`;
     body += `\t}\n`;
     body += `\twant := ${wantLit}\n`;
-    body += `\tassert.Equal(t, want, got)\n`;
+    body += getter.json ? `\tassertJSONValue(t, want, got)\n` : `\tassert.Equal(t, want, got)\n`;
     return body;
   }
 
@@ -1139,7 +1139,9 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[], features: Set<s
   // Third-party / project imports go in a separate block per gofmt style.
   const projectImports: string[] = [];
   if (features.has('quonfig')) {
-    projectImports.push('quonfig "github.com/quonfig/sdk-go"');
+    // sdk-go v2 (qfg-zvyy) moved the module path; the typed-getter contract
+    // cases need v2, so v1 stays on the previous ITD tag.
+    projectImports.push('quonfig "github.com/quonfig/sdk-go/v2"');
   }
   if (features.has('assert')) {
     projectImports.push('"github.com/stretchr/testify/assert"');

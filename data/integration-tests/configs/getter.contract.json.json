@@ -1,0 +1,25 @@
+{
+  "id": "17990000000001006",
+  "projectId": "124",
+  "key": "getter.contract.json",
+  "type": "config",
+  "valueType": "json",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "json",
+          "value": {
+            "a": 1
+          }
+        }
+      }
+    ]
+  }
+}

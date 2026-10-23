@@ -1,0 +1,23 @@
+{
+  "id": "17990000000001013",
+  "projectId": "124",
+  "key": "getter.contract.double.huge",
+  "type": "config",
+  "valueType": "double",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "double",
+          "value": "1e300"
+        }
+      }
+    ]
+  }
+}

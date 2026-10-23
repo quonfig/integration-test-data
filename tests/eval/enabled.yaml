@@ -1894,3 +1894,111 @@ tests:
           flag: "feature-flag.greater-than"
         expected:
           value: false
+
+
+      ############################
+      ## TYPED-GETTER CONTRACT ##
+      ############################
+      ## enabled() never raises (qfg-zvyy, JEFF'S DECISION 2026-10-22 Q3): it
+      ## returns true only for a resolved boolean true, and false for a
+      ## non-boolean value (no string coercion: stored "true" is a string), a
+      ## malformed value, a missing env var or a decryption failure. Fixtures:
+      ## data/integration-tests/configs/getter.contract.*.json.
+
+      - name: enabled on stored bool true returns true
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.bool"
+        expected:
+          value: true
+
+      - name: enabled on env-var-provided bool "true" returns true
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.provided.bool"
+        env_vars:
+          QUONFIG_ITD_GETTER_BOOL: "true"
+        expected:
+          value: true
+
+      - name: enabled on stored string returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.string"
+        expected:
+          value: false
+
+      - name: enabled on stored int returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.int"
+        expected:
+          value: false
+
+      - name: enabled on stored double returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.double"
+        expected:
+          value: false
+
+      - name: enabled on stored string_list returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.string_list"
+        expected:
+          value: false
+
+      - name: enabled on stored json returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.json"
+        expected:
+          value: false
+
+      - name: enabled on stored duration returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.duration"
+        expected:
+          value: false
+
+      - name: enabled on stored string "true" returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.string.true"
+        expected:
+          value: false
+
+      - name: enabled on stored malformed int "twelve" returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.int.malformed"
+        expected:
+          value: false
+
+      - name: enabled on a missing bool env var returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "getter.contract.provided.bool.missing"
+        expected:
+          value: false
+
+      - name: enabled on a decryption failure returns false
+        client: config_client
+        function: enabled
+        input:
+          key: "a.broken.secret.config"
+        expected:
+          value: false

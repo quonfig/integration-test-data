@@ -1,0 +1,23 @@
+{
+  "id": "17990000000001008",
+  "projectId": "124",
+  "key": "getter.contract.string.false",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "string",
+          "value": "false"
+        }
+      }
+    ]
+  }
+}
