@@ -12,7 +12,8 @@
 //      a customer does: a datadir client over the shared corpus; the typed
 //      getter named by the YAML `type:` (get_string / get_int / get_float /
 //      get_bool / get_string_list / get_json / get_duration), `enabled?`, or
-//      `get_or_raise`; context tiers through global_context: /
+//      `get_or_raise` (a typed get_or_raise case is that typed getter on a
+//      client with on_no_default: :raise, qfg-zvyy); context tiers through global_context: /
 //      with_context / in_context (the SDK merges them, the generator does
 //      not); telemetry through the client's real reporter flushed to a local
 //      HTTP sink. No Resolver calls, no harness-side exception mapping, no
@@ -439,7 +440,11 @@ function planCall(kase: YamlCase): CallPlan {
   if (fn === 'get') {
     method = typedGetter(kase);
   } else if (fn === 'get_or_raise') {
-    method = 'get_or_raise';
+    // A typed get_or_raise (qfg-zvyy) is the typed getter on a client with
+    // on_no_default: :raise (see clientOptions), the same shape as the node
+    // and python targets. The untyped Client#get_or_raise cannot tell a
+    // wrong-type value from a found one, so it serves only untyped cases.
+    method = kase.type === undefined ? 'get_or_raise' : typedGetter(kase);
   } else {
     throw new Error(`unsupported function ${JSON.stringify(fn)}`);
   }
@@ -460,6 +465,12 @@ function clientOptions(kase: YamlCase): string[] {
     } else {
       throw new Error(`unsupported client_overrides.${k} on an eval case`);
     }
+  }
+  // Typed get_or_raise: the typed getter raises on a failed read only under
+  // on_no_default: :raise. That is Ruby's default; spelled out so the case
+  // does not depend on it.
+  if (kase.function === 'get_or_raise' && kase.type !== undefined && !hasOwn(overrides, 'on_no_default')) {
+    opts.push('on_no_default: :raise');
   }
   return opts;
 }
