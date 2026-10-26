@@ -4,7 +4,7 @@
 // customer calls it (qfg-2agi.32, modelled on python.ts):
 //
 //   - `type:` + `function:` pick the public method: the typed getter
-//     (getString / getNumber / getBool / getStringList / getJSON /
+//     (getString / getInt / getNumber / getBool / getStringList / getJSON /
 //     getDuration), called with the default as its third argument when the
 //     case supplies one (qfg-zvyy, sdk-node 2.0), `isEnabled` for
 //     `function: enabled`. `get_or_raise` is the same call on a client with
@@ -284,7 +284,10 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
 /** YAML `type:` -> the public typed getter on `Quonfig` / `BoundQuonfig`. */
 const TYPED_GETTERS: Record<string, string> = {
   STRING: 'getString',
-  INT: 'getNumber',
+  // sdk-node 2.0 (qfg-zvyy): getInt is the INT getter (a whole double within
+  // +/-(2^53-1) converts, 3.9 / 1e300 / 2^53 are type mismatches); getNumber
+  // reads int or double as they are, so it is the DOUBLE getter.
+  INT: 'getInt',
   DOUBLE: 'getNumber',
   BOOL: 'getBool',
   BOOLEAN: 'getBool',
