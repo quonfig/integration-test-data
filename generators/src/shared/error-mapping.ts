@@ -94,7 +94,10 @@ const JAVA_ERRORS: ErrorMap = {
   missing_default: 'com.quonfig.sdk.exceptions.QuonfigKeyNotFoundException',
   initialization_timeout: 'com.quonfig.sdk.exceptions.QuonfigInitTimeoutException',
   missing_env_var: 'com.quonfig.sdk.exceptions.QuonfigEnvVarNotSetException',
-  unable_to_coerce_env_var: 'com.quonfig.sdk.exceptions.QuonfigKeyNotFoundException',
+  // qfg-koj9 (sdk-java 2.2.0): a subclass of QuonfigKeyNotFoundException, which
+  // sdk-java threw for this case before 2.2.0 ("no value found" although the key
+  // exists). Asserting the subclass is what lets the suite fail on the old type.
+  unable_to_coerce_env_var: 'com.quonfig.sdk.exceptions.QuonfigCoercionException',
   unable_to_decrypt: 'com.quonfig.sdk.exceptions.QuonfigDecryptionException',
   // Typed-getter contract (qfg-zvyy). Added by qfg-koj9 as a subclass of the
   // IllegalArgumentException get*OrThrow throws today.
@@ -112,7 +115,6 @@ const DOTNET_ERRORS: ErrorMap = {
   missing_default: 'Quonfig.Sdk.Exceptions.QuonfigKeyNotFoundException',
   initialization_timeout: 'Quonfig.Sdk.Exceptions.QuonfigInitTimeoutException',
   missing_env_var: 'Quonfig.Sdk.Exceptions.QuonfigEnvVarNotSetException',
-  unable_to_coerce_env_var: 'Quonfig.Sdk.Exceptions.QuonfigKeyNotFoundException',
   unable_to_decrypt: 'Quonfig.Sdk.Exceptions.QuonfigDecryptionException',
   missing_environment: 'System.InvalidOperationException',
   invalid_environment: 'System.InvalidOperationException',
