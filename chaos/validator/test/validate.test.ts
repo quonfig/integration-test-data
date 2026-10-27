@@ -153,6 +153,30 @@ test('every http-proxy scenario in chaos/scenarios-http-proxy/*.yaml validates',
   assert.deepEqual(failures, [], `scenarios failed validation:\n${failures.join('\n')}`);
 });
 
+test('scenario 08 auth-failed holds start at entry and end inside the window (qfg-goi1.10.38)', async () => {
+  // Timeline rules 1 and 3: an auth-failed hold must not start before entry
+  // (~125s, margin to 145s), must end no more than 5s short of within_ms, and
+  // within_ms must leave 5s of slack before wall_clock_seconds.
+  const yaml = await import('js-yaml');
+  const doc = yaml.load(load(join(SCENARIOS_HTTP_PROXY, '08-auth-failure.yaml'))) as {
+    tests: Array<{
+      setup: { wall_clock_seconds: number };
+      expectations: Array<{ within_ms: number; after_ms?: number; must_hold_for_ms?: number }>;
+    }>;
+  };
+  const t = doc.tests[0];
+  const wallMs = t.setup.wall_clock_seconds * 1000;
+  const holds = t.expectations.filter((e) => e.must_hold_for_ms !== undefined);
+  assert.equal(holds.length, 3, 'expected the three auth-failed hold rows');
+  holds.forEach((e, i) => {
+    const after = e.after_ms ?? 0;
+    const end = after + e.must_hold_for_ms!;
+    assert.equal(after, 145000, `08 hold row ${i}: after_ms must be the entry deadline 145000`);
+    assert.ok(e.within_ms - end <= 5000, `08 hold row ${i}: hold ends ${e.within_ms - end}ms short of within_ms`);
+    assert.ok(e.within_ms + 5000 <= wallMs, `08 hold row ${i}: within_ms ${e.within_ms} leaves <5s before wall clock ${wallMs}`);
+  });
+});
+
 test('scenarios cover the 11 named cases from the plan (across all suites)', () => {
   const defaultFiles = readdirSync(SCENARIOS).filter((f) => f.endsWith('.yaml'));
   const httpProxyFiles = readdirSync(SCENARIOS_HTTP_PROXY).filter((f) => f.endsWith('.yaml'));

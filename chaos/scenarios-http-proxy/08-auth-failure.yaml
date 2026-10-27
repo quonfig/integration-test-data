@@ -31,20 +31,26 @@ tests:
       - within_ms: 5000
         assert: "client.connectionState() == 'connected'"
       # Entry: the fallback poller engages 120s after the drop and fetches at
-      # once in every backend SDK; 140s after the inject leaves margin.
-      - within_ms: 145000
+      # once in every backend SDK; 140s after the inject (145s from t=0)
+      # leaves margin. The hold starts at entry (after_ms) and runs 90s.
+      - after_ms: 145000
         must_hold_for_ms: 90000
+        within_ms: 240000
         assert: "client.connectionState() == 'disconnected' AND client.fallbackPollerActive() == false"
       # SSE is off while auth-failed. Before entry it follows the normal ladder
-      # and is not asserted; the hold runs from 140s after the inject to the end.
-      - within_ms: 145000
-        must_hold_for_ms: 110000
+      # and is not asserted (after_ms); the hold runs from 145s to 250s, 5s
+      # short of within_ms and wall_clock_seconds.
+      - after_ms: 145000
+        must_hold_for_ms: 105000
+        within_ms: 255000
         assert: "client.sdkMetricRise('quonfig_sse_connect_attempts_total') == 0"
-      # The fallback poller counts only the cycles up to entry, then stops.
-      # The metric name is TBD per SDK; where it does not exist the runner
-      # reports this expectation as an explicit SKIPPED with a reason.
-      - within_ms: 145000
-        must_hold_for_ms: 110000
+      # The fallback poller counts only the cycles up to entry, then stops:
+      # the hold runs from 145s to 250s. The metric name is TBD per SDK; where
+      # it does not exist the runner reports this expectation as an explicit
+      # SKIPPED with a reason.
+      - after_ms: 145000
+        must_hold_for_ms: 105000
+        within_ms: 255000
         assert: "client.sdkMetricRise('quonfig_fallback_poll_requests_total') == 0"
       # Exactly one config ERROR. Pre-entry lines are WARN or lower. Telemetry's
       # own one-time auth ERROR does not count: the runners disable telemetry.
