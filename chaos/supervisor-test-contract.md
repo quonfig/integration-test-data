@@ -158,6 +158,39 @@ no SSE.
   envelope from that source.
 - The caps are constants, not options.
 
+## Rule — a payload the SDK does not install never pins its ETag (qfg-j7ui)
+
+Decided by Jeff 2026-10-27 (bead `qfg-j7ui`, option A). Applies to every
+backend SDK that sends `If-None-Match` (go, node, python, ruby, net).
+sdk-java sends no ETag, so it is unaffected.
+
+api-delivery's ETag is the commit sha. A server can serve sha B at the wrong
+generation (a shallow clone, a damaged object store) and later repair the
+generation for the SAME sha, so the ETag does not change. If the SDK kept the
+ETag of the response it refused, every later poll would get a 304 and the
+client would stay on old config until the next commit.
+
+So when a `/api/v2/configs` 200 is NOT installed, the SDK forgets that
+response's ETag. The next request on that leg sends no `If-None-Match`, or the
+ETag of the last payload it did install. This covers:
+
+- a payload the reject-older guard drops as **strictly older** than the held
+  generation (`0 < incoming < held`);
+- an **unversioned** payload (`generation <= 0`) dropped while a real
+  generation is held (already the rule since qfg-9dxb.9);
+- sdk-node: a payload whose **install throws** (it parsed as an envelope, but
+  building or installing the store failed).
+
+A **same-generation** 200 (`incoming == held`) keeps its ETag: it is the
+config the client already holds, and a 304 for it is correct.
+
+Where cycles can overlap, the forget is compare-and-clear: clear the leg's
+slot only if it still holds that response's ETag, so a newer ETag written by
+another cycle stays.
+
+Cost: while a server lags, every poll to it gets a full 200 that is then
+rejected again. That is bandwidth only, and only during a server fault.
+
 ## Test 1 — Restart on worker throw within 1000ms
 
 **Goal:** Supervisor detects abnormal worker exit and restarts the worker.
@@ -696,6 +729,39 @@ Local server, same fixture as Test 9.
 No YAML corpus change: this is a transport contract, tested by per-SDK unit
 tests against a local server, like Tests 8 and 9.
 
+## Test 11 — A rejected-older 200 does not pin its ETag (all ETag-sending SDKs)
+
+**Applies to:** go, node, python, ruby, net (sdk-java sends no ETag; N/A).
+Bead `qfg-j7ui`. **The rule under test:** "Rule — a payload the SDK does not
+install never pins its ETag" above.
+
+Local server answering `/api/v2/configs`, one leg, no SSE, driven by the
+SDK's own poll or refresh path. Each envelope carries one string config
+`marker`.
+
+1. Serve 200, `ETag: "shaA"`, generation 10, marker `A`. Init. Assert
+   `marker == "A"` and held generation 10.
+2. Serve 200, `ETag: "shaB"`, generation 3, marker `B`. Poll once. Assert
+   `marker` is still `"A"` and the held generation is still 10 (the
+   reject-older guard dropped it).
+3. The server repairs sha B: it answers **304** to `If-None-Match: "shaB"`,
+   and 200, `ETag: "shaB"`, generation 11, marker `B` to anything else. Poll
+   once. Assert the request did NOT carry `If-None-Match: "shaB"`, and that
+   `marker == "B"` with held generation 11.
+
+**Anti-vacuity:** the test MUST be shown red on the pre-fix SDK (step 3 gets
+the 304 and `marker` stays `"A"`).
+
+**sdk-node also:** the same three steps where step 2's payload makes the
+install throw instead of being rejected as older. Step 3 must not send
+`If-None-Match: "shaB"`.
+
+The SDK's existing gen-0 case (qfg-9dxb.9 follow-up) is this test with
+generation 0 in step 2; keep it.
+
+No YAML corpus change: like Tests 8-10, this is a transport contract tested
+by per-SDK unit tests against a local server.
+
 ## Test runner conventions
 
 Each SDK places these tests in its own test directory, run by its own
@@ -719,7 +785,8 @@ Each test should be named after its number above, e.g.
 A Tier 1 implementation is accepted when:
 
 1. Tests 1-6, 8, 9 and 10 run green in the SDK's CI (plus Test 7 where
-   applicable; Test 7 is N/A for go, node, java and net).
+   applicable; Test 7 is N/A for go, node, java and net), and Test 11 in
+   every SDK that sends an ETag (N/A for java).
 2. The SDK exposes `worker_restart_total`, `callback_errors_total`,
    `lastSuccessfulRefresh()`, `connectionState()` per the contract.
 3. The SDK's `connectionState()` only returns documented values.
