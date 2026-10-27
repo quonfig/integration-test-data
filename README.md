@@ -2,38 +2,38 @@
 
 Shared test definitions and config data for all Quonfig SDKs. Every SDK generates idiomatic tests from these YAML definitions to guarantee behavioral consistency across languages.
 
+## Versions and changelog
+
+SDKs pin a tag (`vYYYY.MM.DD[.N]`) in CI, never `main`. What changed in each
+tag is in [CHANGELOG.md](CHANGELOG.md); how to cut a tag and how SDKs bump
+their pin is in [RELEASING.md](RELEASING.md).
+
 ## Directory Structure
 
 ```
 integration-test-data/
 ├── tests/
-│   └── eval/              # YAML test definitions
-│       ├── get.yaml             # Config retrieval
-│       ├── enabled.yaml         # Feature flag enabled checks
-│       ├── get_feature_flag.yaml
-│       ├── get_or_raise.yaml    # Error handling
-│       ├── get_weighted_values.yaml
-│       ├── context_precedence.yaml
-│       ├── enabled_with_contexts.yaml
-│       ├── post.yaml            # Telemetry: eval summaries, context shapes, examples
-│       └── telemetry.yaml       # Telemetry: reasons, value wrapping, edge cases
+│   ├── eval/                    # Evaluation + telemetry YAML cases (one file per function)
+│   ├── duration/grammar.yaml    # Shared ISO-8601 duration grammar
+│   ├── regex/dialect.yaml       # Quonfig regex v1 writer fixture
+│   └── openfeature/             # OpenFeature provider cases
 ├── data/
-│   └── integration-tests/
-│       ├── configs/         # Config JSON files
-│       ├── feature-flags/   # Feature flag JSON files
-│       ├── log-levels/      # Log level JSON files
-│       ├── segments/        # Segment JSON files
-│       └── schemas/         # Schema JSON files
-├── quonfig.json             # Lists valid environments (e.g. {"environments": ["Production"]})
-├── chaos/                   # Cross-SDK network-chaos harness (toxiproxy + 11 scenarios) — see chaos/README.md
-└── .claude/
-    └── skills/
-        └── verify-sdks.md   # Skill to check all SDKs have generated tests
+│   └── integration-tests/       # The workspace the cases evaluate against
+│       ├── quonfig.json         # Lists valid environments
+│       ├── configs/
+│       ├── feature-flags/
+│       ├── log-levels/
+│       ├── segments/
+│       └── schemas/
+├── generators/                  # Turns the YAML into each SDK's tests (one target per SDK)
+├── chaos/                       # Cross-SDK network-chaos harness + supervisor contract; see chaos/README.md
+├── verify-sdk-boot/             # Per-SDK qfg-login boot check
+└── verify-dev-injection/        # Token-file -> dev-override injection check
 ```
 
-## Weighted-rollout fixtures (qfg-wis6.13)
+## Weighted-rollout fixtures
 
-Two fixtures pin the weight-scale contract:
+These fixtures pin the weight-scale contract:
 
 - `feature-flag.weighted.even-split-ones` — the CANONICAL even-split
   encoding: all weights equal (1/1). Evaluation normalizes by total, so it
@@ -45,17 +45,17 @@ Two fixtures pin the weight-scale contract:
   and every write path reject this shape by design.
 - `feature-flag.weighted.zero-first` — first variant at weight 0 (0/100000),
   hashing on `user.tracking_id`. Pins that a 0% variant is never served,
-  including when the hash property is missing (qfg-9dxb.8).
+  including when the hash property is missing.
 - `feature-flag.weighted.missing-hash` — weights 69000/1000/30000 with the
   1% variant placed where `configKey + ""` hashes (0.6947). Pins that a
-  missing or empty hash property hashes the empty string (qfg-9dxb.8).
+  missing or empty hash property hashes the empty string.
 - `feature-flag.weighted.no-hash` — 50/50 with no `hashByPropertyName`. Pins
-  random-per-evaluation via `repeat` + `expected.values_seen` (qfg-t9wo).
+  random-per-evaluation via `repeat` + `expected.values_seen`.
 
 There is intentionally no zero-total (0/0) case: SDKs diverge at zero total
-and the write layers make it unstorable (see qfg-wis6.19).
+and the write layers make it unstorable.
 
-## Duration grammar fixture (qfg-2agi.29)
+## Duration grammar fixture
 
 `tests/duration/grammar.yaml` is the single definition of the accepted
 ISO-8601 duration grammar (fraction on S only, max 9 fractional digits,
@@ -71,7 +71,7 @@ invalid:                                 # must be rejected
 
 Self-check: `cd generators && npm test` (`src/shared/duration-grammar.test.ts`).
 
-## Regex dialect fixture (qfg-ktkr.1)
+## Regex dialect fixture
 
 `tests/regex/dialect.yaml` defines "Quonfig regex v1", the patterns
 `PROP_MATCHES` and `PROP_DOES_NOT_MATCH` accept: the intersection of what
@@ -142,7 +142,7 @@ tests:
 ### Typed-getter contract (`getter.contract.*`)
 
 `get.yaml`, `get_or_raise.yaml` and `enabled.yaml` each end with the cross-SDK typed-getter
-matrix (qfg-zvyy): every getter type read against every other stored type, strings that look
+matrix: every getter type read against every other stored type, strings that look
 like other types, safe int <-> double conversions, malformed ints/doubles, a missing ENV_VAR and
 a decryption failure, each as {with a default, with no default, `get_or_raise`, `enabled`}. The
 rule is written out once, in the comment block above the matrix in `get.yaml`; the fixtures are
@@ -223,8 +223,14 @@ tests:
 
 ## SDKs
 
-| SDK | Language | Generated Test Dir | Skill |
-|-----|----------|-------------------|-------|
-| sdk-go | Go | `internal/fixtures/*_generated_test.go` | `.claude/skills/generate-integration-suite-tests.md` |
-| sdk-node | TypeScript | `test/integration/*.generated.test.ts` | `.claude/skills/generate-integration-suite-tests.md` |
-| sdk-javascript | TypeScript | TBD | Not yet created |
+The six backend SDKs generate their tests from this corpus. The browser SDKs
+(sdk-javascript, sdk-react) poll and are not corpus consumers.
+
+| SDK | Generator target | Generated test dir |
+|-----|------------------|--------------------|
+| sdk-go | `generators/src/targets/go.ts` | `internal/fixtures/` |
+| sdk-node | `generators/src/targets/node.ts` | `test/integration/` |
+| sdk-python | `generators/src/targets/python.ts` | `tests/integration/` |
+| sdk-ruby | `generators/src/targets/ruby.ts` | `test/integration/` |
+| sdk-java | `generators/src/targets/java.ts` | `core/src/test/java/com/quonfig/sdk/integration/` |
+| sdk-net | `generators/src/targets/dotnet.ts` | `tests/Quonfig.Sdk.Tests/Integration/` |
