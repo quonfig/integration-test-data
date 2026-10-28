@@ -1,0 +1,37 @@
+{
+  "id": "18000000000000010",
+  "projectId": "124",
+  "key": "weighted.variant.json",
+  "type": "config",
+  "valueType": "json",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "weighted_values",
+          "value": {
+            "weightedValues": [
+              {
+                "weight": 100000,
+                "value": {
+                  "type": "json",
+                  "value": {
+                    "variant": "json",
+                    "n": 1
+                  }
+                }
+              }
+            ],
+            "hashByPropertyName": "user.tracking_id"
+          }
+        }
+      }
+    ]
+  }
+}

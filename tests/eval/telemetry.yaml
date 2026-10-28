@@ -639,6 +639,34 @@ tests:
               config_row_index: 0
               conditional_value_index: 0
 
+      # Weighted ENV_VAR variant (qfg-5ccy): the variant is read like a
+      # top-level provided value (resolved, typed) and the reason is SPLIT.
+      - name: weighted ENV_VAR variant is reported as its resolved value with reason SPLIT
+        client: client
+        function: post
+        aggregator: evaluation_summary
+        endpoint: "/api/v1/telemetry"
+        contexts:
+          block:
+            user:
+              tracking_id: "92a202f2"
+        data:
+          keys:
+            - "weighted.variant.provided.int"
+        expected_data:
+          - key: "weighted.variant.provided.int"
+            type: CONFIG
+            value: 1234
+            value_type: int
+            count: 1
+            reason: 3
+            selected_value:
+              int: 1234
+            summary:
+              config_row_index: 0
+              conditional_value_index: 0
+              weighted_value_index: 0
+
 # NOTE: brand.new.secret was considered as a third case but was dropped — its
 # decryptWith points at `reforge.secrets.encryption.key`, whose backing env var
 # (`REFORGE_INTEGRATION_TEST_ENCRYPTION_KEY`) is not set in any SDK's
