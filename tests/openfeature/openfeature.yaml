@@ -16,6 +16,9 @@
 #   provider_options:          -- provider constructor options (e.g. targetingKeyMapping)
 #   expected.reason:           -- expected OF reason string (STATIC, TARGETING_MATCH,
 #                                   SPLIT, DEFAULT, ERROR)
+#   expected.error_code:       -- expected OF error code when reason is ERROR
+#                                 (PARSE_ERROR, TYPE_MISMATCH, ...)
+#   env_vars:                  -- env vars to set before evaluating (as in tests/eval/)
 #
 # Fixture data used:
 #   my-string-list-key (existing)   -- string_list ["a","b","c"]
@@ -24,6 +27,11 @@
 #   test.duration.malformed.30s (existing) -- duration with malformed value "30s"
 #   of.targeting (new)              -- bool config with user.plan == "pro" rule
 #   of.weighted (new)               -- string config, weighted 50/50 on user.id
+#   getter.contract.int (existing)  -- int config, value 30
+#   getter.contract.int.malformed (existing)    -- int config with malformed value "twelve"
+#   getter.contract.double.malformed (existing) -- double config with malformed value "abc"
+#   getter.contract.provided.int.malformed (existing) -- int config provided by
+#                                     env var QUONFIG_ITD_GETTER_INT
 
 sdk: openfeature
 tests:
@@ -101,6 +109,7 @@ tests:
         expected:
           value: "PT0S"
           reason: ERROR
+          error_code: PARSE_ERROR
 
   ##############################################################################
   ## Case 3: Missing key with OF default returns default, not error
@@ -192,3 +201,75 @@ tests:
         expected:
           value: "variant-a"
           reason: SPLIT
+
+  ##############################################################################
+  ## Case 6: A malformed value is PARSE_ERROR; a wrong-type read is TYPE_MISMATCH
+  ##
+  ## (qfg-9xsl, Jeff's decision 2026-10-28.) A value that has the requested
+  ## type but cannot be parsed -- a stored int "twelve", or an int provided by
+  ## an env var set to "twelve" -- returns the OF default with reason ERROR
+  ## and error code PARSE_ERROR. That is a data problem. Reading a config with
+  ## the method for another type is a caller problem: TYPE_MISMATCH.
+  ##
+  ## qfg-verify rejects a malformed stored int/double on push, but an
+  ## ENV_VAR-provided value is only read at evaluation time, so the env-var
+  ## case is the one customers can actually hit. The stored cases use
+  ## fixtures that bypass qfg-verify.
+  ##
+  ## Providers with separate int and double methods use the one matching
+  ## `type`; providers with a single number method use that.
+  ##############################################################################
+  - cases:
+      - name: "malformed stored int via resolveNumberValue returns default with PARSE_ERROR"
+        sdk: openfeature
+        client: config_client
+        function: resolveNumberValue
+        type: INT
+        input:
+          key: "getter.contract.int.malformed"
+          default: 7
+        expected:
+          value: 7
+          reason: ERROR
+          error_code: PARSE_ERROR
+
+      - name: "malformed stored double via resolveNumberValue returns default with PARSE_ERROR"
+        sdk: openfeature
+        client: config_client
+        function: resolveNumberValue
+        type: DOUBLE
+        input:
+          key: "getter.contract.double.malformed"
+          default: 1.5
+        expected:
+          value: 1.5
+          reason: ERROR
+          error_code: PARSE_ERROR
+
+      - name: "env-var-provided malformed int via resolveNumberValue returns default with PARSE_ERROR"
+        sdk: openfeature
+        client: config_client
+        function: resolveNumberValue
+        type: INT
+        input:
+          key: "getter.contract.provided.int.malformed"
+          default: 7
+        env_vars:
+          QUONFIG_ITD_GETTER_INT: "twelve"
+        expected:
+          value: 7
+          reason: ERROR
+          error_code: PARSE_ERROR
+
+      - name: "int config via resolveBooleanValue returns default with TYPE_MISMATCH"
+        sdk: openfeature
+        client: config_client
+        function: resolveBooleanValue
+        type: BOOLEAN
+        input:
+          key: "getter.contract.int"
+          default: false
+        expected:
+          value: false
+          reason: ERROR
+          error_code: TYPE_MISMATCH
