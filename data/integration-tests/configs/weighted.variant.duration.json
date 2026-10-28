@@ -1,0 +1,34 @@
+{
+  "id": "18000000000000011",
+  "projectId": "124",
+  "key": "weighted.variant.duration",
+  "type": "config",
+  "valueType": "duration",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "weighted_values",
+          "value": {
+            "weightedValues": [
+              {
+                "weight": 100000,
+                "value": {
+                  "type": "duration",
+                  "value": "PT90S"
+                }
+              }
+            ],
+            "hashByPropertyName": "user.tracking_id"
+          }
+        }
+      }
+    ]
+  }
+}

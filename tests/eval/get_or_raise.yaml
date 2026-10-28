@@ -355,6 +355,35 @@ tests:
         status: raise
         error: missing_env_var
 
+    # A weighted ENV_VAR variant raises exactly like a top-level provided
+    # value (qfg-5ccy).
+    - name: raises an error if a weighted variant is provided by a missing environment variable
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        key: "weighted.variant.provided.missing"
+      expected:
+        status: raise
+        error: missing_env_var
+
+    - name: get_or_raise on a weighted ENV_VAR variant returns the env var coerced to int
+      client: config_client
+      function: get_or_raise
+      type: INT
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        key: "weighted.variant.provided.int"
+      expected:
+        value: 1234
+
     - name: raises an error if an env-var-provided config cannot be coerced to configured type
       client: config_client
       function: get_or_raise

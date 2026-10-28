@@ -278,3 +278,80 @@ tests:
         flag: "feature-flag.weighted.no-hash"
       expected:
         values_seen: [1, 2]
+  - cases:
+    # Weighted variants of every value type (qfg-5ccy). A weighted variant is
+    # a full Value, decoded exactly like a top-level rule value: json,
+    # duration and provided (ENV_VAR) variants included. sdk-java before
+    # qfg-lrlh typed only int/double/bool/string_list variants, so a json
+    # variant came back as a toString() string and an ENV_VAR variant never
+    # read its env var. Each fixture is a single 100% variant, so every
+    # context lands on it.
+    - name: weighted json variant returns the json object
+      client: config_client
+      function: get
+      type: JSON
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        key: "weighted.variant.json"
+      expected:
+        value:
+          variant: "json"
+          n: 1
+    - name: weighted duration variant returns the duration
+      client: config_client
+      function: get
+      type: DURATION
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        key: "weighted.variant.duration"
+      expected:
+        millis: 90000
+    # Provided variants mirror the top-level provided contract
+    # (provided.a.number, provided.by.missing.env.var): the env var is read
+    # and coerced to the config's valueType. IS_A_NUMBER is set to "1234" by
+    # every SDK harness; MISSING_ENV_VAR is never set.
+    - name: weighted ENV_VAR variant reads the env var coerced to int
+      client: config_client
+      function: get
+      type: INT
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        key: "weighted.variant.provided.int"
+      expected:
+        value: 1234
+    - name: weighted ENV_VAR variant with a missing env var returns the default
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        key: "weighted.variant.provided.missing"
+        default: "DEFAULT"
+      expected:
+        value: "DEFAULT"
+    - name: weighted ENV_VAR variant with a missing env var and no default returns nil
+      client: config_client
+      function: get
+      type: STRING
+      contexts:
+        local:
+          user:
+            tracking_id: "92a202f2"
+      input:
+        key: "weighted.variant.provided.missing"
+      expected:
+        value: ~
+      client_overrides:
+        on_no_default: 2

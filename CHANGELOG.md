@@ -21,6 +21,17 @@ Areas used below:
 - README split: change history moved here; README now documents the current
   layout and formats only.
 
+### Eval corpus
+
+- Weighted variants of every value type (qfg-5ccy): new fixtures
+  `weighted.variant.{json,duration,provided.int,provided.missing}`, each a
+  single 100% weighted variant. `get_weighted_values.yaml` pins that a json
+  variant returns the object, a duration variant the duration, an ENV_VAR
+  variant the env var coerced to the config type, and a missing env var the
+  same default/nil as a top-level provided value; `get_or_raise.yaml` pins
+  the `missing_env_var` raise; `telemetry.yaml` pins reason SPLIT with the
+  resolved int for the ENV_VAR variant.
+
 ## v2026.10.27.1 - 2026-10-27
 
 ### Contracts

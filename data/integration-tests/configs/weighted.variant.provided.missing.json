@@ -1,0 +1,37 @@
+{
+  "id": "18000000000000013",
+  "projectId": "124",
+  "key": "weighted.variant.provided.missing",
+  "type": "config",
+  "valueType": "string",
+  "sendToClientSdk": false,
+  "default": {
+    "rules": [
+      {
+        "criteria": [
+          {
+            "operator": "ALWAYS_TRUE"
+          }
+        ],
+        "value": {
+          "type": "weighted_values",
+          "value": {
+            "weightedValues": [
+              {
+                "weight": 100000,
+                "value": {
+                  "type": "provided",
+                  "value": {
+                    "source": "ENV_VAR",
+                    "lookup": "MISSING_ENV_VAR"
+                  }
+                }
+              }
+            ],
+            "hashByPropertyName": "user.tracking_id"
+          }
+        }
+      }
+    ]
+  }
+}
