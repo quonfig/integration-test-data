@@ -1,0 +1,56 @@
+# Dependabot version updates (SOC 2 SSDLC, qfg-66ko.20). Weekly; minor and
+# patch bumps are grouped into one PR per ecosystem, majors stay separate.
+# Security updates are enabled in the repo settings, are not grouped here, and
+# are not delayed by the cooldown (qfg-66ko.26).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories: ["/chaos/validator", "/generators"]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "deps"
+      prefix-development: "chore(dev-deps)"
+    labels:
+      - dependencies
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: gomod
+    directories:
+      - "/verify-sdk-boot/boot_check_go"
+      - "/verify-dev-injection/inject_check_go"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+    ignore:
+      # Replaced with the sibling sdk-go checkout (../../../sdk-go), which is
+      # outside this repo; the harness always builds against that checkout.
+      - dependency-name: "github.com/quonfig/sdk-go"
+    groups:
+      gomod-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+    ignore:
+      # Private reusable workflow, pinned to @main on purpose; Dependabot
+      # cannot reach it and would fail the whole github-actions update.
+      - dependency-name: "quonfig/ci*"
