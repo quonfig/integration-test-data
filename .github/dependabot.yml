@@ -32,10 +32,9 @@ updates:
       prefix: "deps"
     labels:
       - dependencies
-    ignore:
-      # Replaced with the sibling sdk-go checkout (../../../sdk-go), which is
-      # outside this repo; the harness always builds against that checkout.
-      - dependency-name: "github.com/quonfig/sdk-go"
+    # sdk-go is pinned to a published release so the scanners and GitHub's
+    # dependency graph can resolve these modules; run.sh swaps in the sibling
+    # sdk-go checkout with a temporary go.work. Bumping the pin is harmless.
     groups:
       gomod-minor-patch:
         update-types: [minor, patch]
