@@ -46,7 +46,7 @@ verify-dev-injection/
 ├── inject_check.py        # sdk-python (runs via `poetry run python`)
 ├── inject_check.mjs       # sdk-node   (imports from sdk-node/dist)
 ├── inject_check.rb        # sdk-ruby   (requires from sdk-ruby/lib)
-└── inject_check_go/       # sdk-go     (own module with `replace` -> ../../../sdk-go)
+└── inject_check_go/       # sdk-go     (own module; run.sh builds it against ../../../sdk-go)
 ```
 
 Scope mirrors `verify-sdk-boot`: sdk-node, sdk-go, sdk-ruby, sdk-python.
