@@ -111,9 +111,21 @@ run_sdk() {
 run_sdk sdk-python bash -c "cd '$ROOT_DIR/sdk-python' && poetry run python '$SCRIPT_DIR/inject_check.py'"
 run_sdk sdk-node   bash -c "node '$SCRIPT_DIR/inject_check.mjs'"
 run_sdk sdk-ruby   bash -c "ruby '$SCRIPT_DIR/inject_check.rb'"
-# GOWORK=off so boot_check_go's local replace directive resolves (same as
-# verify-sdk-boot — this module isn't listed in the monorepo go.work).
-run_sdk sdk-go     bash -c "cd '$SCRIPT_DIR/inject_check_go' && GOWORK=off go run ."
+# go.mod pins a published sdk-go/v2 so scanners can resolve the module; a
+# temporary go.work swaps in the sibling sdk-go checkout instead (and keeps
+# the monorepo's go.work, which doesn't list this module, out of the way).
+run_go_check() {
+  local mod="$1" work dir
+  work="$(mktemp -d)/go.work"
+  printf 'go 1.25.0\n\nuse (\n\t%s\n\t%s\n)\n' "$mod" "$ROOT_DIR/sdk-go" > "$work"
+  dir="$(cd "$mod" && GOWORK="$work" go list -f '{{.Dir}}' github.com/quonfig/sdk-go/v2)" || return 1
+  if [ "$dir" != "$ROOT_DIR/sdk-go" ]; then
+    echo "FAIL sdk-go: resolved sdk-go/v2 from $dir, not $ROOT_DIR/sdk-go (is that checkout's module github.com/quonfig/sdk-go/v2?)" >&2
+    return 1
+  fi
+  (cd "$mod" && GOWORK="$work" go run .)
+}
+run_sdk sdk-go     run_go_check "$SCRIPT_DIR/inject_check_go"
 
 echo
 echo "================================"
