@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	quonfig "github.com/quonfig/sdk-go"
+	quonfig "github.com/quonfig/sdk-go/v2"
 )
 
 func die(format string, args ...interface{}) {
