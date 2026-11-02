@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 // Self-check for tests/duration/grammar.yaml (qfg-2agi.29). Re-derives the
 // decided grammar independently: every valid entry must parse and its millis
