@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import Ajv, { type ErrorObject } from 'ajv';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
