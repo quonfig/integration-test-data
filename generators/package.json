@@ -11,7 +11,7 @@
     "test": "tsx --test src/shared/*.test.ts"
   },
   "dependencies": {
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^5.5.0"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
