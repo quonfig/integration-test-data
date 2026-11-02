@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
+    "types": ["node"],
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
     "esModuleInterop": true,
