@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 // Self-check for tests/regex/dialect.yaml (qfg-ktkr.1). Re-derives
 // "Quonfig regex v1" (project/plans/2026-10-12-regex-write-time-check.md
