@@ -25,15 +25,17 @@ verify-sdk-boot/
 ├── boot_check.py          # sdk-python (runs via `poetry run python`)
 ├── boot_check.mjs         # sdk-node   (runs via plain `node`, imports from sdk-node/dist)
 ├── boot_check.rb          # sdk-ruby   (runs via plain `ruby`, requires from sdk-ruby/lib)
-└── boot_check_go/         # sdk-go     (own module with `replace` -> ../../../sdk-go)
+└── boot_check_go/         # sdk-go     (own module; run.sh builds it against ../../../sdk-go)
     ├── go.mod
     ├── go.sum
     └── main.go
 ```
 
-The Go module is isolated from the monorepo `go.work` (we set `GOWORK=off`
-before running) so the local `replace` directive resolves without having to
-list this directory in the workspace.
+The Go module's `go.mod` pins a published `sdk-go/v2` release, so the
+dependency scanners and GitHub's dependency graph can resolve it on their own.
+`run.sh` points `GOWORK` at a temporary `go.work` that uses this module plus
+the sibling `sdk-go` checkout, so the check always builds against your local
+sdk-go, and the monorepo `go.work` stays out of the way.
 
 ## Prerequisites
 
