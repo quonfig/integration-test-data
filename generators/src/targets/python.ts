@@ -28,6 +28,7 @@ import { loadYamlFile } from '../yaml-loader.js';
 import { pythonTestFunctionName, uniqueSuffix } from '../shared/case-id.js';
 import { mergeContexts } from '../shared/contexts.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { caseKeysets, hasKeysets, rejectKeysets } from '../shared/qf1.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import {
   assertGetterAfterContinue,
@@ -141,6 +142,10 @@ export function pyStringLiteral(s: string): string {
       out += '\\t';
     } else if (code < 0x20 || code === 0x7f) {
       out += '\\x' + code.toString(16).padStart(2, '0');
+    } else if (code === 0xfeff) {
+      // U+FEFF escaped: invisible in source, and Go rejects a raw BOM
+      // after the start of a file (qf1 vector leading-bom-kept).
+      out += '\\u' + code.toString(16);
     } else {
       out += ch;
     }
@@ -235,6 +240,7 @@ function renderCase(
   }
 
   if (yamlBasename === 'datadir_environment.yaml') {
+    rejectKeysets(kase, yamlBasename);
     const body = renderDatadirBody(kase, exceptions);
     return {
       source: header + `def ${fnName}() -> None:\n${body}`,
@@ -243,6 +249,7 @@ function renderCase(
   }
 
   if (yamlBasename === 'datadir_value_type.yaml') {
+    rejectKeysets(kase, yamlBasename);
     const body = renderDatadirValueTypeBody(kase);
     return {
       source: header + `def ${fnName}() -> None:\n${body}`,
@@ -251,6 +258,7 @@ function renderCase(
   }
 
   if (yamlBasename === 'delivery_environment.yaml') {
+    rejectKeysets(kase, yamlBasename);
     const body = renderDeliveryBody(kase);
     return {
       source: header + `def ${fnName}() -> None:\n${body}`,
@@ -281,6 +289,7 @@ function renderCase(
   // Init-failure cases (qfg-9p4i.6): a network-mode client built by the
   // file-level _init_failure_client helper; see shared/init-failure.ts.
   if (isInitFailureCase(kase)) {
+    rejectKeysets(kase, 'init-failure');
     const body = renderInitFailureBody(kase, exceptions);
     return {
       source: header + `def ${fnName}() -> None:\n${body}`,
@@ -300,6 +309,7 @@ function renderCase(
 
   const needsFreshClient =
     Object.keys(envVars).length > 0 ||
+    hasKeysets(kase) ||
     'datadir' in overrides ||
     'environment' in overrides ||
     'on_no_default' in overrides ||
@@ -400,19 +410,15 @@ function renderFreshClientBody(kase: YamlCase, exceptions: Set<string>): string 
 
   const clientArgs = buildClientArgs(kase);
   const getterCall = makeGetterCall(kase, key, merged);
-  const hasEnv = Object.keys(envVars).length > 0;
+  const env = envAssignments(kase);
+  const hasEnv = env.length > 0;
 
   const indent = '    ';
   const inner = hasEnv ? '        ' : indent;
   let body = '';
 
   if (hasEnv) {
-    body += `${indent}env_backup: dict[str, str | None] = {}\n`;
-    for (const [k, v] of Object.entries(envVars)) {
-      const sval = v === null || v === undefined ? '' : String(v);
-      body += `${indent}env_backup[${pyStringLiteral(k)}] = os.environ.get(${pyStringLiteral(k)})\n`;
-      body += `${indent}os.environ[${pyStringLiteral(k)}] = ${pyStringLiteral(sval)}\n`;
-    }
+    body += envSetLines(indent, env);
     body += `${indent}try:\n`;
   }
 
@@ -450,15 +456,43 @@ function renderFreshClientBody(kase: YamlCase, exceptions: Set<string>): string 
     body += renderAssertion(inner, expected);
   }
 
-  if (hasEnv) {
-    body += `${indent}finally:\n`;
-    body += `${indent}    for k, v in env_backup.items():\n`;
-    body += `${indent}        if v is None:\n`;
-    body += `${indent}            os.environ.pop(k, None)\n`;
-    body += `${indent}        else:\n`;
-    body += `${indent}            os.environ[k] = v\n`;
-  }
+  if (hasEnv) body += envRestoreLines(indent);
   return body;
+}
+
+/**
+ * The case's env as (name, Python expression) pairs: `env_vars` as string
+ * literals, then each `keysets:` entry as a _qf1_test_keyset(...) call that
+ * derives the test keys at run time (shared/qf1.ts).
+ */
+function envAssignments(kase: YamlCase): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const [k, v] of Object.entries(kase.env_vars ?? {})) {
+    out.push([k, pyStringLiteral(v === null || v === undefined ? '' : String(v))]);
+  }
+  for (const ks of caseKeysets(kase)) {
+    out.push([ks.name, `_qf1_test_keyset(${ks.labels.map(pyStringLiteral).join(', ')})`]);
+  }
+  return out;
+}
+
+function envSetLines(indent: string, env: Array<[string, string]>): string {
+  let out = `${indent}env_backup: dict[str, str | None] = {}\n`;
+  for (const [k, expr] of env) {
+    out += `${indent}env_backup[${pyStringLiteral(k)}] = os.environ.get(${pyStringLiteral(k)})\n`;
+    out += `${indent}os.environ[${pyStringLiteral(k)}] = ${expr}\n`;
+  }
+  return out;
+}
+
+function envRestoreLines(indent: string): string {
+  let out = `${indent}finally:\n`;
+  out += `${indent}    for k, v in env_backup.items():\n`;
+  out += `${indent}        if v is None:\n`;
+  out += `${indent}            os.environ.pop(k, None)\n`;
+  out += `${indent}        else:\n`;
+  out += `${indent}            os.environ[k] = v\n`;
+  return out;
 }
 
 /** Build the `Quonfig(datadir=…, environment=…, …)` argument list. */
@@ -1054,14 +1088,20 @@ function renderPostBody(kase: YamlCase): string {
   const endpointLit = pyStringLiteral(endpoint);
   const ctxLit = renderContextsLiteral(merged);
 
-  const indent = '    ';
+  if (kase.env_vars) throw new Error('env_vars on a post/telemetry case is not supported');
+  // keysets: the secret must decrypt for its evaluation to be counted.
+  const env = envAssignments(kase);
+  const outer = '    ';
+  const indent = env.length > 0 ? '        ' : outer;
   let body = '';
+  if (env.length > 0) body += envSetLines(outer, env) + `${outer}try:\n`;
   body += `${indent}agg = build_aggregator(${aggLit}, ${overridesLit})\n`;
   body += `${indent}feed_aggregator(agg, ${aggLit}, ${dataLit}, contexts=${ctxLit})\n`;
   // E711: use `is None` rather than `== None` when the right-hand side is the
   // None literal (happens when the YAML's expected_data is null/missing).
   const cmp = expectedLit === 'None' ? 'is' : '==';
   body += `${indent}assert aggregator_post(agg, ${aggLit}, endpoint=${endpointLit}) ${cmp} ${expectedLit}\n`;
+  if (env.length > 0) body += envRestoreLines(outer);
   return body;
 }
 
@@ -1129,11 +1169,13 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   // keep ruff (F401) happy without a post-format pass.
   const usesPytest = result.rendered.some((r) => /\bpytest\b/.test(r.source));
   const usesInitFailure = result.rendered.some((r) => r.source.includes('_init_failure_client('));
+  const usesQf1Keysets = result.rendered.some((r) => r.source.includes('_qf1_test_keyset('));
+  const qf1Imports = usesQf1Keysets ? `import base64\nimport hashlib\n` : '';
   if (!isPost) {
     if (usesInitFailure) {
-      out += `import os\nimport threading\nimport time\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom typing import Any, Callable\n\n`;
+      out += `${qf1Imports}import os\nimport threading\nimport time\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom typing import Any, Callable\n\n`;
     } else {
-      out += `import os\n\n`;
+      out += `${qf1Imports}import os\n\n`;
     }
     if (usesPytest || result.needsFixture) {
       out += `import pytest\n\n`;
@@ -1144,11 +1186,13 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     // Aggregator helpers — these don't exist yet. Importing them will fail
     // at module-load time once that module doesn't exist. Either failure
     // surfaces the gap correctly.
+    if (usesQf1Keysets) out += `${qf1Imports}import os\n`;
     if (result.rendered.some((r) => r.source.includes(`${PY_REDACTED_MATCHER}()`))) {
       out += `import re\n\n`;
       out += `from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator\n\n\n`;
       out += pyRedactedMatcherClass();
     } else {
+      if (usesQf1Keysets) out += `\n`;
       out += `from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator\n\n\n`;
     }
   } else {
@@ -1169,13 +1213,11 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     if (usesInitFailure) out += `\n` + PY_INIT_FAILURE_HELPER;
   }
 
+  if (usesQf1Keysets) out += PY_QF1_TEST_KEYSET_HELPER;
+
   if (result.needsFixture && !isPost && !isDatadir) {
     out += `@pytest.fixture(scope="module")\n`;
     out += `def config_client():\n`;
-    out += `    os.environ.setdefault(\n`;
-    out += `        "PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY",\n`;
-    out += `        "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221",\n`;
-    out += `    )\n`;
     out += `    os.environ.setdefault("IS_A_NUMBER", "1234")\n`;
     out += `    os.environ.setdefault("NOT_A_NUMBER", "not_a_number")\n`;
     out += `    os.environ.pop("MISSING_ENV_VAR", None)\n`;
@@ -1197,6 +1239,21 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   if (!out.endsWith('\n')) out += '\n';
   return out;
 }
+
+// qf1 test keys (shared/qf1.ts): the value of a QUONFIG_KEYSET* env var
+// holding the test keys with these labels. A private entry is "qf1-priv-" +
+// base64url-no-pad(SHA-256("qf1 test vector private key: " + label)), as
+// tests/secrets/qf1-vectors.json derives it, so no key material is written
+// into the generated tests.
+const PY_QF1_TEST_KEYSET_HELPER = `def _qf1_test_keyset(*labels: str) -> str:
+    entries = []
+    for label in labels:
+        digest = hashlib.sha256(("qf1 test vector private key: " + label).encode("utf-8")).digest()
+        entries.append("qf1-priv-" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii"))
+    return ",".join(entries)
+
+
+`;
 
 /**
  * File-level matcher emitted when a case uses selected_value {redacted: true}:

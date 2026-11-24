@@ -24,6 +24,7 @@ import { resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
 import { rubyMethodSuffix, uniqueSuffix } from '../shared/case-id.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { caseKeysets, rejectKeysets } from '../shared/qf1.js';
 import {
   assertGetterAfterContinue,
   initFailureClient,
@@ -158,7 +159,7 @@ function rubyStringLiteral(s: string): string {
   let needsDouble = false;
   for (const ch of s) {
     const code = ch.codePointAt(0)!;
-    if (code < 0x20 || code === 0x7f) {
+    if (code < 0x20 || code === 0x7f || code === 0xfeff) {
       needsDouble = true;
       break;
     }
@@ -187,6 +188,9 @@ function rubyStringLiteral(s: string): string {
       out += '\\r';
     } else if (ch === '\t') {
       out += '\\t';
+    } else if (code === 0xfeff) {
+      // U+FEFF escaped so it is not invisible in source (qf1 vector leading-bom-kept).
+      out += '\\u' + code.toString(16);
     } else if (code < 0x20) {
       out += '\\x' + code.toString(16).padStart(2, '0').toUpperCase();
     } else {
@@ -348,12 +352,15 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   }
 
   if (yamlBasename === 'datadir_environment.yaml') {
+    rejectKeysets(kase, yamlBasename);
     return renderDatadirBody(kase);
   }
   if (yamlBasename === 'datadir_value_type.yaml') {
+    rejectKeysets(kase, yamlBasename);
     return renderDatadirValueTypeBody(kase);
   }
   if (yamlBasename === 'delivery_environment.yaml') {
+    rejectKeysets(kase, yamlBasename);
     return renderDeliveryBody(kase);
   }
 
@@ -370,6 +377,7 @@ function renderBody(yamlBasename: string, kase: YamlCase): string {
   // api URL, init-failure policy) need a network-mode client so the SDK's
   // init/timeout/error path actually runs.
   if (isInitFailureCase(kase)) {
+    rejectKeysets(kase, 'init-failure');
     return renderInitFailureBody(kase);
   }
 
@@ -509,8 +517,8 @@ function renderEvalBody(kase: YamlCase): string {
   const expected = kase.expected ?? {};
   // Rejects message_contains/message_excludes on a non-raise case.
   const msg = messageExpectations(expected);
-  const envVars = kase.env_vars;
-  const envWrap = !!envVars && typeof envVars === 'object' && Object.keys(envVars).length > 0;
+  const env = envHash(kase);
+  const envWrap = env !== null;
   const indent = envWrap ? '      ' : '    ';
 
   const opts = clientOptions(kase);
@@ -545,11 +553,26 @@ function renderEvalBody(kase: YamlCase): string {
 
   let body = '';
   if (envWrap) {
-    body += `    IntegrationTestHelpers.with_env(${rubyLiteral(stringifyEnvVars(envVars!))}) do\n`;
+    body += `    IntegrationTestHelpers.with_env(${rubyLiteral(env)}) do\n`;
   }
   for (const l of lines) body += `${indent}${l}\n`;
   if (envWrap) body += `    end\n`;
   return body;
+}
+
+/**
+ * The case's env as a with_env hash, or null when it sets nothing:
+ * `env_vars` as strings, then each `keysets:` entry as a qf1_test_keyset(...)
+ * call that derives the test keys at run time (shared/qf1.ts).
+ */
+function envHash(kase: YamlCase): Record<string, unknown> | null {
+  const envVars = kase.env_vars;
+  const out: Record<string, unknown> =
+    envVars && typeof envVars === 'object' ? { ...stringifyEnvVars(envVars) } : {};
+  for (const ks of caseKeysets(kase)) {
+    out[ks.name] = new RubyCode(`qf1_test_keyset(${ks.labels.map(rubyStringLiteral).join(', ')})`);
+  }
+  return Object.keys(out).length === 0 ? null : out;
 }
 
 function initFailureArgs(ic: InitFailureClient): string {
@@ -632,6 +655,20 @@ function renderInitFailureBody(kase: YamlCase): string {
 // if set), used as the legs in order; a 0 entry is the verbatim leg
 // api_urls[i]. Client.new is
 // the init call; its error is rescued and returned.
+// qf1 test keys (shared/qf1.ts): the value of a QUONFIG_KEYSET* env var
+// holding the test keys with these labels. A private entry is "qf1-priv-" +
+// base64url-no-pad(SHA-256("qf1 test vector private key: " + label)), as
+// tests/secrets/qf1-vectors.json derives it, so no key material is written
+// into the generated tests. pack('m0') is core Ruby (base64 is a bundled gem
+// from Ruby 3.4).
+const RUBY_QF1_TEST_KEYSET_HELPER =
+  `  def qf1_test_keyset(*labels)\n` +
+  `    labels.map do |label|\n` +
+  `      digest = Digest::SHA256.digest("qf1 test vector private key: #{label}")\n` +
+  `      "qf1-priv-#{[digest].pack('m0').tr('+/', '-_').delete('=')}"\n` +
+  `    end.join(',')\n` +
+  `  end\n`;
+
 const RUBY_INIT_FAILURE_HELPER =
   `  def init_failure_client(on_init_failure, api_urls, api_statuses, api_body, init_timeout_ms)\n` +
   `    servers = []\n` +
@@ -956,7 +993,20 @@ function renderTelemetryBody(kase: YamlCase): string {
     `                                             endpoint: ${rubyLiteral(endpoint)}${returnedArg})`,
   );
 
+  // keysets: the secret must decrypt for its evaluation to be counted.
+  if (kase.env_vars) throw new Error('env_vars on a telemetry case is not supported');
+  const env = envHash(kase);
   let body = '';
+  if (env !== null) {
+    // sink and client are block locals here, so the block carries the ensure.
+    body += `${indent}IntegrationTestHelpers.with_env(${rubyLiteral(env)}) do\n`;
+    for (const l of lines) body += `${indent}  ${l}\n`;
+    body += `${indent}ensure\n`;
+    body += `${indent}  client&.stop\n`;
+    body += `${indent}  sink&.stop\n`;
+    body += `${indent}end\n`;
+    return body;
+  }
   for (const l of lines) body += `${indent}${l}\n`;
   body += `  ensure\n`;
   body += `${indent}client&.stop\n`;
@@ -1038,18 +1088,24 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   out += `# Do NOT edit by hand — changes will be overwritten.\n`;
   out += `\n`;
   const usesInitFailure = rendered.some((r) => r.source.includes('= init_failure_client('));
+  if (rendered.some((r) => r.source.includes('qf1_test_keyset('))) out += `require 'digest'\n`;
   out += `require 'test_helper'\n`;
   out += `require 'integration/test_helpers'\n`;
   if (usesInitFailure) out += `require 'stringio'\nrequire 'webrick'\n`;
   out += `\n`;
   out += `class ${suite.className} < Minitest::Test\n`;
-  if (usesInitFailure) out += RUBY_INIT_FAILURE_HELPER;
   // Nested in the test class: Style/OneClassPerFile allows one top-level class.
   const usesMatcher = rendered.some((r) => r.source.includes(`${RUBY_REDACTED_MATCHER}.new`));
+  const usesQf1Keysets = rendered.some((r) => r.source.includes('qf1_test_keyset('));
+  if (usesQf1Keysets) {
+    out += RUBY_QF1_TEST_KEYSET_HELPER;
+    if (usesInitFailure || usesMatcher) out += `\n`;
+  }
+  if (usesInitFailure) out += RUBY_INIT_FAILURE_HELPER;
   if (usesMatcher) out += rubyRedactedMatcherClass();
   rendered.forEach((r, i) => {
     // Layout/EmptyLinesAroundClassBody: no blank line right after `class`.
-    out += i === 0 && !usesMatcher && !usesInitFailure ? r.source.replace(/^\n/, '') : r.source;
+    out += i === 0 && !usesMatcher && !usesInitFailure && !usesQf1Keysets ? r.source.replace(/^\n/, '') : r.source;
   });
   out += `end\n`;
   return out;

@@ -52,6 +52,7 @@ import {
   isInitFailureCase,
   type InitFailureClient,
 } from '../shared/init-failure.js';
+import { caseKeysets, rejectKeysets } from '../shared/qf1.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -218,6 +219,10 @@ export function csStringLiteral(s: string): string {
       const lo = 0xdc00 + (cp & 0x3ff);
       out += '\\u' + hi.toString(16).padStart(4, '0');
       out += '\\u' + lo.toString(16).padStart(4, '0');
+    } else if (code === 0xfeff) {
+      // U+FEFF escaped: invisible in source, and Go rejects a raw BOM
+      // after the start of a file (qf1 vector leading-bom-kept).
+      out += '\\u' + code.toString(16);
     } else {
       out += ch;
     }
@@ -323,6 +328,9 @@ function rejectMessageExpectations(kase: YamlCase, yaml: string): void {
 
 function renderBody(suite: SuiteEntry, kase: YamlCase): string {
   if (NON_EVAL_SUITES.has(suite.yaml)) rejectMessageExpectations(kase, suite.yaml);
+  if (suite.yaml === 'datadir_environment.yaml' || suite.yaml === 'datadir_value_type.yaml' || suite.yaml === 'delivery_environment.yaml') {
+    rejectKeysets(kase, suite.yaml);
+  }
   if (suite.yaml === 'datadir_environment.yaml') return renderDatadirBody(kase);
   if (suite.yaml === 'datadir_value_type.yaml') return renderDatadirValueTypeBody(kase);
   if (suite.yaml === 'delivery_environment.yaml') return renderDeliveryBody(kase);
@@ -369,6 +377,23 @@ function onNoDefaultEnum(val: unknown): string {
   if (val === 1) return 'OnNoDefault.Throw';
   if (val === 2) return 'OnNoDefault.Ignore';
   throw new Error(`unsupported client_overrides.on_no_default=${JSON.stringify(val)}`);
+}
+
+/**
+ * The case's env scope: `env_vars` as string literals, then each `keysets:`
+ * entry as a Qf1TestKeyset(...) call that derives the test keys at run time
+ * (shared/qf1.ts).
+ */
+function renderCaseEnvScope(kase: YamlCase): string {
+  const args: string[] = [];
+  for (const [k, v] of Object.entries(kase.env_vars ?? {})) {
+    args.push(csStringLiteral(k), csStringLiteral(v === null || v === undefined ? '' : String(v)));
+  }
+  for (const ks of caseKeysets(kase)) {
+    args.push(csStringLiteral(ks.name), `Qf1TestKeyset(${ks.labels.map(csStringLiteral).join(', ')})`);
+  }
+  if (args.length === 0) return '';
+  return `${I}using var env = TestSetup.Env(${args.join(', ')});\n`;
 }
 
 function renderEnvScope(envVars: Record<string, unknown>): string {
@@ -593,6 +618,7 @@ function renderEvalBody(kase: YamlCase): string {
   // Rejects message_contains/message_excludes on a non-raise case.
   messageExpectations(expected);
   if (isInitFailureCase(kase)) {
+    rejectKeysets(kase, 'init-failure');
     return renderInitFailureBody(kase);
   }
   const overrides = kase.client_overrides ?? {};
@@ -612,7 +638,7 @@ function renderEvalBody(kase: YamlCase): string {
     if (k !== 'on_no_default') throw new Error(`unsupported client_overrides.${k} on an eval case`);
   }
 
-  let body = renderEnvScope(envVars);
+  let body = renderCaseEnvScope(kase);
   body += renderNewClient(opts);
   const recv = receiverFor(kase);
   body += recv.setup;
@@ -946,7 +972,11 @@ function renderTelemetryBody(kase: YamlCase): string {
     }
   }
 
-  let body = `${I}var telemetry = new TestSetup.TelemetryCapture();\n`;
+  // keysets: the secret must decrypt for its evaluation to be counted; the
+  // env scope lasts the whole method, past the client's disposal.
+  if (kase.env_vars) throw new Error('env_vars on a telemetry case is not supported');
+  let body = renderCaseEnvScope(kase);
+  body += `${I}var telemetry = new TestSetup.TelemetryCapture();\n`;
   body += `${I}await using (var client = TestSetup.NewClient(new QuonfigOptions\n`;
   body += `${I}{\n`;
   for (const o of opts) body += `${I}    ${o},\n`;
@@ -1025,10 +1055,29 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
   out += `\n`;
   out += `public sealed class ${suite.className}\n`;
   out += `{\n`;
+  if (src.includes('Qf1TestKeyset(')) out += DOTNET_QF1_TEST_KEYSET_HELPER;
   out += src;
   out += `}\n`;
   return out;
 }
+
+// qf1 test keys (shared/qf1.ts): the value of a QUONFIG_KEYSET* env var
+// holding the test keys with these labels. A private entry is "qf1-priv-" +
+// base64url-no-pad(SHA-256("qf1 test vector private key: " + label)), as
+// tests/secrets/qf1-vectors.json derives it, so no key material is written
+// into the generated tests.
+const DOTNET_QF1_TEST_KEYSET_HELPER =
+  `    private static string Qf1TestKeyset(params string[] labels)\n` +
+  `    {\n` +
+  `        var entries = new System.Collections.Generic.List<string>();\n` +
+  `        using var sha256 = System.Security.Cryptography.SHA256.Create();\n` +
+  `        foreach (var label in labels)\n` +
+  `        {\n` +
+  `            var digest = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes("qf1 test vector private key: " + label));\n` +
+  `            entries.Add("qf1-priv-" + Convert.ToBase64String(digest).TrimEnd('=').Replace('+', '-').Replace('/', '_'));\n` +
+  `        }\n` +
+  `        return string.Join(",", entries);\n` +
+  `    }\n`;
 
 // ---------------------------------------------------------------------------
 // Entry point
