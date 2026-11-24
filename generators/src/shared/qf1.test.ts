@@ -3,12 +3,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadYamlFile } from '../yaml-loader.js';
 import { qf1Drift } from '../qf1-sync.js';
-import { caseKeysets, qf1TestKeyEntry, qf1TestKeysetValue, rejectKeysets } from './qf1.js';
+import { QF1_BAD_KEYSET_NAME_FIXTURE, caseKeysets, qf1TestKeyEntry, qf1TestKeysetValue, rejectKeysets } from './qf1.js';
 import {
   QF1_VECTORS_PATH,
   checkVectors,
@@ -43,6 +44,16 @@ function keysRead(kase: YamlCase): string[] {
   return out;
 }
 
+// .gitleaks.toml exempts tests/secrets/qf1-vectors.json from secret scanning,
+// so the file must stay the approved copy of project/plans/secrets-qf1/
+// vectors.json. Changing it means changing this hash in the same reviewed PR.
+const APPROVED_VECTORS_SHA256 = 'dd4ce106ca43f025c34de41bec765b144f13131375da499621c1098d5f22de5f';
+
+test('tests/secrets/qf1-vectors.json is the approved vectors file', () => {
+  const actual = createHash('sha256').update(readFileSync(resolve(repoRoot, QF1_VECTORS_PATH))).digest('hex');
+  assert.equal(actual, APPROVED_VECTORS_SHA256);
+});
+
 test('qf1 fixtures match what tests/secrets/qf1-vectors.json gives', () => {
   assert.deepEqual(qf1Drift().problems, []);
 });
@@ -63,6 +74,7 @@ test('the corpus keyset values hold exactly the keys of the vectors positiveEnv'
       .filter((e) => e.length > 0)
       .sort();
   for (const [name, labels] of Object.entries(corpusKeysets(vectors))) {
+    if (name === QF1_BAD_KEYSET_NAME_FIXTURE) continue; // not a positiveEnv keyset; checked by checkVectors
     assert.deepEqual(entries(qf1TestKeysetValue(labels)), entries(vectors.positiveEnv[name] ?? ''), name);
   }
 });

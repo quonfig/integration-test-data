@@ -42,7 +42,9 @@ Areas used below:
   bare `QUONFIG_KEYSET`, the second key of a two-key keyset, an
   environment-scoped value on a second keyset, a secret shadowing a
   `configs/` twin in datadir mode; keyset not held, fingerprint not held,
-  cross-keyset lookup, tampered header, bad keyset name, trailing colon,
+  cross-keyset lookup, tampered header, bad keyset name `QUONFIG_KEYSETX`
+  (the corpus env sets that name to the matching key, so a reader without
+  the name rule decrypts it and fails the case), trailing colon,
   all-zero shared secret, and a leftover `decryptWith` value, each
   returning the default), 9 in `get_or_raise.yaml`
   (`error: unable_to_decrypt`, message never contains `qf1-priv-`), 1 in
@@ -91,8 +93,22 @@ Areas used below:
   projection. Against a current SDK exactly 21 cases fail (all qf1).
 - Hand-written tests that read the removed fixtures: sdk-node
   `test/typed-getter-contract.test.ts` and sdk-java `GetOrThrowTest.java`
-  (`a.broken.secret.config`); harness setups that export
+  (`a.broken.secret.config`), and sdk-go `integration_test.go`
+  (`brand.new.secret`); harness setups that export
   `PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY` can drop it.
+- sdk-node error text (the node target matches messages, sdk-node has no
+  error classes): every qf1 reader failure must say `qf1 <class>` (the
+  spec 9.2 wording, e.g. `qf1 key_not_held: ...`; a prefix such as the
+  config key is fine), and a value that still carries `decryptWith` must
+  fail with a message containing `decryptWith`. The class name alone is not
+  accepted, because `malformed` also appears in sdk-node's coercion error
+  (`has a malformed int value`), which would let the wrong failure pass.
+- The corpus env sets `QUONFIG_KEYSETX` (not a valid keyset name) on every
+  qf1 case: a reader must never read it.
+- Not every consumer pins a tag: openfeature-go and openfeature-node check
+  out `ref: main`, openfeature-python and openfeature-ruby check out the
+  default branch. They read `data/integration-tests` and take this change
+  as soon as it merges.
 
 ## v2026.10.27.1 - 2026-10-27
 

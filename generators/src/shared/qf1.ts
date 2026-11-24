@@ -35,6 +35,18 @@ export const QF1_TEST_KEY_LABEL_PREFIX = 'qf1 test vector private key: ';
 /** Spec section 2, as a full-string match (JS `$` without /m never matches before a final LF). */
 export const QF1_KEYSET_NAME = /^QUONFIG_KEYSET(?:_[A-Z0-9]+)*$/;
 
+/**
+ * The one invalid keyset name the corpus env sets (vector
+ * keyset-name-QUONFIG-KEYSETX, genuinely encrypted under that name). Every
+ * case holds the matching key under it, so a reader WITHOUT the spec 2 name
+ * rule would read this env var and decrypt qf1.secret.keyset.name.invalid,
+ * and the case goes red. A correct reader never reads it. Chosen because it
+ * is harmless to set in every harness: HOME is read by SDKs, a lowercase
+ * name collides with QUONFIG_KEYSET_TEST on Windows (env names are
+ * case-insensitive there), and names with a LF cannot be set portably.
+ */
+export const QF1_BAD_KEYSET_NAME_FIXTURE = 'QUONFIG_KEYSETX';
+
 export interface CaseKeyset {
   /** The env var name, e.g. QUONFIG_KEYSET_TEST. */
   name: string;
@@ -67,7 +79,7 @@ export function caseKeysets(kase: YamlCase): CaseKeyset[] {
   const envVars = kase.env_vars ?? {};
   const out: CaseKeyset[] = [];
   for (const [name, labels] of Object.entries(raw as Record<string, unknown>)) {
-    if (!QF1_KEYSET_NAME.test(name)) {
+    if (!QF1_KEYSET_NAME.test(name) && name !== QF1_BAD_KEYSET_NAME_FIXTURE) {
       throw new Error(`keysets: ${JSON.stringify(name)} is not a keyset name (^QUONFIG_KEYSET(_[A-Z0-9]+)*$)`);
     }
     if (Object.prototype.hasOwnProperty.call(envVars, name)) {

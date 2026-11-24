@@ -11,7 +11,7 @@
 // `npm run qf1:check -- --from <path>` fails if the copy has drifted.
 
 import { createHash } from 'node:crypto';
-import { QF1_KEYSET_NAME, QF1_TEST_KEY_LABEL_PREFIX, qf1TestKeyEntry } from './qf1.js';
+import { QF1_BAD_KEYSET_NAME_FIXTURE, QF1_KEYSET_NAME, QF1_TEST_KEY_LABEL_PREFIX, qf1TestKeyEntry, qf1TestKeysetValue } from './qf1.js';
 
 export const QF1_VECTORS_PATH = 'tests/secrets/qf1-vectors.json';
 export const FIXTURE_ROOT = 'data/integration-tests';
@@ -27,10 +27,13 @@ export interface Qf1Vectors {
   }>;
   positiveEnv: Record<string, string>;
   positive: Array<{ name: string; keyset: string; ciphertext: string; plaintext: string }>;
-  negative: Array<{ name: string; ciphertext: string; expectedError: string; mustReject: boolean }>;
+  negative: Array<{ name: string; ciphertext: string; env: Record<string, string>; expectedError: string; mustReject: boolean }>;
 }
 
 type VectorRef = { positive: string } | { negative: string };
+
+/** The bad-keyset-name vector whose name the corpus env sets (see QF1_BAD_KEYSET_NAME_FIXTURE). */
+const BAD_NAME_VECTOR = 'keyset-name-QUONFIG-KEYSETX';
 const pos = (name: string): VectorRef => ({ positive: name });
 const neg = (name: string): VectorRef => ({ negative: name });
 
@@ -99,8 +102,10 @@ export const SECRET_FIXTURES: SecretFixture[] = [
   },
   {
     key: 'qf1.secret.keyset.name.invalid', // gitleaks:allow
-    default: neg('keyset-name-HOME'),
-    note: 'keyset field HOME does not match ^QUONFIG_KEYSET(_[A-Z0-9]+)*$; no env var may be read: invalid_keyset_name',
+    default: neg(BAD_NAME_VECTOR),
+    note:
+      'keyset field QUONFIG_KEYSETX does not match ^QUONFIG_KEYSET(_[A-Z0-9]+)*$; no env var may be read: invalid_keyset_name. ' +
+      'The corpus env sets QUONFIG_KEYSETX to the key it was sealed to, so a reader without the name rule decrypts it',
   },
   {
     key: 'qf1.secret.trailing.colon', // gitleaks:allow
@@ -174,7 +179,32 @@ function vectorFor(v: Qf1Vectors, ref: VectorRef): { ciphertext: string; plainte
 export function corpusKeysets(v: Qf1Vectors): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const ks of v.keysets) out[ks.name] = ks.keys.map((k) => k.label);
+  out[QF1_BAD_KEYSET_NAME_FIXTURE] = badNameLabels(v);
   return out;
+}
+
+/**
+ * The labels of the keys the bad-name vector's env holds under
+ * QUONFIG_KEYSETX (read from the vector, not hand-picked).
+ */
+function badNameLabels(v: Qf1Vectors): string[] {
+  const n = v.negative.find((x) => x.name === BAD_NAME_VECTOR);
+  if (!n) throw new Error(`qf1 vectors have no negative case ${BAD_NAME_VECTOR}`);
+  const value = n.env[QF1_BAD_KEYSET_NAME_FIXTURE];
+  if (value === undefined) throw new Error(`${BAD_NAME_VECTOR}: env has no ${QF1_BAD_KEYSET_NAME_FIXTURE}`);
+  const entries = value.split(',').map((e) => e.trim()).filter((e) => e.length > 0);
+  const labels = entries.map((e) => {
+    const k = v.keysets.flatMap((ks) => ks.keys).find((key) => key.privateKeyEntry === e);
+    if (!k) throw new Error(`${BAD_NAME_VECTOR}: ${QF1_BAD_KEYSET_NAME_FIXTURE} holds a key no vectors keyset describes`);
+    return k.label;
+  });
+  if (qf1TestKeysetValue(labels) !== value) {
+    throw new Error(`${BAD_NAME_VECTOR}: ${QF1_BAD_KEYSET_NAME_FIXTURE} is not exactly the derived entries of ${labels.join(', ')}`);
+  }
+  if (n.ciphertext.split(':')[1] !== QF1_BAD_KEYSET_NAME_FIXTURE) {
+    throw new Error(`${BAD_NAME_VECTOR}: its keyset field is not ${QF1_BAD_KEYSET_NAME_FIXTURE}`);
+  }
+  return labels;
 }
 
 /** What a read of `key` returns in Production in the corpus env: the plaintext, or null (fails). */

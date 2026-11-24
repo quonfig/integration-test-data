@@ -114,6 +114,10 @@ tests:
           QUONFIG_KEYSET_TEST: ["QUONFIG_KEYSET_TEST/1"]
           QUONFIG_KEYSET: ["QUONFIG_KEYSET/1"]
           QUONFIG_KEYSET_TEST_PROD: ["QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"]
+          # Not a valid keyset name: a correct reader never reads it. It holds the
+          # key qf1.secret.keyset.name.invalid was sealed to, so a reader without
+          # the name rule (spec 2) decrypts that value and its cases go red.
+          QUONFIG_KEYSETX: ["QUONFIG_KEYSET_TEST/1"]
         expected:
           value: "hello"
 
@@ -259,7 +263,7 @@ tests:
         expected:
           value: "DEFAULT"
 
-      - name: qf1 secret whose keyset name does not start QUONFIG_KEYSET is refused
+      - name: qf1 secret whose keyset name is invalid is refused even when that env var holds its key
         client: config_client
         function: get
         type: STRING
