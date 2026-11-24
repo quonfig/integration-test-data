@@ -1,7 +1,7 @@
 {
-  "id": "17542679620073561",
+  "id": "17640000000000018",
   "projectId": "124",
-  "key": "reforge.secrets.encryption.key",
+  "key": "qf1.legacy.decrypt.with",
   "type": "config",
   "valueType": "string",
   "sendToClientSdk": false,
@@ -14,11 +14,10 @@
           }
         ],
         "value": {
-          "type": "provided",
-          "value": {
-            "source": "ENV_VAR",
-            "lookup": "REFORGE_INTEGRATION_TEST_ENCRYPTION_KEY"
-          }
+          "type": "string",
+          "value": "875247386844c18c58a97c--b307b97a8288ac9da3ce0cf2--7ab0c32e044869e355586ed653a435de",
+          "confidential": true,
+          "decryptWith": "qf1.legacy.key"
         }
       }
     ]

@@ -16,6 +16,7 @@ integration-test-data/
 │   ├── eval/                    # Evaluation + telemetry YAML cases (one file per function)
 │   ├── duration/grammar.yaml    # Shared ISO-8601 duration grammar
 │   ├── regex/dialect.yaml       # Quonfig regex v1 writer fixture
+│   ├── secrets/qf1-vectors.json # qf1 known-answer vectors (test keys only)
 │   └── openfeature/             # OpenFeature provider cases
 ├── data/
 │   └── integration-tests/       # The workspace the cases evaluate against
@@ -24,6 +25,7 @@ integration-test-data/
 │       ├── feature-flags/
 │       ├── log-levels/
 │       ├── segments/
+│       ├── secrets/             # qf1 secrets, written by npm run qf1:sync
 │       └── schemas/
 ├── generators/                  # Turns the YAML into each SDK's tests (one target per SDK)
 ├── chaos/                       # Cross-SDK network-chaos harness + supervisor contract; see chaos/README.md
@@ -92,6 +94,40 @@ reject:
 ```
 
 Self-check: `cd generators && npm test` (`src/shared/regex-dialect.test.ts`).
+
+## qf1 secrets
+
+`tests/secrets/qf1-vectors.json` is a byte-identical copy of the qf1
+known-answer vectors (`project/plans/secrets-qf1/vectors.json`, spec section
+14). Every key in it is a TEST KEY derived from a public label; `.gitleaks.toml`
+allowlists that one path. SDK unit tests read it directly for the crypto
+(positive, decryptOnly, negative, writerCases, keyEntryCases).
+
+The eval corpus reads secrets through the normal getters:
+
+- `data/integration-tests/secrets/qf1.secret.*.json` (`type: "secret"`), the
+  old-format twins `configs/qf1.*.json`, and `secrets.keysets` in
+  `quonfig.json` are written from the vectors by `npm run qf1:sync`
+  (manifest: `generators/src/shared/qf1-fixtures.ts`). Do not edit them by
+  hand; `npm test` fails if they drift.
+- Cases name the keysets their environment holds by test-key label, never by
+  key material:
+
+```yaml
+        keysets:
+          QUONFIG_KEYSET_TEST: ["QUONFIG_KEYSET_TEST/1"]
+```
+
+  Each generator sets that env var to `qf1-priv-` + base64url(SHA-256(
+  `"qf1 test vector private key: " + label`)) at run time, through a helper
+  it emits (`qf1TestKeyset` and its per-language spellings). Every case
+  declares the same keysets (an SDK may cache a parsed keyset per process).
+- Failures assert only the mapped `unable_to_decrypt` behaviour; the qf1
+  error class belongs to the SDK unit tests (spec decision 41).
+
+Refresh after a spec change: `cd generators && npm run qf1:sync -- --from
+../../project/plans/secrets-qf1/vectors.json`; check without writing:
+`npm run qf1:check -- --from <same path>`.
 
 ## Workflow
 
