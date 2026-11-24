@@ -24,8 +24,9 @@ Areas used below:
   rule for qf1 private keyset entries (`qf1-priv-` + 43 base64url
   characters), allowlists one path, `tests/secrets/qf1-vectors.json`, for
   the qf1 known-answer vectors (test keys only), and allowlists, for
-  generic-api-key only, config-key lines naming a `qf1.` key
-  (`"key": "qf1.secret.x"`). Landed on its own so the vectors PR is scanned
+  generic-api-key only, config-key lines naming a qf1 fixture key
+  (`"key": "qf1.secret.x"`: `qf1.secret.` or `qf1.legacy.` plus 1 to 3
+  segments of 2 to 10 lowercase letters). Landed on its own so the vectors PR is scanned
   with it: the `ssdlc / secrets` job reads this file from the base branch.
 
 ### Eval corpus
