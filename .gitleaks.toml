@@ -37,9 +37,11 @@ paths = ['''^tests/secrets/qf1-vectors\.json$''']
 # in data/integration-tests, `key: "qf1.secret.x"` in tests/eval). They name
 # a config, they are not credentials, but generic-api-key reads `key` as a
 # keyword and some names pass its entropy threshold. Scoped to that one rule
-# and to a key that starts with `qf1.`, so nothing else is hidden.
+# and to the shape of the qf1 fixture names: `qf1.secret.` or `qf1.legacy.`
+# followed by 1 to 3 dot-separated segments of 2 to 10 lowercase letters (no
+# digits), so a hex or base64 value after the prefix is still flagged.
 [[allowlists]]
 description = "qf1 fixture and case config-key names"
 targetRules = ["generic-api-key"]
 regexTarget = "line"
-regexes = ['''^\s*(?:-\s+)?"?key"?:\s*"qf1\.[a-z0-9.]+",?\s*$''']
+regexes = ['''^\s*(?:-\s+)?"?key"?:\s*"qf1\.(?:secret|legacy)(?:\.[a-z]{2,10}){1,3}",?\s*$''']
