@@ -1,0 +1,45 @@
+# gitleaks config for integration-test-data.
+#
+# quonfig/ci's `ssdlc / secrets` job reads this file from the PR's BASE
+# commit, never from the PR itself, so a change here takes effect only once
+# it is merged. A PR cannot allowlist its own findings.
+
+[extend]
+# Keep every gitleaks default rule.
+useDefault = true
+
+# A qf1 private keyset entry (project/plans/secrets-qf1-spec.md section 6.1).
+# gitleaks' default rules do not flag a bare entry. The shared rule is
+# planned in quonfig/ci (bead qfg-8seuf.26); a repo that has its own
+# .gitleaks.toml does not get rules from the workflow's default config, so
+# this repo declares it here.
+[[rules]]
+id = "quonfig-qf1-private-key-entry"
+description = "Quonfig qf1 private keyset entry (qf1-priv- + 43 base64url characters)"
+regex = '''qf1-priv-[A-Za-z0-9_-]{43}'''
+keywords = ["qf1-priv-"]
+
+# The qf1 known-answer vectors, a byte-identical copy of
+# project/plans/secrets-qf1/vectors.json (bead qfg-8seuf.3). Every key in the
+# file is a TEST KEY derived from a public label (sha256 of
+# "qf1 test vector private key: <label>"); none protects anything. The file
+# holds private entries, keyset env values and hex intermediates (shared
+# secret, AES key, nonce) by design, which the default rules report about 230
+# times, and JSON has no comments for per-line `gitleaks:allow`. This
+# allowlist covers that one path and every rule, the qf1 rule above included.
+# Nothing else in the repo may hold a private entry: the eval corpus names
+# test keys by label and the generated SDK tests derive them at run time.
+[[allowlists]]
+description = "qf1 test vectors (TEST KEYS ONLY, derived from public labels)"
+paths = ['''^tests/secrets/qf1-vectors\.json$''']
+
+# The config-key lines of the qf1 fixtures and cases (`"key": "qf1.secret.x",`
+# in data/integration-tests, `key: "qf1.secret.x"` in tests/eval). They name
+# a config, they are not credentials, but generic-api-key reads `key` as a
+# keyword and some names pass its entropy threshold. Scoped to that one rule
+# and to a key that starts with `qf1.`, so nothing else is hidden.
+[[allowlists]]
+description = "qf1 fixture and case config-key names"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''^\s*(?:-\s+)?"?key"?:\s*"qf1\.[a-z0-9.]+",?\s*$''']
