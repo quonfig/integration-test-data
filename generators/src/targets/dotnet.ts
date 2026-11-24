@@ -1066,14 +1066,22 @@ function renderFile(suite: SuiteEntry, rendered: RenderedCase[]): string {
 // base64url-no-pad(SHA-256("qf1 test vector private key: " + label)), as
 // tests/secrets/qf1-vectors.json derives it, so no key material is written
 // into the generated tests.
+// SHA256.HashData on net8.0 (CA1850 asks for it under sdk-net's
+// AnalysisMode=AllEnabledByDefault + TreatWarningsAsErrors); net48 has no
+// HashData, so the test project's other target uses an instance.
 const DOTNET_QF1_TEST_KEYSET_HELPER =
   `    private static string Qf1TestKeyset(params string[] labels)\n` +
   `    {\n` +
   `        var entries = new System.Collections.Generic.List<string>();\n` +
-  `        using var sha256 = System.Security.Cryptography.SHA256.Create();\n` +
   `        foreach (var label in labels)\n` +
   `        {\n` +
-  `            var digest = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes("qf1 test vector private key: " + label));\n` +
+  `            var input = System.Text.Encoding.UTF8.GetBytes("qf1 test vector private key: " + label);\n` +
+  `#if NET8_0_OR_GREATER\n` +
+  `            var digest = System.Security.Cryptography.SHA256.HashData(input);\n` +
+  `#else\n` +
+  `            using var sha256 = System.Security.Cryptography.SHA256.Create();\n` +
+  `            var digest = sha256.ComputeHash(input);\n` +
+  `#endif\n` +
   `            entries.Add("qf1-priv-" + Convert.ToBase64String(digest).TrimEnd('=').Replace('+', '-').Replace('/', '_'));\n` +
   `        }\n` +
   `        return string.Join(",", entries);\n` +
