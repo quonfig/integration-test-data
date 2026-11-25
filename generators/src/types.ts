@@ -83,6 +83,10 @@ export interface YamlCase {
   expected?: CaseExpected;
   client_overrides?: ClientOverrides;
   env_vars?: Record<string, string>;
+  // keysets: QUONFIG_KEYSET* env var name -> qf1 test-key labels (bead
+  // qfg-8seuf.3). Generators derive the private entries at run time; see
+  // src/shared/qf1.ts. Eval and telemetry cases only.
+  keysets?: Record<string, string[]>;
   // repeat: evaluate the case N times; only valid with expected.values_seen.
   repeat?: number;
 

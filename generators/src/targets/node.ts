@@ -39,6 +39,7 @@ import {
   isInitFailureCase,
   type InitFailureClient,
 } from '../shared/init-failure.js';
+import { caseKeysets, rejectKeysets } from '../shared/qf1.js';
 import type { ContextTypes, NormalizedCase, YamlCase } from '../types.js';
 
 interface SuiteEntry {
@@ -172,6 +173,10 @@ export function tsStringLiteral(s: string): string {
       out += '\\t';
     } else if (code < 0x20) {
       out += '\\x' + code.toString(16).padStart(2, '0').toUpperCase();
+    } else if (code === 0xfeff) {
+      // U+FEFF escaped: invisible in source, and Go rejects a raw BOM
+      // after the start of a file (qf1 vector leading-bom-kept).
+      out += '\\u' + code.toString(16);
     } else {
       out += ch;
     }
@@ -243,14 +248,17 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
   const expected = kase.expected ?? {};
 
   if (yamlBasename === 'datadir_environment.yaml') {
+    rejectKeysets(kase, yamlBasename);
     return renderDatadirBody(kase);
   }
 
   if (yamlBasename === 'datadir_value_type.yaml') {
+    rejectKeysets(kase, yamlBasename);
     return renderDatadirValueTypeBody(kase);
   }
 
   if (yamlBasename === 'delivery_environment.yaml') {
+    rejectKeysets(kase, yamlBasename);
     return renderDeliveryBody(kase);
   }
 
@@ -271,6 +279,7 @@ function renderBody(yamlBasename: string, kase: YamlCase): RenderedBody {
   // the onInitFailure / initTimeout / apiUrls options so the SDK's own init
   // path runs; see shared/init-failure.ts.
   if (isInitFailureCase(kase) && (kase.function ?? '').toString() === 'init') {
+    rejectKeysets(kase, 'function: init');
     return renderInitFailureInitBody(kase);
   }
 
@@ -378,11 +387,26 @@ function publicCall(kase: YamlCase, recv: string, key: string): string {
   return `${recv}.${method}(${keyLit}${localLit ? `, ${localLit}` : ''})`;
 }
 
+/**
+ * The case's env as a TS object literal, or null when it sets nothing:
+ * `env_vars` as string literals, then each `keysets:` entry as a
+ * qf1TestKeyset(...) call that derives the test keys at run time
+ * (shared/qf1.ts).
+ */
+function envObjectLiteral(kase: YamlCase): string | null {
+  const envVars = kase.env_vars && typeof kase.env_vars === 'object' ? stringifyEnvVars(kase.env_vars) : {};
+  const entries = Object.entries(envVars).map(([k, v]) => `${tsObjectKey(k)}: ${tsStringLiteral(v)}`);
+  for (const ks of caseKeysets(kase)) {
+    entries.push(`${tsObjectKey(ks.name)}: qf1TestKeyset(${ks.labels.map(tsStringLiteral).join(', ')})`);
+  }
+  return entries.length === 0 ? null : `{ ${entries.join(', ')} }`;
+}
+
 /** Wrap `inner` (already indented by `indent + 2`) in a withEnv block if needed. */
 function wrapEnv(kase: YamlCase, indent: string, inner: (indent: string) => string): string {
-  const envVars = kase.env_vars;
-  if (envVars && typeof envVars === 'object' && Object.keys(envVars).length > 0) {
-    let out = `${indent}await withEnv(${tsLiteral(stringifyEnvVars(envVars))}, async () => {\n`;
+  const env = envObjectLiteral(kase);
+  if (env !== null) {
+    let out = `${indent}await withEnv(${env}, async () => {\n`;
     out += inner(indent + '  ');
     out += `${indent}});\n`;
     return out;
@@ -829,11 +853,20 @@ function renderTelemetryBody(kase: YamlCase): RenderedBody {
     }
   }
 
+  // keysets: the secret must decrypt for its evaluation to be counted; the
+  // env stays set until the client has closed and the reporter drained.
+  const env = envObjectLiteral(kase);
   let body = '';
   body += `    const observed = new Map<string, unknown>();\n`;
-  body += `    const posted = await collectTelemetry(${optsLit}, (client) => {\n`;
-  body += calls;
-  body += `    });\n`;
+  if (env !== null) {
+    body += `    const posted = await withEnvResult(${env}, () => collectTelemetry(${optsLit}, (client) => {\n`;
+    body += calls;
+    body += `    }));\n`;
+  } else {
+    body += `    const posted = await collectTelemetry(${optsLit}, (client) => {\n`;
+    body += calls;
+    body += `    });\n`;
+  }
   // selected_value {redacted: true} rows match {string: "*****<5 hex>"}
   // (redaction shape only; the hash input is not pinned).
   const redacted = redactedRowKeys(expectedData);
@@ -948,8 +981,13 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   // BUILDS clients (shared customer-default client, fresh client for
   // overrides, telemetry client + endpoint). It evaluates nothing itself.
   out += `import { describe, it, expect } from "vitest";\n`;
+  const usesQf1Keysets = result.rendered.some((r) => r.source.includes('qf1TestKeyset('));
+  if (usesQf1Keysets) out += `import { createHash } from "node:crypto";\n`;
   if (isPost) {
     out += `import { collectTelemetry, telemetryPost, TELEMETRY_PROBE_KEY } from "./setup";\n`;
+    if (result.rendered.some((r) => r.source.includes('withEnvResult('))) {
+      out += NODE_WITH_ENV_RESULT_HELPER;
+    }
   } else {
     const usesEnv = result.rendered.some((r) => r.source.includes('await withEnv('));
     out += usesEnv
@@ -962,6 +1000,8 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
     if (suiteUsesInitFailureClient(result.rendered)) out += NODE_INIT_FAILURE_HELPER;
   }
 
+  if (usesQf1Keysets) out += NODE_QF1_TEST_KEYSET_HELPER;
+
   out += `describe(${tsStringLiteral(suite.describe)}, () => {\n`;
   for (const r of result.rendered) {
     out += r.source;
@@ -969,6 +1009,39 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
   out += `});\n`;
   return out;
 }
+
+// qf1 test keys (shared/qf1.ts): the value of a QUONFIG_KEYSET* env var
+// holding the test keys with these labels. A test key's private entry is
+// "qf1-priv-" + base64url-no-pad(SHA-256("qf1 test vector private key: " +
+// label)), exactly as tests/secrets/qf1-vectors.json derives it, so no key
+// material is written into this file.
+const NODE_QF1_TEST_KEYSET_HELPER = `function qf1TestKeyset(...labels: string[]): string {
+  return labels
+    .map((label) => "qf1-priv-" + createHash("sha256").update("qf1 test vector private key: " + label, "utf8").digest("base64url"))
+    .join(",");
+}
+
+`;
+
+// Telemetry files import collectTelemetry, not withEnv; this sets the env for
+// the whole collect (evaluations, close, drain) and returns its result.
+const NODE_WITH_ENV_RESULT_HELPER = `
+async function withEnvResult<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    prev[k] = process.env[k];
+    process.env[k] = v;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+`;
 
 // Self-contained: the public Quonfig options from the init-failure spec
 // (B.1: onInitFailure, initTimeout, apiUrls). onInitFailure undefined = not

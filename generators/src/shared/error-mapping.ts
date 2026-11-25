@@ -43,8 +43,17 @@ const NODE_ERRORS: ErrorMap = {
   // matches.
   unable_to_coerce_env_var:
     '/^(environment variable ".*" cannot be converted to (int|double|duration) for config ".*"|\\[quonfig\\] Config ".*" has a malformed (int|double|duration) value)$/',
-  // encryption.ts decrypt() / node:crypto GCM auth failure.
-  unable_to_decrypt: '/^(Invalid key length|Invalid encrypted string|Unsupported state or unable to authenticate data)/',
+  // qf1 secrets (bead qfg-8seuf.3, spec 9.1): every reader failure carries
+  // its qf1 class in the message, in the spec's suggested form
+  // "qf1 <class>: ..." (9.2), and a value that still carries decryptWith
+  // (spec 13.3 R1) fails with a message that names decryptWith. sdk-node's
+  // old-format messages (OpenSSL "Invalid key length", "Unsupported state or
+  // unable to authenticate data", "Invalid encrypted string") are gone with
+  // the old path and must not match: an SDK that still decrypts the old
+  // format fails the qf1.legacy.decrypt.with case. Unanchored, because the
+  // SDK may prefix the config key.
+  unable_to_decrypt:
+    '/\\bqf1 (malformed|unsupported_version|invalid_keyset_name|keyset_missing|keyset_invalid|key_not_held|invalid_ephemeral_key|decrypt_failed)\\b|\\bdecryptWith\\b/',
   // Typed-getter contract (qfg-zvyy): the message the *Details API already
   // reports for TYPE_MISMATCH (quonfig.ts detailsFor), now also raised by the
   // typed getters under onNoDefault: "error".
@@ -75,14 +84,18 @@ const PYTHON_ERRORS: ErrorMap = {
   invalid_environment: 'RuntimeError',
 };
 
-// Go SDK errors live in package `quonfig`. The map covers the error keys
-// used by the YAML cases that drive real-Client construction; resolver-time
-// raise paths still go through assertResolveError in test_helpers_test.go.
-// missing_default has no dedicated Go error type (the SDK returns
-// (zero, false, nil)); the helper bridges that by checking ok=false.
+// YAML error key -> exported sdk-go sentinel, compared with errors.Is by the
+// go target (src/targets/go.ts). missing_default is ErrNotFound: the
+// (value, ok, err) getters return it when there is no value.
+// unable_to_decrypt: sdk-go wraps every qf1 reader failure (spec 9.1) and a
+// leftover decryptWith value (spec 13.3 R1) in ErrUnableToDecrypt.
 const GO_ERRORS: ErrorMap = {
-  initialization_timeout: 'quonfig.ErrInitializationTimeout',
+  missing_default: 'quonfig.ErrNotFound',
   missing_env_var: 'quonfig.ErrMissingEnvVar',
+  unable_to_coerce_env_var: 'quonfig.ErrUnableToCoerce',
+  unable_to_decrypt: 'quonfig.ErrUnableToDecrypt',
+  type_mismatch: 'quonfig.ErrTypeMismatch',
+  initialization_timeout: 'quonfig.ErrInitializationTimeout',
 };
 
 // sdk-java exception classes will live under com.quonfig.sdk.exceptions.

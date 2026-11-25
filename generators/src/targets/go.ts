@@ -23,6 +23,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadYamlFile } from '../yaml-loader.js';
+import { lookupErrorClass } from '../shared/error-mapping.js';
+import { caseKeysets, rejectKeysets } from '../shared/qf1.js';
 import {
   goSuiteName,
   goTestFunctionName,
@@ -97,6 +99,10 @@ function goStringLiteral(s: string): string {
       out += '\\t';
     } else if (code < 0x20 || code === 0x7f) {
       out += '\\x' + code.toString(16).padStart(2, '0').toUpperCase();
+    } else if (code === 0xfeff) {
+      // U+FEFF escaped: invisible in source, and Go rejects a raw BOM
+      // after the start of a file (qf1 vector leading-bom-kept).
+      out += '\\u' + code.toString(16);
     } else {
       out += ch;
     }
@@ -291,11 +297,26 @@ function clientSetup(kase: YamlCase, tiers: Tiers, features: Set<string>): strin
 
 function envVarLines(kase: YamlCase): string {
   const envVars = kase.env_vars;
-  if (!envVars || typeof envVars !== 'object') return '';
   let out = '';
-  for (const [k, v] of Object.entries(envVars)) {
-    const sval = v === null || v === undefined ? '' : String(v);
-    out += `\tt.Setenv(${goStringLiteral(k)}, ${goStringLiteral(sval)})\n`;
+  if (envVars && typeof envVars === 'object') {
+    for (const [k, v] of Object.entries(envVars)) {
+      const sval = v === null || v === undefined ? '' : String(v);
+      out += `\tt.Setenv(${goStringLiteral(k)}, ${goStringLiteral(sval)})\n`;
+    }
+  }
+  out += keysetLines(kase);
+  return out;
+}
+
+/**
+ * `keysets:` (shared/qf1.ts): each keyset env var set to the test keys with
+ * these labels, derived at run time by qf1TestKeyset in
+ * qf1_test_keys_generated_test.go.
+ */
+function keysetLines(kase: YamlCase): string {
+  let out = '';
+  for (const ks of caseKeysets(kase)) {
+    out += `\tt.Setenv(${goStringLiteral(ks.name)}, qf1TestKeyset(${ks.labels.map(goStringLiteral).join(', ')}))\n`;
   }
   return out;
 }
@@ -375,19 +396,6 @@ function goGetterFor(yamlType: string, sample: unknown): GoGetter {
   }
 }
 
-/**
- * YAML error key -> exported sdk-go sentinel. Target-local on purpose: the
- * shared GO_ERRORS map in src/shared/error-mapping.ts predates the
- * public-API harness and lacks most of these.
- */
-const GO_PUBLIC_ERRORS: Record<string, string> = {
-  missing_default: 'quonfig.ErrNotFound',
-  missing_env_var: 'quonfig.ErrMissingEnvVar',
-  unable_to_coerce_env_var: 'quonfig.ErrUnableToCoerce',
-  unable_to_decrypt: 'quonfig.ErrUnableToDecrypt',
-  type_mismatch: 'quonfig.ErrTypeMismatch',
-  initialization_timeout: 'quonfig.ErrInitializationTimeout',
-};
 
 /**
  * Render a single test function body (everything between the opening `{`
@@ -408,6 +416,7 @@ function renderBody(
   features: Set<string>,
 ): string {
   if (suite.yaml === 'datadir_environment.yaml') {
+    rejectKeysets(kase, suite.yaml);
     features.add('quonfig');
     features.add('require');
     features.add('assert');
@@ -415,6 +424,7 @@ function renderBody(
   }
 
   if (suite.yaml === 'datadir_value_type.yaml') {
+    rejectKeysets(kase, suite.yaml);
     features.add('quonfig');
     features.add('require');
     features.add('assert');
@@ -422,6 +432,7 @@ function renderBody(
   }
 
   if (suite.yaml === 'delivery_environment.yaml') {
+    rejectKeysets(kase, suite.yaml);
     features.add('quonfig');
     features.add('require');
     features.add('assert');
@@ -452,6 +463,7 @@ function renderBody(
 
 function renderEvalBody(kase: YamlCase, features: Set<string>): string {
   if ((kase.function ?? '').toString() === 'init') {
+    rejectKeysets(kase, 'function: init');
     return renderInitFailureInitBody(kase, features);
   }
   const expected = kase.expected ?? {};
@@ -521,10 +533,10 @@ function renderEvalBody(kase: YamlCase, features: Set<string>): string {
   // the raise, compared by sentinel with errors.Is.
   if (expected.status === 'raise') {
     const errKey = (expected.error ?? '').toString();
-    const sentinel = GO_PUBLIC_ERRORS[errKey];
+    const sentinel = lookupErrorClass('go', errKey);
     if (!sentinel) {
       throw new Error(
-        `no Go error mapping for expected.error="${errKey}"; add it to GO_PUBLIC_ERRORS in src/targets/go.ts`,
+        `no Go error mapping for expected.error="${errKey}"; add it to GO_ERRORS in src/shared/error-mapping.ts`,
       );
     }
     const getter = goGetterFor(yamlType === '' ? 'STRING' : yamlType, undefined);
@@ -649,7 +661,7 @@ function renderDatadirBody(kase: YamlCase): string {
       const envName = String(overrides.environment ?? '');
       body += `${indent}assert.Contains(t, err.Error(), ${goStringLiteral(envName)})\n`;
     } else {
-      const errClass = GO_PUBLIC_ERRORS[errKey];
+      const errClass = lookupErrorClass('go', errKey);
       if (!errClass) {
         throw new Error(`no Go error mapping for init expected.error="${errKey}"`);
       }
@@ -885,7 +897,8 @@ function renderTelemetryBody(kase: YamlCase, features: Set<string>): string {
   const overrides = kase.client_overrides ?? {};
   const tiers = caseTiers(kase);
 
-  let body = '';
+  // keysets: the secret must decrypt for its evaluation to be counted.
+  let body = keysetLines(kase);
   const extra = tiers.global ? `, quonfig.WithGlobalContext(${goContextSetExpr(tiers.global)})` : '';
   if (tiers.global) features.add('quonfig');
   body += `\ttel := startTelemetryClient(t, ${goLiteralValue(overrides)}${extra})\n`;
@@ -1195,6 +1208,7 @@ export interface GoRunResult {
 export function runGoTarget(dataRoot: string, outDir: string): GoRunResult {
   mkdirSync(outDir, { recursive: true });
   const written: GoRunResult['written'] = [];
+  let usesQf1Keysets = false;
 
   for (const suite of SUITES) {
     if (suite.suite !== goSuiteName(suite.yaml)) {
@@ -1213,7 +1227,54 @@ export function runGoTarget(dataRoot: string, outDir: string): GoRunResult {
     const outPath = resolve(outDir, suite.out);
     writeFileSync(outPath, src);
     written.push({ path: outPath, cases: rendered.length });
+    if (rendered.some((r) => r.source.includes('qf1TestKeyset('))) usesQf1Keysets = true;
+  }
+
+  // Every generated file is package fixtures, so the qf1 helper lives in one
+  // file of its own rather than in each file that calls it.
+  if (usesQf1Keysets) {
+    const outPath = resolve(outDir, QF1_HELPER_FILE);
+    writeFileSync(outPath, goQf1HelperFile());
+    written.push({ path: outPath, cases: 0 });
   }
 
   return { written };
+}
+
+const QF1_HELPER_FILE = 'qf1_test_keys_generated_test.go';
+
+/**
+ * qf1 test keys (shared/qf1.ts): the value of a QUONFIG_KEYSET* env var
+ * holding the test keys with these labels. A private entry is "qf1-priv-" +
+ * base64url-no-pad(SHA-256("qf1 test vector private key: " + label)), as
+ * tests/secrets/qf1-vectors.json derives it, so no key material is written
+ * into the generated tests.
+ */
+function goQf1HelperFile(): string {
+  return (
+    `// Code generated by integration-test-data/generators. DO NOT EDIT.\n` +
+    `// Regenerate with:\n` +
+    `//   cd integration-test-data/generators && npm run generate -- --target=go\n` +
+    `// Source: ${GENERATOR_PATH}\n` +
+    `\n` +
+    `package fixtures\n` +
+    `\n` +
+    `import (\n` +
+    `\t"crypto/sha256"\n` +
+    `\t"encoding/base64"\n` +
+    `\t"strings"\n` +
+    `)\n` +
+    `\n` +
+    `// qf1TestKeyset returns the value of a QUONFIG_KEYSET* env var holding the\n` +
+    `// qf1 test keys with these labels (integration-test-data\n` +
+    `// tests/secrets/qf1-vectors.json derives every test key from its label).\n` +
+    `func qf1TestKeyset(labels ...string) string {\n` +
+    `\tentries := make([]string, 0, len(labels))\n` +
+    `\tfor _, label := range labels {\n` +
+    `\t\tsum := sha256.Sum256([]byte("qf1 test vector private key: " + label))\n` +
+    `\t\tentries = append(entries, "qf1-priv-"+base64.RawURLEncoding.EncodeToString(sum[:]))\n` +
+    `\t}\n` +
+    `\treturn strings.Join(entries, ",")\n` +
+    `}\n`
+  );
 }

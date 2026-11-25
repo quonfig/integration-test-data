@@ -31,6 +31,32 @@ Areas used below:
 
 ### Eval corpus
 
+- qf1 secrets (qfg-8seuf.3, spec `project/plans/secrets-qf1-spec.md`):
+  `tests/secrets/qf1-vectors.json` (byte-identical copy of the spec's
+  vectors); 16 `data/integration-tests/secrets/qf1.secret.*.json` documents
+  (`type: "secret"`, 9 that decrypt, 7 that must fail) and 3 old-format
+  `configs/qf1.*.json` documents, all written from the vectors by
+  `npm run qf1:sync`; `quonfig.json` gains `secrets.keysets` (3 test
+  keysets, public keys only). New cases: 19 in `get.yaml` (decrypts a
+  secret incl. empty, multi-byte, leading U+FEFF, special characters, the
+  bare `QUONFIG_KEYSET`, the second key of a two-key keyset, an
+  environment-scoped value on a second keyset, a secret shadowing a
+  `configs/` twin in datadir mode; keyset not held, fingerprint not held,
+  cross-keyset lookup, tampered header, bad keyset name `QUONFIG_KEYSETX`
+  (the corpus env sets that name to the matching key, so a reader without
+  the name rule decrypts it and fails the case), trailing colon,
+  all-zero shared secret, and a leftover `decryptWith` value, each
+  returning the default), 9 in `get_or_raise.yaml`
+  (`error: unable_to_decrypt`, message never contains `qf1-priv-`), 1 in
+  `telemetry.yaml` (type `SECRET`, redacted over the stored ciphertext).
+- Removed the old `decryptWith` fixtures and cases: `a.secret.config`,
+  `a.secret.config.reforge`, `a.broken.secret.config`, `brand.new.secret`,
+  `robocop-secret`, `env.scoped.secret`, `env.scoped.encryption.key`,
+  `prefab.secrets.encryption.key`, `reforge.secrets.encryption.key`,
+  `jeffreys.test.key`, `jeffreys.test.key.reforge`. The typed-getter
+  "decryption failure" cells (`get.yaml`, `get_or_raise.yaml`,
+  `enabled.yaml`) now read `qf1.secret.key.not.held`; "can return a value
+  provided by an environment variable" now reads `greeting.from.env`.
 - Weighted variants of every value type (qfg-5ccy): new fixtures
   `weighted.variant.{json,duration,provided.int,provided.missing}`, each a
   single 100% weighted variant. `get_weighted_values.yaml` pins that a json
@@ -39,6 +65,50 @@ Areas used below:
   same default/nil as a top-level provided value; `get_or_raise.yaml` pins
   the `missing_env_var` raise; `telemetry.yaml` pins reason SPLIT with the
   resolved int for the ENV_VAR variant.
+
+### Generators
+
+- `keysets:` on eval and telemetry cases (all six targets): each named
+  QUONFIG_KEYSET* env var is set to test keys derived at run time from
+  their labels by an emitted helper (`qf1TestKeyset`, `_qf1_test_keyset`,
+  `qf1_test_keyset`, `Qf1TestKeyset`; go: new file
+  `qf1_test_keys_generated_test.go`). Rejected on datadir, delivery and
+  init cases. Telemetry cases set the env for the client's whole life.
+- `unable_to_decrypt`: node matches `qf1 <class>` or `decryptWith` in the
+  message (the OpenSSL old-format messages no longer match); the shared
+  `GO_ERRORS` map is now the one the go target uses and includes it.
+- String literals escape U+FEFF (Go rejects a raw BOM after the start of a
+  file). python: the fixture no longer sets
+  `PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY`.
+- `npm run qf1:sync` / `npm run qf1:check`; `src/shared/qf1.test.ts` fails
+  on drift between the vectors, the fixtures and the cases.
+
+### Upgrade notes
+
+- Bumping to the tag that carries this needs the SDK's qf1 bead
+  (qfg-8seuf.8 to .13): read `secrets/` last in datadir mode, decrypt qf1
+  with keysets read through the harness env lookup (Java/.NET
+  `TestSetup` env, not the process env directly), fail any `decryptWith`
+  value, report secret summaries as type `SECRET` in the telemetry
+  projection. Against a current SDK exactly 21 cases fail (all qf1).
+- Hand-written tests that read the removed fixtures: sdk-node
+  `test/typed-getter-contract.test.ts` and sdk-java `GetOrThrowTest.java`
+  (`a.broken.secret.config`), and sdk-go `integration_test.go`
+  (`brand.new.secret`); harness setups that export
+  `PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY` can drop it.
+- sdk-node error text (the node target matches messages, sdk-node has no
+  error classes): every qf1 reader failure must say `qf1 <class>` (the
+  spec 9.2 wording, e.g. `qf1 key_not_held: ...`; a prefix such as the
+  config key is fine), and a value that still carries `decryptWith` must
+  fail with a message containing `decryptWith`. The class name alone is not
+  accepted, because `malformed` also appears in sdk-node's coercion error
+  (`has a malformed int value`), which would let the wrong failure pass.
+- The corpus env sets `QUONFIG_KEYSETX` (not a valid keyset name) on every
+  qf1 case: a reader must never read it.
+- Not every consumer pins a tag: openfeature-go and openfeature-node check
+  out `ref: main`, openfeature-python and openfeature-ruby check out the
+  default branch. They read `data/integration-tests` and take this change
+  as soon as it merges.
 
 ## v2026.10.27.1 - 2026-10-27
 

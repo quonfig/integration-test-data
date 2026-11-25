@@ -1,1 +1,25 @@
-{"environments": ["Production"]}
+{
+  "environments": [
+    "Production"
+  ],
+  "secrets": {
+    "keysets": {
+      "QUONFIG_KEYSET_TEST": {
+        "publicKeys": [
+          "qf1-pub-bwoeNo6zN4l1BQ8BoZl584ubjJZ4nEtJfCQn6r_Flgk"
+        ]
+      },
+      "QUONFIG_KEYSET": {
+        "publicKeys": [
+          "qf1-pub-KOHi3-DVoS1EBQRRMx1U4xfLVYc5PV-w-Ef61q7ZKyc"
+        ]
+      },
+      "QUONFIG_KEYSET_TEST_PROD": {
+        "publicKeys": [
+          "qf1-pub-rkDDmoo6EO01u3sOAko8pOL0WfHv7PdplmDYJ2GXnw8",
+          "qf1-pub-7nzf9QFmubLdr9zt_AqSYwfVrx0sBj1SnErauSXqqFI"
+        ]
+      }
+    }
+  }
+}

@@ -435,12 +435,128 @@ tests:
           - "hunter2"
           - "postgres://"
 
-    - name: raises an error for decryption failure
+    # qf1 secrets (bead qfg-8seuf.3): see the qf1 block in get.yaml for the
+    # fixtures, the `keysets:` field and why every case holds the same
+    # keysets. A failed read raises the SDK's unable-to-decrypt error; the
+    # qf1 class is the SDK unit tests' job (spec decision 41). No error text
+    # may carry key material (spec 9.2), so none may contain "qf1-priv-".
+    - name: get_or_raise decrypts a qf1 secret
       client: config_client
       function: get_or_raise
       type: STRING
       input:
-        key: "a.broken.secret.config"
+        key: "qf1.secret.short"
+      keysets: &qf1_keysets
+        QUONFIG_KEYSET_TEST: ["QUONFIG_KEYSET_TEST/1"]
+        QUONFIG_KEYSET: ["QUONFIG_KEYSET/1"]
+        QUONFIG_KEYSET_TEST_PROD: ["QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"]
+        # Not a valid keyset name: a correct reader never reads it. It holds the
+        # key qf1.secret.keyset.name.invalid was sealed to, so a reader without
+        # the name rule (spec 2) decrypts that value and its cases go red.
+        QUONFIG_KEYSETX: ["QUONFIG_KEYSET_TEST/1"]
+      expected:
+        value: "hello"
+
+    - name: raises unable_to_decrypt for a qf1 secret on a keyset the environment does not hold
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.secret.keyset.missing"
+      keysets: *qf1_keysets
+      expected:
+        status: raise
+        error: unable_to_decrypt
+        message_excludes:
+          - "qf1-priv-"
+
+    - name: raises unable_to_decrypt for a qf1 secret whose fingerprint is not held
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.secret.key.not.held"
+      keysets: *qf1_keysets
+      expected:
+        status: raise
+        error: unable_to_decrypt
+        message_excludes:
+          - "qf1-priv-"
+
+    - name: raises unable_to_decrypt for a qf1 secret held only under another keyset
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.secret.cross.keyset"
+      keysets: *qf1_keysets
+      expected:
+        status: raise
+        error: unable_to_decrypt
+        message_excludes:
+          - "qf1-priv-"
+
+    - name: raises unable_to_decrypt for a qf1 secret with a tampered header
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.secret.tampered.header"
+      keysets: *qf1_keysets
+      expected:
+        status: raise
+        error: unable_to_decrypt
+        message_excludes:
+          - "qf1-priv-"
+
+    - name: raises unable_to_decrypt for a qf1 secret whose keyset name is invalid even when that env var holds its key
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.secret.keyset.name.invalid"
+      keysets: *qf1_keysets
+      expected:
+        status: raise
+        error: unable_to_decrypt
+        message_excludes:
+          - "qf1-priv-"
+
+    - name: raises unable_to_decrypt for a qf1 secret with a trailing colon
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.secret.trailing.colon"
+      keysets: *qf1_keysets
+      expected:
+        status: raise
+        error: unable_to_decrypt
+        message_excludes:
+          - "qf1-priv-"
+
+    - name: raises unable_to_decrypt for a qf1 secret whose shared secret is all zero
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.secret.low.order.ephemeral"
+      keysets: *qf1_keysets
+      expected:
+        status: raise
+        error: unable_to_decrypt
+        message_excludes:
+          - "qf1-priv-"
+
+    # A decryptWith value with no secrets/ twin fails (spec 13.3 R1). Its
+    # old key exists (configs/qf1.legacy.key.json), so an SDK that still
+    # decrypts the old format returns "hello.world" and fails this case.
+    - name: raises unable_to_decrypt for a value that still carries decryptWith
+      client: config_client
+      function: get_or_raise
+      type: STRING
+      input:
+        key: "qf1.legacy.decrypt.with"
       expected:
         status: raise
         error: unable_to_decrypt

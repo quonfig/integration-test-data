@@ -1995,10 +1995,20 @@ tests:
         expected:
           value: false
 
+      # The decryption failure is a qf1 secret whose fingerprint is not held
+      # (bead qfg-8seuf.3; see the qf1 block in get.yaml for `keysets:`).
       - name: enabled on a decryption failure returns false
         client: config_client
         function: enabled
         input:
-          key: "a.broken.secret.config"
+          key: "qf1.secret.key.not.held"
+        keysets:
+          QUONFIG_KEYSET_TEST: ["QUONFIG_KEYSET_TEST/1"]
+          QUONFIG_KEYSET: ["QUONFIG_KEYSET/1"]
+          QUONFIG_KEYSET_TEST_PROD: ["QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"]
+          # Not a valid keyset name: a correct reader never reads it. It holds the
+          # key qf1.secret.keyset.name.invalid was sealed to, so a reader without
+          # the name rule (spec 2) decrypts that value and its cases go red.
+          QUONFIG_KEYSETX: ["QUONFIG_KEYSET_TEST/1"]
         expected:
           value: false

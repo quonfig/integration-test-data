@@ -37,6 +37,7 @@ import {
   uniqueSuffix,
 } from '../shared/case-id.js';
 import { lookupErrorClass } from '../shared/error-mapping.js';
+import { caseKeysets, hasKeysets, rejectKeysets } from '../shared/qf1.js';
 import { repeatSpec, repeatValueType } from '../shared/repeat.js';
 import { isMalformedDurationWithDefault } from '../shared/malformed-duration.js';
 import {
@@ -242,6 +243,10 @@ export function javaStringLiteral(s: string): string {
       const lo = 0xdc00 + (cp & 0x3ff);
       out += '\\u' + hi.toString(16).padStart(4, '0');
       out += '\\u' + lo.toString(16).padStart(4, '0');
+    } else if (code === 0xfeff) {
+      // U+FEFF escaped: invisible in source, and Go rejects a raw BOM
+      // after the start of a file (qf1 vector leading-bom-kept).
+      out += '\\u' + code.toString(16);
     } else {
       out += ch;
     }
@@ -262,6 +267,22 @@ function envMapLiteral(envVars: Record<string, unknown>): string {
     const sval = v === null || v === undefined ? '' : String(v);
     return [javaStringLiteral(k), javaStringLiteral(sval)];
   });
+  return 'TestSetup.map(' + args.join(', ') + ')';
+}
+
+/**
+ * The case's env for TestSetup.withEnv: `env_vars` as string literals, then
+ * each `keysets:` entry as a qf1TestKeyset(...) call that derives the test
+ * keys at run time (shared/qf1.ts).
+ */
+function caseEnvMapLiteral(kase: YamlCase): string {
+  const args: string[] = [];
+  for (const [k, v] of Object.entries(kase.env_vars ?? {})) {
+    args.push(javaStringLiteral(k), javaStringLiteral(v === null || v === undefined ? '' : String(v)));
+  }
+  for (const ks of caseKeysets(kase)) {
+    args.push(javaStringLiteral(ks.name), `qf1TestKeyset(${ks.labels.map(javaStringLiteral).join(', ')})`);
+  }
   return 'TestSetup.map(' + args.join(', ') + ')';
 }
 
@@ -532,12 +553,15 @@ function renderBody(
 ): string {
   if (NON_EVAL_SUITES.has(suite.yaml)) rejectMessageExpectations(kase, suite.yaml);
   if (suite.yaml === 'datadir_environment.yaml') {
+    rejectKeysets(kase, suite.yaml);
     return renderDatadirBody(kase, exceptions);
   }
   if (suite.yaml === 'datadir_value_type.yaml') {
+    rejectKeysets(kase, suite.yaml);
     return renderDatadirValueTypeBody(kase);
   }
   if (suite.yaml === 'delivery_environment.yaml') {
+    rejectKeysets(kase, suite.yaml);
     return renderDeliveryBody(kase);
   }
   if (suite.yaml === 'post.yaml' || suite.yaml === 'telemetry.yaml') {
@@ -566,7 +590,10 @@ const EVAL_OVERRIDE_KEYS = new Set([
 ]);
 
 function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
-  if (isInitFailureCase(kase)) return renderInitFailureBody(kase, exceptions);
+  if (isInitFailureCase(kase)) {
+    rejectKeysets(kase, 'init-failure');
+    return renderInitFailureBody(kase, exceptions);
+  }
   const expected = kase.expected ?? {};
   // Rejects message_contains/message_excludes on a non-raise case.
   messageExpectations(expected);
@@ -593,11 +620,11 @@ function renderEvalBody(kase: YamlCase, exceptions: Set<string>): string {
   const tiers = tiersOf(kase.contexts);
 
   const indent = '    ';
-  const hasEnv = Object.keys(envVars).length > 0;
+  const hasEnv = Object.keys(envVars).length > 0 || hasKeysets(kase);
 
   let body = '';
   if (hasEnv) {
-    body += `${indent}TestSetup.withEnv(${envMapLiteral(envVars)}, () -> {\n`;
+    body += `${indent}TestSetup.withEnv(${caseEnvMapLiteral(kase)}, () -> {\n`;
   }
   const inner = hasEnv ? indent + '  ' : indent;
 
@@ -1052,9 +1079,14 @@ function renderTelemetryBody(kase: YamlCase, rctx: RenderCtx): string {
     : null;
   const tiers = tiersOf(kase.contexts);
 
-  const indent = '    ';
+  // keysets: the secret must decrypt for its evaluation to be counted, so
+  // the whole client lifetime (build, evaluate, drain) runs inside withEnv.
+  if (kase.env_vars) throw new Error('env_vars on a telemetry case is not supported');
+  const withKeysets = hasKeysets(kase);
+  const indent = withKeysets ? '      ' : '    ';
   const inner = indent + '  ';
   let body = '';
+  if (withKeysets) body += `    TestSetup.withEnv(${caseEnvMapLiteral(kase)}, () -> {\n`;
   const globalArg = tiers.global ? ctxLiteral(tiers.global) : 'null';
   body += `${indent}try (TestSetup.TelemetryClient t =\n`;
   body += `${indent}    TestSetup.telemetryClient(${javaLiteral(overrides)}, ${globalArg})) {\n`;
@@ -1139,6 +1171,7 @@ function renderTelemetryBody(kase: YamlCase, rctx: RenderCtx): string {
     body += `${inner}    ${javaLiteral(expectedData)},\n`;
     body += `${inner}    projected);\n`;
     body += `${indent}}\n`;
+    if (withKeysets) body += `    });\n`;
     return body;
   }
 
@@ -1151,6 +1184,7 @@ function renderTelemetryBody(kase: YamlCase, rctx: RenderCtx): string {
     body += `${inner}    t.${projection}());\n`;
   }
   body += `${indent}}\n`;
+  if (withKeysets) body += `    });\n`;
   return body;
 }
 
@@ -1358,10 +1392,35 @@ function renderFile(suite: SuiteEntry, result: RenderResult): string {
 
   out += `\n`;
   out += `class ${suite.className} {\n`;
+  if (src.includes('qf1TestKeyset(')) out += JAVA_QF1_TEST_KEYSET_HELPER;
   out += src;
   out += `}\n`;
   return out;
 }
+
+// qf1 test keys (shared/qf1.ts): the value of a QUONFIG_KEYSET* env var
+// holding the test keys with these labels. A private entry is "qf1-priv-" +
+// base64url-no-pad(SHA-256("qf1 test vector private key: " + label)), as
+// tests/secrets/qf1-vectors.json derives it, so no key material is written
+// into the generated tests.
+const JAVA_QF1_TEST_KEYSET_HELPER =
+  `  private static String qf1TestKeyset(String... labels) {\n` +
+  `    java.util.List<String> entries = new java.util.ArrayList<>();\n` +
+  `    for (String label : labels) {\n` +
+  `      try {\n` +
+  `        byte[] digest =\n` +
+  `            java.security.MessageDigest.getInstance("SHA-256")\n` +
+  `                .digest(\n` +
+  `                    ("qf1 test vector private key: " + label)\n` +
+  `                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));\n` +
+  `        entries.add(\n` +
+  `            "qf1-priv-" + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(digest));\n` +
+  `      } catch (java.security.NoSuchAlgorithmException e) {\n` +
+  `        throw new IllegalStateException(e);\n` +
+  `      }\n` +
+  `    }\n` +
+  `    return String.join(",", entries);\n` +
+  `  }\n`;
 
 // ---------------------------------------------------------------------------
 // Entry point

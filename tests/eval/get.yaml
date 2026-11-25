@@ -68,10 +68,11 @@ tests:
         function: get
         type: STRING
         input:
-          key: "prefab.secrets.encryption.key"
+          key: "greeting.from.env"
+        env_vars:
+          GREETING: "hello from the environment"
         expected:
-          value: "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221"
-
+          value: "hello from the environment"
 
       - name: can return a value provided by an environment variable after type coercion
         client: config_client
@@ -82,30 +83,243 @@ tests:
         expected:
           value: 1234
 
-      - name: can decrypt and return a secret value (with decryption key in in env var)
+      ##########################################################################
+      ## qf1 secrets (bead qfg-8seuf.3; spec project/plans/secrets-qf1-spec.md).
+      ## Fixtures: data/integration-tests/secrets/qf1.secret.*.json, written by
+      ## `npm run qf1:sync` from tests/secrets/qf1-vectors.json (the spec's
+      ## known-answer vectors); the old-format twins are configs/qf1.*.json.
+      ## A secret is read through the normal typed getter.
+      ##
+      ## `keysets:` gives the case's environment its QUONFIG_KEYSET* env vars
+      ## by TEST-KEY LABEL; each generator derives the private entries at run
+      ## time (generators/src/shared/qf1.ts), so no key material is written
+      ## here or into any SDK's generated tests. Every case declares the SAME
+      ## keysets (the vectors' three, shared/qf1.test.ts checks it): an SDK
+      ## may cache a parsed keyset for the life of the process (spec 6.2).
+      ##
+      ## Failures assert only the SDK's mapped unable-to-decrypt behaviour
+      ## (spec decision 41): here the caller's default or the absent value,
+      ## in get_or_raise.yaml `error: unable_to_decrypt`. The qf1 error class
+      ## (key_not_held, malformed, ...) is asserted by each SDK's unit tests
+      ## against the vectors. Each failing fixture fails ONLY its own value:
+      ## every other case here runs against the same workspace.
+      ##########################################################################
+      - name: decrypts a qf1 secret
         client: config_client
         function: get
         type: STRING
         input:
-          key: "a.secret.config"
+          key: "qf1.secret.short"
+        keysets: &qf1_keysets
+          QUONFIG_KEYSET_TEST: ["QUONFIG_KEYSET_TEST/1"]
+          QUONFIG_KEYSET: ["QUONFIG_KEYSET/1"]
+          QUONFIG_KEYSET_TEST_PROD: ["QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"]
+          # Not a valid keyset name: a correct reader never reads it. It holds the
+          # key qf1.secret.keyset.name.invalid was sealed to, so a reader without
+          # the name rule (spec 2) decrypts that value and its cases go red.
+          QUONFIG_KEYSETX: ["QUONFIG_KEYSET_TEST/1"]
         expected:
-          value: "hello.world"
+          value: "hello"
 
-      # The decryption key config is evaluated like any config, for the
-      # client's environment with criteria honored: environment rules first,
-      # then default (qfg-goi1.10.11, WS9). env.scoped.encryption.key has a
-      # wrong key in its default row and, in Production, a non-matching
-      # criteria row (wrong key) above an ALWAYS_TRUE row providing the real
-      # key from PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY. Only that row
-      # decrypts env.scoped.secret (same ciphertext as a.secret.config).
-      - name: decrypts a secret whose key config has an environment rule
+      - name: decrypts a qf1 secret whose value is the empty string
         client: config_client
         function: get
         type: STRING
         input:
-          key: "env.scoped.secret"
+          key: "qf1.secret.empty"
+        keysets: *qf1_keysets
         expected:
-          value: "hello.world"
+          value: ""
+
+      - name: decrypts a qf1 secret with multi-byte UTF-8
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.multibyte"
+        keysets: *qf1_keysets
+        expected:
+          value: "pässwörd 日本語 🔑"
+
+      - name: decrypts a qf1 secret and keeps its leading U+FEFF
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.leading.bom"
+        keysets: *qf1_keysets
+        expected:
+          value: "\U0000FEFFbom stays"
+
+      - name: decrypts a qf1 secret with quotes, backslash, newline, tab and colons
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.json.special"
+        keysets: *qf1_keysets
+        expected:
+          value: "a\"b\\c\nd\te:f,g qf1:x"
+
+      - name: decrypts a qf1 secret on the bare QUONFIG_KEYSET keyset
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.default.keyset"
+        keysets: *qf1_keysets
+        expected:
+          value: "sk_test_default_keyset_value"
+
+      - name: decrypts a qf1 secret encrypted to the second key of a two-key keyset
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.older.key"
+        keysets: *qf1_keysets
+        expected:
+          value: "written before rotation"
+
+      # Default rule on QUONFIG_KEYSET, Production rule on
+      # QUONFIG_KEYSET_TEST_PROD (spec 10.2): the client's environment picks
+      # the value, and so the keyset.
+      - name: decrypts the environment-scoped value of a qf1 secret on a second keyset
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.env.scoped"
+        keysets: *qf1_keysets
+        expected:
+          value: "written with the first public key"
+
+      # qf1.secret.shadowed is in BOTH configs/ (old value with decryptWith)
+      # and secrets/ (qf1). Datadir mode loads secrets/ last, so the secret
+      # wins (spec 13.7); a reader of the configs/ copy would fail (R1).
+      - name: a qf1 secret shadows a document with the same key in configs
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.shadowed"
+        keysets: *qf1_keysets
+        expected:
+          value: "hello"
+
+      - name: qf1 secret on a keyset the environment does not hold returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.keyset.missing"
+          default: "DEFAULT"
+        keysets: *qf1_keysets
+        expected:
+          value: "DEFAULT"
+
+      - name: qf1 secret on a keyset the environment does not hold with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.keyset.missing"
+        keysets: *qf1_keysets
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
+
+      - name: qf1 secret whose fingerprint is not held returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.key.not.held"
+          default: "DEFAULT"
+        keysets: *qf1_keysets
+        expected:
+          value: "DEFAULT"
+
+      - name: qf1 secret is looked up by keyset and fingerprint, never in another keyset
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.cross.keyset"
+          default: "DEFAULT"
+        keysets: *qf1_keysets
+        expected:
+          value: "DEFAULT"
+
+      - name: qf1 secret with a tampered header returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.tampered.header"
+          default: "DEFAULT"
+        keysets: *qf1_keysets
+        expected:
+          value: "DEFAULT"
+
+      - name: qf1 secret whose keyset name is invalid is refused even when that env var holds its key
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.keyset.name.invalid"
+          default: "DEFAULT"
+        keysets: *qf1_keysets
+        expected:
+          value: "DEFAULT"
+
+      - name: qf1 secret with a trailing colon is refused
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.trailing.colon"
+          default: "DEFAULT"
+        keysets: *qf1_keysets
+        expected:
+          value: "DEFAULT"
+
+      - name: qf1 secret whose ephemeral key gives an all-zero shared secret is refused
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.secret.low.order.ephemeral"
+          default: "DEFAULT"
+        keysets: *qf1_keysets
+        expected:
+          value: "DEFAULT"
+
+      # A decryptWith value with no secrets/ twin (spec 13.3 R1, decision
+      # 30): the SDK has no old-format path, so the value fails; it is never
+      # returned as the stored string. qf1.legacy.key holds the matching old
+      # key, so an SDK that still decrypts the old format fails this case.
+      - name: a value that still carries decryptWith returns the default
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.legacy.decrypt.with"
+          default: "DEFAULT"
+        expected:
+          value: "DEFAULT"
+
+      - name: a value that still carries decryptWith with no default returns nil
+        client: config_client
+        function: get
+        type: STRING
+        input:
+          key: "qf1.legacy.decrypt.with"
+        expected:
+          value: ~
+        client_overrides:
+          on_no_default: 2
 
       - name: duration 200 ms
         client: config_client
@@ -627,7 +841,8 @@ tests:
       ##     wrong type, unable_to_coerce_env_var for a malformed value (same
       ##     key as malformed durations), missing_env_var / unable_to_decrypt.
       ##   - enabled never raises: false (see enabled.yaml).
-      ## Fixtures: data/integration-tests/configs/getter.contract.*.json.
+      ## Fixtures: data/integration-tests/configs/getter.contract.*.json; the
+      ## decryption failure is the qf1 secret qf1.secret.key.not.held.
       ##########################################################################
       - name: STRING getter on stored int returns the default
         client: config_client
@@ -1803,8 +2018,9 @@ tests:
         function: get
         type: STRING
         input:
-          key: "a.broken.secret.config"
+          key: "qf1.secret.key.not.held"
           default: "DEFAULT"
+        keysets: *qf1_keysets
         expected:
           value: "DEFAULT"
 
@@ -1813,7 +2029,8 @@ tests:
         function: get
         type: STRING
         input:
-          key: "a.broken.secret.config"
+          key: "qf1.secret.key.not.held"
+        keysets: *qf1_keysets
         expected:
           value: ~
         client_overrides:
